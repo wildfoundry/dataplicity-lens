@@ -103,6 +103,7 @@ impl DemoSource {
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn process(
     pid: u32,
     parent: u32,

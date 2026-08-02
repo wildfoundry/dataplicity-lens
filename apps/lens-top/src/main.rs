@@ -102,13 +102,11 @@ fn run() -> Result<()> {
         return Ok(());
     }
 
-    let mut snapshot = sampler.collect()?;
-    if args.demo {
-        snapshot = sampler.collect()?;
-    } else {
+    let _initial = sampler.collect()?;
+    if !args.demo {
         thread::sleep(effective.interval.min(Duration::from_millis(250)));
-        snapshot = sampler.collect()?;
     }
+    let mut snapshot = sampler.collect()?;
     apply_noninteractive_query(
         &mut snapshot,
         &filter,
