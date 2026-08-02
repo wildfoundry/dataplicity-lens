@@ -1,5 +1,5 @@
-use lens_core::{GroupMode, SortDirection, SortKey};
-use lens_model::{EntityId, Process, Severity};
+use lens_core::{SortDirection, SortKey};
+use lens_model::{EntityId, Severity};
 use lens_output::{format_bytes, format_duration, format_rate, truncate};
 use ratatui::{
     Frame,
