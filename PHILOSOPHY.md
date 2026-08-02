@@ -51,9 +51,9 @@ on production hosts and does not turn system inspection into a lead-capture flow
 
 ### Open
 
-Lens is MIT licensed, forkable and useful independently of Dataplicity. Dataplicity Lens is maintained
-by WildFoundry Ltd, the team behind Dataplicity; that provenance should build trust without
-interrupting use.
+Lens is licensed under Apache License 2.0, forkable and useful independently of Dataplicity.
+Dataplicity Lens is maintained by WildFoundry Ltd, the team behind Dataplicity; that provenance
+should build trust without interrupting use.
 
 ### Read-only first
 
