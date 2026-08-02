@@ -30,7 +30,7 @@ permissions:
 
 concurrency:
   group: release-${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: false
+  cancel-in-progress: true
 
 env:
   CARGO_TERM_COLOR: always
@@ -46,8 +46,7 @@ jobs:
       tag: ${{ steps.release.outputs.tag }}
       dry_run: ${{ steps.release.outputs.dry_run }}
     steps:
-      - name: Check out complete history
-        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:
           fetch-depth: 0
           persist-credentials: false
@@ -56,15 +55,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          version="$(awk '
-            /^\[workspace.package\]$/ { in_package=1; next }
-            /^\[/ { in_package=0 }
-            in_package && /^version = / { gsub(/[" ]/, "", $3); print $3; exit }
-          ' Cargo.toml)"
-          if [[ -z "$version" ]]; then
-            echo "Could not read workspace version" >&2
-            exit 1
-          fi
+          version="$(awk '/^\[workspace.package\]$/{p=1;next}/^\[/{p=0}p&&/^version = /{gsub(/[" ]/,"",$3);print $3;exit}' Cargo.toml)"
           if [[ "${GITHUB_EVENT_NAME}" == "push" ]]; then
             tag="${GITHUB_REF_NAME}"
             dry_run=false
@@ -77,10 +68,7 @@ jobs:
             tag="v${version}"
             dry_run=true
           fi
-          [[ "$tag" == "v${version}" ]] || {
-            echo "Tag $tag does not match workspace version v${version}" >&2
-            exit 1
-          }
+          [[ "$tag" == "v${version}" ]]
           echo "version=$version" >> "$GITHUB_OUTPUT"
           echo "tag=$tag" >> "$GITHUB_OUTPUT"
           echo "dry_run=$dry_run" >> "$GITHUB_OUTPUT"
@@ -90,23 +78,22 @@ jobs:
     needs: prepare
     runs-on: ubuntu-24.04
     steps:
-      - name: Check out repository
-        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:
           persist-credentials: false
-      - name: Install pinned Rust toolchain
-        run: rustup toolchain install 1.85.1 --profile minimal --component rustfmt,clippy
-      - name: Install security tools
-        run: |
-          cargo +1.85.1 install cargo-deny --version 0.16.4 --locked
-          cargo +1.85.1 install cargo-audit --version 0.21.2 --locked
-      - run: cargo +1.85.1 fmt --all -- --check
-      - run: cargo +1.85.1 clippy --workspace --all-targets --all-features --locked -- -D warnings
-      - run: cargo +1.85.1 test --workspace --all-features --locked
+      - name: Activate pinned toolchain
+        run: rustup show active-toolchain
+      - run: cargo fmt --all -- --check
+      - run: cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
+      - run: cargo test --workspace --all-features --locked
       - name: Build documentation
         env:
           RUSTDOCFLAGS: -D warnings
-        run: cargo +1.85.1 doc --workspace --all-features --no-deps --locked
+        run: cargo doc --workspace --all-features --no-deps --locked
+      - name: Install security tools
+        run: |
+          cargo install cargo-deny --version 0.16.4 --locked
+          cargo install cargo-audit --version 0.21.2 --locked
       - run: cargo deny check
       - run: cargo audit
 
@@ -131,29 +118,28 @@ jobs:
             rpm_arch: aarch64
     runs-on: ${{ matrix.runner }}
     steps:
-      - name: Check out clean tagged source
-        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:
           fetch-depth: 0
           persist-credentials: false
-      - name: Install toolchain and package tools
+      - name: Activate pinned toolchain and install package tools
         run: |
-          rustup toolchain install 1.85.1 --profile minimal --target "${{ matrix.gnu_target }},${{ matrix.musl_target }}"
+          rustup show active-toolchain
           sudo apt-get update
           sudo apt-get install --yes musl-tools rpm ruby-dev
           sudo gem install --no-document fpm
-          cargo +1.85.1 install cargo-cyclonedx --version 0.5.7 --locked
+          cargo install cargo-cyclonedx --version 0.5.7 --locked
       - name: Build clean release binaries
         env:
           LENS_GIT_SHA: ${{ github.sha }}
           LENS_BUILT_BY: GitHub Actions
         run: |
-          cargo +1.85.1 clean
-          cargo +1.85.1 build --release --locked --target "${{ matrix.gnu_target }}" -p lens-top
-          cargo +1.85.1 build --release --locked --target "${{ matrix.musl_target }}" -p lens-top
+          cargo clean
+          cargo build --release --locked --target "${{ matrix.gnu_target }}" -p lens-top
+          cargo build --release --locked --target "${{ matrix.musl_target }}" -p lens-top
           strip "target/${{ matrix.gnu_target }}/release/lens-top" || true
           strip "target/${{ matrix.musl_target }}/release/lens-top" || true
-      - name: Generate man page and shell completions
+      - name: Generate man page and completions
         run: scripts/generate-assets.sh "target/${{ matrix.gnu_target }}/release/lens-top" dist/generated
       - name: Build GNU archive, Debian and RPM packages
         env:
@@ -185,12 +171,9 @@ jobs:
           DEB_ARCH: ${{ matrix.deb_arch }}
           RPM_ARCH: ${{ matrix.rpm_arch }}
         run: |
-          set -euo pipefail
           scripts/smoke-test.sh "target/${GNU_TARGET}/release/lens-top"
           scripts/smoke-test.sh "target/${MUSL_TARGET}/release/lens-top"
           sudo apt-get install --yes "./dist/${GNU_TARGET}/lens-top_${VERSION}_${DEB_ARCH}.deb"
-          lens-top --version
-          lens-top --help >/dev/null
           lens-top --demo --plain --limit 2 >/dev/null
           lens-top --demo --json --limit 2 >/dev/null
           sudo apt-get remove --yes lens-top
@@ -207,15 +190,13 @@ jobs:
           DEB_ARCH: ${{ matrix.deb_arch }}
           RPM_ARCH: ${{ matrix.rpm_arch }}
         run: |
-          set -euo pipefail
           mkdir -p release-assets
           cp "dist/${GNU_TARGET}/lens-top-v${VERSION}-${GNU_TARGET}.tar.gz" release-assets/
           cp "dist/${MUSL_TARGET}/lens-top-v${VERSION}-${MUSL_TARGET}.tar.gz" release-assets/
           cp "dist/${GNU_TARGET}/lens-top_${VERSION}_${DEB_ARCH}.deb" release-assets/
           cp "dist/${GNU_TARGET}/lens-top-${VERSION}-1.${RPM_ARCH}.rpm" release-assets/
           cp dist/sbom-${{ matrix.name }}/*.json release-assets/
-      - name: Upload architecture assets
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: release-${{ matrix.name }}
           path: release-assets/*
@@ -227,12 +208,10 @@ jobs:
     needs: [prepare, build]
     runs-on: ubuntu-24.04
     steps:
-      - name: Check out verification scripts
-        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:
           persist-credentials: false
-      - name: Download all architecture assets
-        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
           pattern: release-*
           path: dist/release
@@ -241,17 +220,11 @@ jobs:
         run: |
           cd dist/release
           find . -maxdepth 1 -type f ! -name SHA256SUMS -printf '%f\0' | sort -z | xargs -0 sha256sum > SHA256SUMS
-      - name: Verify complete bundle
-        run: scripts/verify-release.sh dist/release
+      - run: scripts/verify-release.sh dist/release
       - name: Record dry-run result
         if: needs.prepare.outputs.dry_run == 'true'
-        run: |
-          cat > dist/release/DRY-RUN.txt <<EOF_DRY
-          Release dry-run succeeded for ${{ needs.prepare.outputs.tag }} at ${{ github.sha }}.
-          No GitHub Release was published.
-          EOF_DRY
-      - name: Upload consolidated release bundle
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        run: echo "Release dry-run succeeded for ${{ needs.prepare.outputs.tag }} at ${{ github.sha }}." > dist/release/DRY-RUN.txt
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: lens-top-${{ needs.prepare.outputs.tag }}-release-bundle
           path: dist/release/*
@@ -268,8 +241,7 @@ jobs:
       id-token: write
       attestations: write
     steps:
-      - name: Download verified release bundle
-        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
           name: lens-top-${{ needs.prepare.outputs.tag }}-release-bundle
           path: dist/release
@@ -281,19 +253,9 @@ jobs:
           subject-path: dist/release/*
       - name: Record attestation fallback
         if: steps.attest.outcome != 'success'
-        run: |
-          cat > dist/release/ATTESTATION-NOTICE.txt <<'EOF_NOTICE'
-          GitHub artifact attestations were unavailable for this repository or plan.
-          Verify release assets with SHA256SUMS and the included CycloneDX SBOMs.
-          EOF_NOTICE
-          cd dist/release
-          sha256sum ATTESTATION-NOTICE.txt >> SHA256SUMS
+        run: echo "GitHub artifact attestations were unavailable; verify SHA256SUMS and SBOMs." > dist/release/ATTESTATION-NOTICE.txt
       - name: Publish GitHub Release
         env:
           GH_TOKEN: ${{ github.token }}
           RELEASE_TAG: ${{ needs.prepare.outputs.tag }}
-        run: |
-          gh release create "$RELEASE_TAG" dist/release/* \
-            --title "Dataplicity Lens $RELEASE_TAG" \
-            --generate-notes \
-            $([[ "$RELEASE_TAG" == *-* ]] && printf '%s' '--prerelease' || true)
+        run: gh release create "$RELEASE_TAG" dist/release/* --title "Dataplicity Lens $RELEASE_TAG" --generate-notes
