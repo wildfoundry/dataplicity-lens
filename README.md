@@ -11,7 +11,8 @@ with a fast terminal interface, stable plain text and versioned JSON output. The
 a roadmap, not features claimed to exist today.
 
 Dataplicity Lens is an open-source Linux operations toolkit maintained by WildFoundry Ltd, the team
-behind Dataplicity. It is MIT licensed, works locally without an account, and contains no telemetry.
+behind Dataplicity. It is licensed under Apache License 2.0, works locally without an account, and
+contains no telemetry.
 
 > **Making Linux make sense.**
 
@@ -196,4 +197,5 @@ interaction and data contracts. Security reports must follow [`SECURITY.md`](SEC
 
 ## Licence
 
-MIT. Copyright (c) 2026 WildFoundry Ltd. See [`LICENSE`](LICENSE).
+Licensed under the Apache License, Version 2.0. Copyright 2026 WildFoundry Ltd. See [`LICENSE`](LICENSE)
+and [`NOTICE`](NOTICE).
