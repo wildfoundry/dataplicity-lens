@@ -72,7 +72,7 @@ jobs:
           out="dist/${TARGET}"
           mkdir -p "$out/$root/completions"
           install -m 0755 "target/${TARGET}/release/lens-top" "$out/$root/lens-top"
-          install -m 0644 LICENSE README.md "$out/$root/"
+          install -m 0644 LICENSE NOTICE README.md "$out/$root/"
           install -m 0644 dist/generated/man/lens-top.1 "$out/$root/lens-top.1"
           install -m 0644 dist/generated/completions/* "$out/$root/completions/"
           tar -C "$out" -czf "$out/${root}.tar.gz" "$root"
