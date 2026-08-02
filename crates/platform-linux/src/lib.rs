@@ -28,7 +28,7 @@ impl SnapshotSource for LinuxSource {
         self.system.refresh_memory();
         self.system.refresh_processes();
 
-        let load = System::load_average();
+        let load = self.system.load_average();
         let processes = self
             .system
             .processes()
@@ -50,8 +50,11 @@ impl SnapshotSource for LinuxSource {
         Ok(SystemSnapshot {
             schema_version: SystemSnapshot::SCHEMA_VERSION,
             collected_at_unix_ms: now_unix_ms()?,
-            hostname: System::host_name().unwrap_or_else(|| "linux".to_owned()),
-            uptime_secs: System::uptime(),
+            hostname: self
+                .system
+                .host_name()
+                .unwrap_or_else(|| "linux".to_owned()),
+            uptime_secs: self.system.uptime(),
             logical_cpu_count: self.system.cpus().len(),
             cpu_usage_percent: self.system.global_cpu_info().cpu_usage(),
             load_average: LoadAverage {
