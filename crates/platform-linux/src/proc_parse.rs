@@ -187,7 +187,7 @@ mod tests {
 
     #[test]
     fn parses_names_with_spaces_and_parentheses() {
-        let input = "42 (strange ) worker) S 1 0 0 0 0 0 0 0 0 10 5 0 0 20 0 3 0 900 4096 12";
+        let input = "42 (strange ) worker) S 1 0 0 0 0 0 0 0 0 0 0 10 5 0 0 20 0 3 0 900 4096 12";
         let parsed = parse_pid_stat(input).expect("fixture should parse");
         assert_eq!(parsed.name, "strange ) worker");
         assert_eq!(parsed.parent_pid, 1);
