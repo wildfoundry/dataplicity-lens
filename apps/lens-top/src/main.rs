@@ -17,9 +17,7 @@ use clap::{CommandFactory, Parser};
 use cli::{Args, CompletionShell};
 use config::EffectiveConfig;
 use demo::DemoSource;
-use lens_core::{
-    GroupMode, ProcessFilter, SortDirection, SortKey, parse_state, select_processes,
-};
+use lens_core::{GroupMode, ProcessFilter, SortDirection, SortKey, parse_state, select_processes};
 use lens_diagnostics::evaluate;
 use lens_history::HistoryStore;
 use lens_model::{BuildInfo, EntityId, Relationship, RelationshipKind, Snapshot};
@@ -64,7 +62,12 @@ fn run() -> Result<()> {
     let effective = EffectiveConfig::resolve(&args)?;
     let filter = process_filter(&args)?;
     let build = build_info();
-    let mut sampler = Sampler::new(args.demo, effective.interval, effective.history_length, build);
+    let mut sampler = Sampler::new(
+        args.demo,
+        effective.interval,
+        effective.history_length,
+        build,
+    );
 
     let output_format = if args.json {
         Some(OutputFormat::Json)
@@ -267,8 +270,8 @@ fn print_version() {
 
 fn generate_man(path: &Path) -> Result<()> {
     ensure_parent(path)?;
-    let mut file = fs::File::create(path)
-        .with_context(|| format!("create man page {}", path.display()))?;
+    let mut file =
+        fs::File::create(path).with_context(|| format!("create man page {}", path.display()))?;
     clap_mangen::Man::new(Args::command())
         .render(&mut file)
         .context("render man page")
@@ -276,18 +279,33 @@ fn generate_man(path: &Path) -> Result<()> {
 
 fn generate_completion(shell: CompletionShell, path: &Path) -> Result<()> {
     ensure_parent(path)?;
-    let mut file = fs::File::create(path)
-        .with_context(|| format!("create completion {}", path.display()))?;
+    let mut file =
+        fs::File::create(path).with_context(|| format!("create completion {}", path.display()))?;
     let mut command = Args::command();
     match shell {
         CompletionShell::Bash => {
-            clap_complete::generate(clap_complete::shells::Bash, &mut command, "lens-top", &mut file);
+            clap_complete::generate(
+                clap_complete::shells::Bash,
+                &mut command,
+                "lens-top",
+                &mut file,
+            );
         }
         CompletionShell::Zsh => {
-            clap_complete::generate(clap_complete::shells::Zsh, &mut command, "lens-top", &mut file);
+            clap_complete::generate(
+                clap_complete::shells::Zsh,
+                &mut command,
+                "lens-top",
+                &mut file,
+            );
         }
         CompletionShell::Fish => {
-            clap_complete::generate(clap_complete::shells::Fish, &mut command, "lens-top", &mut file);
+            clap_complete::generate(
+                clap_complete::shells::Fish,
+                &mut command,
+                "lens-top",
+                &mut file,
+            );
         }
     }
     Ok(())

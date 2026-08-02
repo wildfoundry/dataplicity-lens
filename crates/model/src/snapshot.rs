@@ -1,9 +1,7 @@
 use serde::{Deserialize, Serialize};
 use time::{OffsetDateTime, format_description::well_known::Rfc3339};
 
-use crate::{
-    Cgroup, ContainerReference, Finding, ProcessId, Relationship, ServiceReference, User,
-};
+use crate::{Cgroup, ContainerReference, Finding, ProcessId, Relationship, ServiceReference, User};
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(transparent)]

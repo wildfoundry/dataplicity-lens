@@ -91,7 +91,9 @@ fn host_findings(snapshot: &Snapshot, history: &HistoryStore, output: &mut Vec<F
                 unit: None,
             }],
             related_entities: vec![EntityId::Host(snapshot.host.hostname.clone())],
-            suggested_actions: vec!["Inspect CPU-heavy processes and their service context.".to_owned()],
+            suggested_actions: vec![
+                "Inspect CPU-heavy processes and their service context.".to_owned(),
+            ],
         });
     }
 
@@ -295,6 +297,10 @@ mod tests {
             start_time_ticks: 1,
         });
         let findings = evaluate(&snapshot, &HistoryStore::new(10));
-        assert!(findings.iter().any(|finding| finding.id == "process.99.zombie"));
+        assert!(
+            findings
+                .iter()
+                .any(|finding| finding.id == "process.99.zombie")
+        );
     }
 }

@@ -51,7 +51,9 @@ pub fn parse_proc_stat(input: &str) -> Result<CpuStat, ParseError> {
         .filter(|line| {
             line.strip_prefix("cpu")
                 .and_then(|suffix| suffix.split_whitespace().next())
-                .is_some_and(|suffix| !suffix.is_empty() && suffix.chars().all(|c| c.is_ascii_digit()))
+                .is_some_and(|suffix| {
+                    !suffix.is_empty() && suffix.chars().all(|c| c.is_ascii_digit())
+                })
         })
         .count();
     Ok(CpuStat {
@@ -70,7 +72,9 @@ pub fn parse_meminfo(input: &str) -> Result<Memory, ParseError> {
             raw.parse::<u64>().ok().map(|value| (key, value * 1024))
         })
         .collect();
-    let total = *values.get("MemTotal").ok_or(ParseError::Missing("MemTotal"))?;
+    let total = *values
+        .get("MemTotal")
+        .ok_or(ParseError::Missing("MemTotal"))?;
     let available = values
         .get("MemAvailable")
         .copied()
@@ -100,8 +104,12 @@ pub fn parse_loadavg(input: &str) -> Result<LoadAverage, ParseError> {
 }
 
 pub fn parse_pid_stat(input: &str) -> Result<PidStat, ParseError> {
-    let open = input.find('(').ok_or(ParseError::Missing("process name open"))?;
-    let close = input.rfind(')').ok_or(ParseError::Missing("process name close"))?;
+    let open = input
+        .find('(')
+        .ok_or(ParseError::Missing("process name open"))?;
+    let close = input
+        .rfind(')')
+        .ok_or(ParseError::Missing("process name close"))?;
     if close <= open {
         return Err(ParseError::Missing("process name"));
     }
@@ -111,7 +119,10 @@ pub fn parse_pid_stat(input: &str) -> Result<PidStat, ParseError> {
     if fields.len() < 22 {
         return Err(ParseError::Missing("pid stat fields"));
     }
-    let state = fields[0].chars().next().map_or(ProcessState::Unknown, state_from_char);
+    let state = fields[0]
+        .chars()
+        .next()
+        .map_or(ProcessState::Unknown, state_from_char);
     Ok(PidStat {
         pid,
         name,
@@ -186,8 +197,8 @@ mod tests {
 
     #[test]
     fn parses_memory_without_swap() {
-        let memory = parse_meminfo("MemTotal: 100 kB\nMemAvailable: 40 kB\n")
-            .expect("fixture should parse");
+        let memory =
+            parse_meminfo("MemTotal: 100 kB\nMemAvailable: 40 kB\n").expect("fixture should parse");
         assert_eq!(memory.used_bytes, 60 * 1024);
         assert_eq!(memory.swap_total_bytes, 0);
     }

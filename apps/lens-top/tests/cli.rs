@@ -1,6 +1,9 @@
 #![forbid(unsafe_code)]
 
-use std::{fs, process::{Command, Stdio}};
+use std::{
+    fs,
+    process::{Command, Stdio},
+};
 
 fn binary() -> &'static str {
     env!("CARGO_BIN_EXE_lens-top")

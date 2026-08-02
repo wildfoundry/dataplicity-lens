@@ -12,7 +12,10 @@ use ratatui::{
     },
 };
 
-use crate::{TerminalCapabilities, app::{App, InputMode, View}};
+use crate::{
+    TerminalCapabilities,
+    app::{App, InputMode, View},
+};
 
 pub fn draw(frame: &mut Frame<'_>, app: &mut App) {
     let area = frame.area();
@@ -50,7 +53,10 @@ pub fn draw(frame: &mut Frame<'_>, app: &mut App) {
 fn draw_header(frame: &mut Frame<'_>, area: Rect, app: &App) {
     let state = if app.paused { "paused" } else { "running" };
     let title = Line::from(vec![
-        Span::styled(" Dataplicity Lens ", Style::default().add_modifier(Modifier::BOLD)),
+        Span::styled(
+            " Dataplicity Lens ",
+            Style::default().add_modifier(Modifier::BOLD),
+        ),
         Span::raw("· "),
         Span::styled(&app.snapshot.host.hostname, info_style(app.capabilities)),
         Span::raw(format!(
@@ -77,10 +83,11 @@ fn draw_summary(frame: &mut Frame<'_>, area: Rect, app: &App) {
     let cpu_data = app.host_cpu_history();
     let memory_data = app.memory_history();
     let cpu = Sparkline::default()
-        .block(Block::default().borders(Borders::ALL).title(format!(
-            " CPU {:>5.1}% ",
-            app.snapshot.host.cpu_percent
-        )))
+        .block(
+            Block::default()
+                .borders(Borders::ALL)
+                .title(format!(" CPU {:>5.1}% ", app.snapshot.host.cpu_percent)),
+        )
         .data(&cpu_data)
         .max(100)
         .style(info_style(app.capabilities));
@@ -100,9 +107,7 @@ fn draw_summary(frame: &mut Frame<'_>, area: Rect, app: &App) {
     let summary = vec![
         Line::from(format!(
             "Load  {:.2}  {:.2}  {:.2}",
-            app.snapshot.host.load.one,
-            app.snapshot.host.load.five,
-            app.snapshot.host.load.fifteen
+            app.snapshot.host.load.one, app.snapshot.host.load.five, app.snapshot.host.load.fifteen
         )),
         Line::from(format!(
             "Processes {}  running {}  zombies {}",
@@ -202,8 +207,13 @@ fn draw_processes(frame: &mut Frame<'_>, area: Rect, app: &App) {
         )
         .block(Block::default().borders(Borders::TOP))
         .row_highlight_style(selection_style(app.capabilities))
-        .highlight_symbol(if app.capabilities.unicode { "▸ " } else { "> " });
-    let mut state = TableState::default().with_selected((!visible.is_empty()).then_some(app.selected));
+        .highlight_symbol(if app.capabilities.unicode {
+            "▸ "
+        } else {
+            "> "
+        });
+    let mut state =
+        TableState::default().with_selected((!visible.is_empty()).then_some(app.selected));
     frame.render_stateful_widget(table, area, &mut state);
 }
 
@@ -261,8 +271,7 @@ fn draw_detail(frame: &mut Frame<'_>, area: Rect, app: &App) {
         )),
     ];
     frame.render_widget(
-        Paragraph::new(identity)
-            .block(Block::default().borders(Borders::ALL).title(" Process ")),
+        Paragraph::new(identity).block(Block::default().borders(Borders::ALL).title(" Process ")),
         sections[0],
     );
 
@@ -273,7 +282,11 @@ fn draw_detail(frame: &mut Frame<'_>, area: Rect, app: &App) {
     let cpu_data = app.selected_cpu_history();
     frame.render_widget(
         Sparkline::default()
-            .block(Block::default().borders(Borders::ALL).title(" CPU history "))
+            .block(
+                Block::default()
+                    .borders(Borders::ALL)
+                    .title(" CPU history "),
+            )
             .data(&cpu_data)
             .style(info_style(app.capabilities)),
         charts[0],
@@ -309,7 +322,10 @@ fn draw_detail(frame: &mut Frame<'_>, area: Rect, app: &App) {
         .unwrap_or("-");
     let mut context = vec![
         Line::from(vec![Span::styled("Command: ", bold()), Span::raw(command)]),
-        Line::from(vec![Span::styled("Executable: ", bold()), Span::raw(process.executable.as_deref().unwrap_or("-"))]),
+        Line::from(vec![
+            Span::styled("Executable: ", bold()),
+            Span::raw(process.executable.as_deref().unwrap_or("-")),
+        ]),
         Line::from(format!("Service: {service}  Cgroup: {cgroup}")),
         Line::from(format!("Container: {container}")),
     ];
@@ -340,7 +356,11 @@ fn draw_detail(frame: &mut Frame<'_>, area: Rect, app: &App) {
     }
     frame.render_widget(
         Paragraph::new(context)
-            .block(Block::default().borders(Borders::ALL).title(" Context and findings "))
+            .block(
+                Block::default()
+                    .borders(Borders::ALL)
+                    .title(" Context and findings "),
+            )
             .wrap(Wrap { trim: false }),
         sections[2],
     );
@@ -364,7 +384,11 @@ fn draw_footer(frame: &mut Frame<'_>, area: Rect, app: &App) {
 }
 
 fn footer_text(app: &App) -> Line<'static> {
-    let pause = if app.paused { "Space Resume" } else { "Space Pause" };
+    let pause = if app.paused {
+        "Space Resume"
+    } else {
+        "Space Pause"
+    };
     Line::from(format!(
         " / Search   f Filter   s Sort   g Group   Enter Inspect   {pause}   r Refresh   ? Help   q Quit"
     ))
@@ -424,16 +448,16 @@ fn draw_sort(frame: &mut Frame<'_>, area: Rect, app: &App) {
         .map(|key| ListItem::new(key.label()))
         .collect();
     let list = List::new(items)
-        .block(
-            Block::default()
-                .borders(Borders::ALL)
-                .title(format!(
-                    " Sort ({}) · d reverses ",
-                    direction_symbol(app.sort_direction, app.capabilities)
-                )),
-        )
+        .block(Block::default().borders(Borders::ALL).title(format!(
+            " Sort ({}) · d reverses ",
+            direction_symbol(app.sort_direction, app.capabilities)
+        )))
         .highlight_style(selection_style(app.capabilities))
-        .highlight_symbol(if app.capabilities.unicode { "▸ " } else { "> " });
+        .highlight_symbol(if app.capabilities.unicode {
+            "▸ "
+        } else {
+            "> "
+        });
     let mut state = ListState::default().with_selected(Some(app.sort_selection));
     frame.render_stateful_widget(list, popup, &mut state);
 }
@@ -443,7 +467,10 @@ fn draw_too_small(frame: &mut Frame<'_>, area: Rect) {
         Paragraph::new(vec![
             Line::from("Dataplicity Lens"),
             Line::from("Terminal is too small."),
-            Line::from(format!("Current: {}x{}  Required: 58x12", area.width, area.height)),
+            Line::from(format!(
+                "Current: {}x{}  Required: 58x12",
+                area.width, area.height
+            )),
             Line::from("Resize the terminal or press q to quit."),
         ])
         .alignment(Alignment::Center)
@@ -562,6 +589,8 @@ mod tests {
         };
         let capabilities = TerminalCapabilities::detect(ColorMode::Never, true);
         let mut app = App::new(Snapshot::empty("fixture"), options, capabilities);
-        terminal.draw(|frame| draw(frame, &mut app)).expect("render");
+        terminal
+            .draw(|frame| draw(frame, &mut app))
+            .expect("render");
     }
 }

@@ -4,7 +4,10 @@ mod app;
 mod render;
 mod terminal;
 
-use std::{fmt::Display, time::{Duration, Instant}};
+use std::{
+    fmt::Display,
+    time::{Duration, Instant},
+};
 
 use app::{Action, App};
 use crossterm::event::{self, Event, KeyCode, KeyModifiers};
@@ -64,7 +67,8 @@ where
             match app.handle_key(key) {
                 Action::Quit => break,
                 Action::Refresh => {
-                    let snapshot = collect().map_err(|error| UiError::Collection(error.to_string()))?;
+                    let snapshot =
+                        collect().map_err(|error| UiError::Collection(error.to_string()))?;
                     app.replace_snapshot(snapshot);
                     next_refresh = Instant::now() + app.interval();
                 }

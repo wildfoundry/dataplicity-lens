@@ -1,4 +1,7 @@
-use std::{env, io::{self, Stdout}};
+use std::{
+    env,
+    io::{self, Stdout},
+};
 
 use crossterm::{
     execute,
@@ -45,7 +48,9 @@ pub struct TerminalSession {
 
 impl std::fmt::Debug for TerminalSession {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        formatter.debug_struct("TerminalSession").finish_non_exhaustive()
+        formatter
+            .debug_struct("TerminalSession")
+            .finish_non_exhaustive()
     }
 }
 

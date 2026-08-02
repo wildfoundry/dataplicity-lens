@@ -107,8 +107,14 @@ impl ProcessFilter {
                 process.name.as_str(),
                 process.command_line.as_deref().unwrap_or_default(),
                 process.user.name.as_deref().unwrap_or_default(),
-                process.service.as_ref().map_or("", |service| service.name.as_str()),
-                process.cgroup.as_ref().map_or("", |cgroup| cgroup.path.as_str()),
+                process
+                    .service
+                    .as_ref()
+                    .map_or("", |service| service.name.as_str()),
+                process
+                    .cgroup
+                    .as_ref()
+                    .map_or("", |cgroup| cgroup.path.as_str()),
                 pid.as_str(),
             ];
             if !haystacks
@@ -131,7 +137,10 @@ impl ProcessFilter {
         if self.state.is_some_and(|state| process.state != state) {
             return false;
         }
-        if self.min_cpu.is_some_and(|minimum| process.cpu_percent < minimum) {
+        if self
+            .min_cpu
+            .is_some_and(|minimum| process.cpu_percent < minimum)
+        {
             return false;
         }
         if self
@@ -146,8 +155,14 @@ impl ProcessFilter {
             return false;
         }
         if let Some(service) = normalized(&self.service_or_cgroup) {
-            let service_name = process.service.as_ref().map_or("", |item| item.name.as_str());
-            let cgroup = process.cgroup.as_ref().map_or("", |item| item.path.as_str());
+            let service_name = process
+                .service
+                .as_ref()
+                .map_or("", |item| item.name.as_str());
+            let cgroup = process
+                .cgroup
+                .as_ref()
+                .map_or("", |item| item.path.as_str());
             if !service_name.to_ascii_lowercase().contains(&service)
                 && !cgroup.to_ascii_lowercase().contains(&service)
             {
@@ -190,7 +205,9 @@ pub fn select_processes(
     if group == GroupMode::Tree {
         indices = tree_order(processes, &indices, sort_key, direction);
     } else {
-        indices.sort_by(|left, right| compare_processes(&processes[*left], &processes[*right], sort_key));
+        indices.sort_by(|left, right| {
+            compare_processes(&processes[*left], &processes[*right], sort_key)
+        });
         if direction == SortDirection::Descending {
             indices.reverse();
         }
@@ -238,7 +255,9 @@ pub fn select_processes(
                 GroupMode::User | GroupMode::Service => Some(group_label(process, group)),
                 _ => None,
             };
-            let show_label = label.clone().filter(|label| previous_group.as_ref() != Some(label));
+            let show_label = label
+                .clone()
+                .filter(|label| previous_group.as_ref() != Some(label));
             if label.is_some() {
                 previous_group = label;
             }
@@ -273,7 +292,9 @@ fn tree_order(
         children.entry(parent).or_default().push(*index);
     }
     for values in children.values_mut() {
-        values.sort_by(|left, right| compare_processes(&processes[*left], &processes[*right], sort_key));
+        values.sort_by(|left, right| {
+            compare_processes(&processes[*left], &processes[*right], sort_key)
+        });
         if direction == SortDirection::Descending {
             values.reverse();
         }
@@ -310,8 +331,10 @@ fn append_children(
 }
 
 fn tree_depth(processes: &[Process], pid: ProcessId) -> usize {
-    let by_pid: HashMap<ProcessId, &Process> =
-        processes.iter().map(|process| (process.pid, process)).collect();
+    let by_pid: HashMap<ProcessId, &Process> = processes
+        .iter()
+        .map(|process| (process.pid, process))
+        .collect();
     let mut depth = 0usize;
     let mut current = pid;
     let mut seen = HashMap::new();
@@ -343,7 +366,10 @@ fn compare_processes(left: &Process, right: &Process, key: SortKey) -> Ordering 
         SortKey::Cpu => left.cpu_percent.total_cmp(&right.cpu_percent),
         SortKey::Memory => left.memory_percent.total_cmp(&right.memory_percent),
         SortKey::Pid => left.pid.cmp(&right.pid),
-        SortKey::Name => left.name.to_ascii_lowercase().cmp(&right.name.to_ascii_lowercase()),
+        SortKey::Name => left
+            .name
+            .to_ascii_lowercase()
+            .cmp(&right.name.to_ascii_lowercase()),
         SortKey::User => left.user.display_name().cmp(&right.user.display_name()),
         SortKey::Runtime => left.runtime_seconds.cmp(&right.runtime_seconds),
         SortKey::ReadRate => left

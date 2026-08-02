@@ -1,4 +1,8 @@
-use std::{env, fs, path::{Path, PathBuf}, time::Duration};
+use std::{
+    env, fs,
+    path::{Path, PathBuf},
+    time::Duration,
+};
 
 use anyhow::{Context, Result, bail};
 use lens_core::{GroupMode, SortKey};
@@ -63,10 +67,7 @@ impl EffectiveConfig {
         let mut file = load_optional(&path)?;
         apply_environment(&mut file)?;
 
-        let interval_text = args
-            .interval
-            .as_deref()
-            .unwrap_or(&file.refresh_interval);
+        let interval_text = args.interval.as_deref().unwrap_or(&file.refresh_interval);
         let interval = parse_duration(interval_text)?;
         if interval < Duration::from_millis(100) {
             bail!("refresh interval must be at least 100ms");
@@ -199,9 +200,18 @@ mod tests {
 
     #[test]
     fn parses_duration_units() {
-        assert_eq!(parse_duration("500ms").expect("duration"), Duration::from_millis(500));
-        assert_eq!(parse_duration("2s").expect("duration"), Duration::from_secs(2));
-        assert_eq!(parse_duration("1m").expect("duration"), Duration::from_secs(60));
+        assert_eq!(
+            parse_duration("500ms").expect("duration"),
+            Duration::from_millis(500)
+        );
+        assert_eq!(
+            parse_duration("2s").expect("duration"),
+            Duration::from_secs(2)
+        );
+        assert_eq!(
+            parse_duration("1m").expect("duration"),
+            Duration::from_secs(60)
+        );
     }
 
     #[test]

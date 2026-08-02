@@ -1,4 +1,7 @@
-use std::{collections::{HashMap, VecDeque}, time::Duration};
+use std::{
+    collections::{HashMap, VecDeque},
+    time::Duration,
+};
 
 use crossterm::event::{KeyCode, KeyEvent};
 use lens_core::{
@@ -120,7 +123,10 @@ impl App {
             filter.search = Some(self.search.clone());
         }
         if !self.filter_expression.is_empty() {
-            merge_filter(&mut filter, parse_filter_expression(&self.filter_expression));
+            merge_filter(
+                &mut filter,
+                parse_filter_expression(&self.filter_expression),
+            );
         }
         select_processes(
             &self.snapshot.processes,
@@ -347,10 +353,18 @@ impl App {
                 self.history_length,
             );
         }
-        self.process_cpu_history
-            .retain(|key, _| self.snapshot.processes.iter().any(|p| (p.pid, p.start_time_ticks) == *key));
-        self.process_memory_history
-            .retain(|key, _| self.snapshot.processes.iter().any(|p| (p.pid, p.start_time_ticks) == *key));
+        self.process_cpu_history.retain(|key, _| {
+            self.snapshot
+                .processes
+                .iter()
+                .any(|p| (p.pid, p.start_time_ticks) == *key)
+        });
+        self.process_memory_history.retain(|key, _| {
+            self.snapshot
+                .processes
+                .iter()
+                .any(|p| (p.pid, p.start_time_ticks) == *key)
+        });
     }
 }
 

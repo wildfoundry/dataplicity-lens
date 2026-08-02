@@ -1,7 +1,6 @@
 use std::{
     collections::HashMap,
-    fs,
-    io,
+    fs, io,
     path::{Path, PathBuf},
     time::Duration,
 };
@@ -13,7 +12,9 @@ use lens_model::{
 use thiserror::Error;
 use tracing::debug;
 
-use crate::proc_parse::{ParseError, parse_loadavg, parse_meminfo, parse_pid_stat, parse_proc_stat};
+use crate::proc_parse::{
+    ParseError, parse_loadavg, parse_meminfo, parse_pid_stat, parse_proc_stat,
+};
 
 #[derive(Debug, Error)]
 pub enum CollectError {
@@ -79,7 +80,12 @@ impl LinuxCollector {
             .unwrap_or_else(|| "unknown".to_owned());
         let os_name = read_os_name(&self.etc_root.join("os-release"));
         let uptime_seconds = read_optional_trimmed(self.proc_root.join("uptime"))
-            .and_then(|value| value.split_whitespace().next().and_then(|item| item.parse::<f64>().ok()))
+            .and_then(|value| {
+                value
+                    .split_whitespace()
+                    .next()
+                    .and_then(|item| item.parse::<f64>().ok())
+            })
             .map_or(0, |value| value.max(0.0) as u64);
         let load = match read_optional_trimmed(self.proc_root.join("loadavg")) {
             Some(value) => parse_loadavg(&value).unwrap_or_default(),
@@ -87,10 +93,11 @@ impl LinuxCollector {
         };
 
         let mut processes = Vec::new();
-        let entries = fs::read_dir(&self.proc_root).map_err(|source| CollectError::RequiredRead {
-            path: self.proc_root.clone(),
-            source,
-        })?;
+        let entries =
+            fs::read_dir(&self.proc_root).map_err(|source| CollectError::RequiredRead {
+                path: self.proc_root.clone(),
+                source,
+            })?;
         let mut permission_limited = 0usize;
         let mut malformed = 0usize;
         for entry in entries.flatten() {
@@ -137,7 +144,11 @@ impl LinuxCollector {
                 load,
                 memory,
                 process_counts,
-                refresh_interval_ms: self.refresh_interval.as_millis().try_into().unwrap_or(u64::MAX),
+                refresh_interval_ms: self
+                    .refresh_interval
+                    .as_millis()
+                    .try_into()
+                    .unwrap_or(u64::MAX),
                 total_cpu_ticks: cpu.total_ticks,
                 idle_cpu_ticks: cpu.idle_ticks,
             },
@@ -208,8 +219,12 @@ impl LinuxCollector {
             }
         };
         let rss_pages = stat.rss_pages.max(0) as u64;
-        let rss_bytes = status.rss_bytes.unwrap_or(rss_pages.saturating_mul(self.page_size));
-        let virtual_memory_bytes = status.virtual_memory_bytes.unwrap_or(stat.virtual_memory_bytes);
+        let rss_bytes = status
+            .rss_bytes
+            .unwrap_or(rss_pages.saturating_mul(self.page_size));
+        let virtual_memory_bytes = status
+            .virtual_memory_bytes
+            .unwrap_or(stat.virtual_memory_bytes);
         let memory_percent = if memory_total == 0 {
             0.0
         } else {
@@ -288,7 +303,12 @@ fn parse_status(input: &str) -> StatusData {
         let value = value.trim();
         match key {
             "Name" => result.name = Some(value.to_owned()),
-            "Uid" => result.uid = value.split_whitespace().next().and_then(|item| item.parse().ok()),
+            "Uid" => {
+                result.uid = value
+                    .split_whitespace()
+                    .next()
+                    .and_then(|item| item.parse().ok())
+            }
             "Threads" => result.threads = value.parse().ok(),
             "VmRSS" => result.rss_bytes = parse_kib(value),
             "VmSize" => result.virtual_memory_bytes = parse_kib(value),
@@ -399,8 +419,11 @@ fn infer_container(cgroup: &Cgroup) -> Option<ContainerReference> {
             .trim_start_matches("docker-")
             .trim_start_matches("libpod-")
             .trim_start_matches("cri-containerd-");
-        (trimmed.len() >= 12 && trimmed.chars().all(|character| character.is_ascii_hexdigit()))
-            .then(|| trimmed.to_owned())
+        (trimmed.len() >= 12
+            && trimmed
+                .chars()
+                .all(|character| character.is_ascii_hexdigit()))
+        .then(|| trimmed.to_owned())
     })?;
     Some(ContainerReference {
         runtime,
@@ -494,7 +517,8 @@ fn relationships(hostname: &str, processes: &[Process]) -> Vec<Relationship> {
             kind: RelationshipKind::OwnedByUser,
         });
         if let Some(parent) = process.parent_pid {
-            if let Some(parent_process) = processes.iter().find(|candidate| candidate.pid == parent) {
+            if let Some(parent_process) = processes.iter().find(|candidate| candidate.pid == parent)
+            {
                 values.push(Relationship {
                     from: process_id.clone(),
                     to: EntityId::Process {
