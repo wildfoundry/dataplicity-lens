@@ -30,10 +30,7 @@ pub fn write_snapshot<W: Write>(
     }
 }
 
-fn projected_snapshot(
-    snapshot: &SystemSnapshot,
-    processes: &[ProcessSnapshot],
-) -> SystemSnapshot {
+fn projected_snapshot(snapshot: &SystemSnapshot, processes: &[ProcessSnapshot]) -> SystemSnapshot {
     let mut projected = snapshot.clone();
     projected.processes = processes.to_vec();
     projected
@@ -55,7 +52,11 @@ fn write_table<W: Write>(
         snapshot.load_average.fifteen,
         snapshot.memory.used_percent(),
     )?;
-    writeln!(writer, "{:<7} {:>7} {:>10} {:<12} COMMAND", "PID", "CPU%", "MEM", "STATE")?;
+    writeln!(
+        writer,
+        "{:<7} {:>7} {:>10} {:<12} COMMAND",
+        "PID", "CPU%", "MEM", "STATE"
+    )?;
 
     for process in processes {
         let command = if process.command.is_empty() {

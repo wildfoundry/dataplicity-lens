@@ -32,10 +32,7 @@ impl Default for ViewOptions {
     }
 }
 
-pub fn select_processes(
-    snapshot: &SystemSnapshot,
-    options: &ViewOptions,
-) -> Vec<ProcessSnapshot> {
+pub fn select_processes(snapshot: &SystemSnapshot, options: &ViewOptions) -> Vec<ProcessSnapshot> {
     let filter = options
         .filter
         .as_deref()

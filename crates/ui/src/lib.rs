@@ -156,8 +156,11 @@ fn draw(
             ])
         })
         .collect();
-    let diagnostics = Paragraph::new(diagnostic_lines)
-        .block(Block::default().title(" Diagnostics ").borders(Borders::ALL));
+    let diagnostics = Paragraph::new(diagnostic_lines).block(
+        Block::default()
+            .title(" Diagnostics ")
+            .borders(Borders::ALL),
+    );
     frame.render_widget(diagnostics, areas[1]);
 
     let visible_rows = areas[2].height.saturating_sub(3) as usize;
@@ -201,8 +204,11 @@ fn draw(
         ],
     )
     .header(
-        Row::new(["PID", "CPU %", "MEM", "STATE", "COMMAND"])
-            .style(Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD)),
+        Row::new(["PID", "CPU %", "MEM", "STATE", "COMMAND"]).style(
+            Style::default()
+                .fg(Color::Cyan)
+                .add_modifier(Modifier::BOLD),
+        ),
     )
     .column_spacing(1)
     .block(
