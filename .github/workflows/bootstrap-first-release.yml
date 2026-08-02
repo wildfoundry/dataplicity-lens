@@ -29,8 +29,12 @@ jobs:
           set -euo pipefail
           cat .bootstrap/xzpart00 .bootstrap/xzpart01 .bootstrap/xzpart02 .bootstrap/xzpart03 > /tmp/dataplicity-lens.tar.xz.b64
           base64 --decode /tmp/dataplicity-lens.tar.xz.b64 > /tmp/dataplicity-lens.tar.xz
+          cp -a .github/workflows /tmp/existing-workflows
           find . -mindepth 1 -maxdepth 1 ! -name .git -exec rm -rf -- {} +
           tar -xJf /tmp/dataplicity-lens.tar.xz -C .
+          rm -rf .github/workflows
+          mkdir -p .github
+          cp -a /tmp/existing-workflows .github/workflows
 
       - name: Generate locked dependency graph
         shell: bash
