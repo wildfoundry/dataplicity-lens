@@ -68,10 +68,12 @@ fn config_file_is_loaded() {
 
 #[test]
 fn broken_pipe_exits_cleanly() {
-    let status = Command::new("sh")
+    let status = Command::new("bash")
+        .arg("-o")
+        .arg("pipefail")
         .arg("-c")
         .arg(format!(
-            "set -o pipefail 2>/dev/null || true; '{}' --demo --json | head -c 1 >/dev/null",
+            "'{}' --demo --json | head -c 1 >/dev/null",
             binary()
         ))
         .stdin(Stdio::null())
