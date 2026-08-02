@@ -1,11 +1,9 @@
 name: Bootstrap first release source
 
 on:
-  push:
-    branches:
-      - agent/build-first-release
-    paths:
-      - .github/workflows/bootstrap-first-release.yml
+  pull_request:
+    types: [opened, reopened]
+    branches: [main]
 
 permissions:
   contents: write
@@ -16,7 +14,7 @@ concurrency:
 
 jobs:
   bootstrap:
-    if: github.actor != 'github-actions[bot]'
+    if: github.actor != 'github-actions[bot]' && github.head_ref == 'agent/build-first-release'
     runs-on: ubuntu-24.04
     steps:
       - name: Check out feature branch
