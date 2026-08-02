@@ -1,0 +1,163 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Release tag, for example v0.1.0
+        required: true
+        type: string
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-${{ github.ref }}-${{ inputs.tag }}
+  cancel-in-progress: false
+
+env:
+  RELEASE_TAG: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}
+
+jobs:
+  build:
+    name: Build ${{ matrix.target }}
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: x86_64-unknown-linux-gnu
+            deb_arch: amd64
+            rpm_arch: x86_64
+          - target: aarch64-unknown-linux-gnu
+            deb_arch: arm64
+            rpm_arch: aarch64
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: 1.79.0
+          targets: ${{ matrix.target }}
+
+      - name: Cache Rust build data
+        uses: Swatinem/rust-cache@v2
+        with:
+          key: release-${{ matrix.target }}
+
+      - name: Install cross compiler wrapper
+        run: cargo install cross --git https://github.com/cross-rs/cross --tag v0.2.5 --locked
+
+      - name: Build release binary
+        run: cross build --release --target "${{ matrix.target }}" --package lens-top
+
+      - name: Install package tooling
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes rpm ruby-dev
+          sudo gem install --no-document fpm
+
+      - name: Stage release files
+        env:
+          TARGET: ${{ matrix.target }}
+        run: |
+          set -euo pipefail
+          version="${RELEASE_TAG#v}"
+          mkdir -p "stage/usr/bin" "stage/usr/share/doc/lens-top" dist
+          install -m 0755 "target/${TARGET}/release/lens-top" "stage/usr/bin/lens-top"
+          install -m 0644 README.md PHILOSOPHY.md LICENSE "stage/usr/share/doc/lens-top/"
+
+          cp "stage/usr/bin/lens-top" "dist/lens-top-${TARGET}"
+          tar -C stage -czf "dist/lens-top-${version}-${TARGET}.tar.gz" .
+
+      - name: Build Debian package
+        env:
+          DEB_ARCH: ${{ matrix.deb_arch }}
+        run: |
+          set -euo pipefail
+          version="${RELEASE_TAG#v}"
+          fpm \
+            --input-type dir \
+            --output-type deb \
+            --name lens-top \
+            --version "${version}" \
+            --architecture "${DEB_ARCH}" \
+            --license MIT \
+            --url "https://github.com/wildfoundry/dataplicity-lens" \
+            --description "A fast, humane Linux process and system monitor" \
+            --maintainer "WildFoundry Ltd" \
+            --chdir stage \
+            --package "dist/lens-top_${version}_${DEB_ARCH}.deb" \
+            .
+
+      - name: Build RPM package
+        env:
+          RPM_ARCH: ${{ matrix.rpm_arch }}
+        run: |
+          set -euo pipefail
+          version="${RELEASE_TAG#v}"
+          fpm \
+            --input-type dir \
+            --output-type rpm \
+            --name lens-top \
+            --version "${version}" \
+            --architecture "${RPM_ARCH}" \
+            --license MIT \
+            --url "https://github.com/wildfoundry/dataplicity-lens" \
+            --description "A fast, humane Linux process and system monitor" \
+            --maintainer "WildFoundry Ltd" \
+            --chdir stage \
+            --package "dist/lens-top-${version}-1.${RPM_ARCH}.rpm" \
+            .
+
+      - name: Generate SPDX SBOM
+        uses: anchore/sbom-action@v0
+        with:
+          path: stage
+          format: spdx-json
+          output-file: dist/lens-top-${{ matrix.target }}.spdx.json
+          upload-artifact: false
+
+      - name: Generate checksums
+        env:
+          TARGET: ${{ matrix.target }}
+        run: |
+          set -euo pipefail
+          cd dist
+          sha256sum * > "SHA256SUMS-${TARGET}.txt"
+
+      - name: Upload target artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: lens-top-${{ matrix.target }}
+          path: dist/*
+          if-no-files-found: error
+          retention-days: 14
+
+  release:
+    name: Publish GitHub Release
+    needs: build
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Download release artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+
+      - name: Publish release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ env.RELEASE_TAG }}
+          name: Dataplicity Lens ${{ env.RELEASE_TAG }}
+          draft: false
+          prerelease: ${{ contains(env.RELEASE_TAG, '-') }}
+          generate_release_notes: true
+          files: dist/*
+          fail_on_unmatched_files: true

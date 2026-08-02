@@ -1,0 +1,25 @@
+[package]
+name = "lens-top"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+description = "A fast, humane Linux process and system monitor"
+readme = "../../README.md"
+keywords = ["linux", "monitoring", "process", "terminal", "diagnostics"]
+categories = ["command-line-utilities"]
+
+[[bin]]
+name = "lens-top"
+path = "src/main.rs"
+
+[dependencies]
+anyhow.workspace = true
+clap.workspace = true
+lens-core = { path = "../../crates/core" }
+lens-model = { path = "../../crates/model" }
+lens-output = { path = "../../crates/output" }
+lens-platform-linux = { path = "../../crates/platform-linux" }
+lens-ui = { path = "../../crates/ui" }

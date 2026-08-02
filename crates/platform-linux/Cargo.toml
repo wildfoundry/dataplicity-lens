@@ -1,0 +1,13 @@
+[package]
+name = "lens-platform-linux"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+
+[dependencies]
+lens-core = { path = "../core" }
+lens-model = { path = "../model" }
+sysinfo.workspace = true
