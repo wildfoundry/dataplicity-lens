@@ -163,7 +163,7 @@ pub fn write_plain(
 pub fn write_json(writer: &mut impl Write, snapshot: &Snapshot) -> io::Result<()> {
     match serde_json::to_writer_pretty(&mut *writer, snapshot) {
         Ok(()) => safe_writeln(writer, ""),
-        Err(error) if error.is_io() => Err(io::Error::new(io::ErrorKind::Other, error)),
+        Err(error) if error.is_io() => Err(io::Error::other(error)),
         Err(error) => Err(io::Error::new(io::ErrorKind::InvalidData, error)),
     }
 }
