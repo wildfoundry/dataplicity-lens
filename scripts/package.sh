@@ -22,7 +22,7 @@ mkdir -p \
   "$out"
 
 install -m 0755 "$binary" "$stage/usr/bin/lens-top"
-install -m 0644 LICENSE README.md PHILOSOPHY.md SECURITY.md CHANGELOG.md \
+install -m 0644 LICENSE NOTICE README.md PHILOSOPHY.md SECURITY.md CHANGELOG.md \
   "$stage/usr/share/doc/lens-top/"
 install -m 0644 packaging/common/README.txt "$stage/usr/share/doc/lens-top/PACKAGE-README.txt"
 install -m 0644 "$generated/man/lens-top.1" "$stage/usr/share/man/man1/lens-top.1"
@@ -37,7 +37,7 @@ gzip -n -f "$stage/usr/share/man/man1/lens-top.1"
 archive_root="lens-top-v${version}-${TARGET}"
 mkdir -p "$out/$archive_root"
 install -m 0755 "$binary" "$out/$archive_root/lens-top"
-install -m 0644 LICENSE README.md "$out/$archive_root/"
+install -m 0644 LICENSE NOTICE README.md "$out/$archive_root/"
 install -m 0644 "$generated/man/lens-top.1" "$out/$archive_root/lens-top.1"
 mkdir -p "$out/$archive_root/completions"
 install -m 0644 "$generated/completions/"* "$out/$archive_root/completions/"
@@ -50,7 +50,7 @@ fpm \
   --name lens-top \
   --version "$version" \
   --architecture "$DEB_ARCH" \
-  --license MIT \
+  --license Apache-2.0 \
   --url "https://github.com/wildfoundry/dataplicity-lens" \
   --description "A coherent, modern Linux process explorer" \
   --maintainer "WildFoundry Ltd" \
@@ -65,7 +65,7 @@ fpm \
   --version "$version" \
   --iteration 1 \
   --architecture "$RPM_ARCH" \
-  --license MIT \
+  --license Apache-2.0 \
   --url "https://github.com/wildfoundry/dataplicity-lens" \
   --description "A coherent, modern Linux process explorer" \
   --maintainer "WildFoundry Ltd" \
