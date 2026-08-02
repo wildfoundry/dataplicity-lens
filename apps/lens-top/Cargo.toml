@@ -4,22 +4,37 @@ version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
-authors.workspace = true
 repository.workspace = true
-description = "A fast, humane Linux process and system monitor"
-readme = "../../README.md"
-keywords = ["linux", "monitoring", "process", "terminal", "diagnostics"]
-categories = ["command-line-utilities"]
+description = "A coherent, modern Linux process explorer"
+build = "build.rs"
 
-[[bin]]
-name = "lens-top"
-path = "src/main.rs"
+[lints]
+workspace = true
 
 [dependencies]
 anyhow.workspace = true
 clap.workspace = true
+clap_complete.workspace = true
+clap_mangen.workspace = true
 lens-core = { path = "../../crates/core" }
+lens-diagnostics = { path = "../../crates/diagnostics" }
+lens-history = { path = "../../crates/history" }
 lens-model = { path = "../../crates/model" }
 lens-output = { path = "../../crates/output" }
 lens-platform-linux = { path = "../../crates/platform-linux" }
 lens-ui = { path = "../../crates/ui" }
+serde.workspace = true
+toml.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+
+[dev-dependencies]
+insta.workspace = true
+serde_json.workspace = true
+
+[[bench]]
+name = "process_pipeline"
+harness = false
+
+[dev-dependencies.criterion]
+workspace = true

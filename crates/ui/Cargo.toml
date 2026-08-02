@@ -4,14 +4,19 @@ version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
-authors.workspace = true
 repository.workspace = true
 
+[lints]
+workspace = true
+
 [dependencies]
-anyhow.workspace = true
 crossterm.workspace = true
 lens-core = { path = "../core" }
-lens-diagnostics = { path = "../diagnostics" }
 lens-model = { path = "../model" }
 lens-output = { path = "../output" }
 ratatui.workspace = true
+thiserror.workspace = true
+unicode-width.workspace = true
+
+[dev-dependencies]
+insta.workspace = true
