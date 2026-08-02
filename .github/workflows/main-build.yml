@@ -41,9 +41,9 @@ jobs:
         uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:
           fetch-depth: 0
-      - name: Install build and packaging tools
+      - name: Activate pinned Rust toolchain and install package tools
         run: |
-          rustup toolchain install 1.85.1 --profile minimal --target "${{ matrix.gnu_target }},${{ matrix.musl_target }}"
+          rustup show active-toolchain
           sudo apt-get update
           sudo apt-get install --yes musl-tools rpm ruby-dev
           sudo gem install --no-document fpm
@@ -52,8 +52,8 @@ jobs:
           LENS_GIT_SHA: ${{ github.sha }}
           LENS_BUILT_BY: GitHub Actions
         run: |
-          cargo +1.85.1 build --release --locked --target "${{ matrix.gnu_target }}" -p lens-top
-          cargo +1.85.1 build --release --locked --target "${{ matrix.musl_target }}" -p lens-top
+          cargo build --release --locked --target "${{ matrix.gnu_target }}" -p lens-top
+          cargo build --release --locked --target "${{ matrix.musl_target }}" -p lens-top
           strip "target/${{ matrix.gnu_target }}/release/lens-top" || true
           strip "target/${{ matrix.musl_target }}/release/lens-top" || true
       - name: Generate man page and completions
