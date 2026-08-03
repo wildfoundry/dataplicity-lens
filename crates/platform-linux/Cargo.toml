@@ -10,11 +10,13 @@ repository.workspace = true
 workspace = true
 
 [dependencies]
-lens-model = { version = "=0.1.0", path = "../model" }
-procfs.workspace = true
+lens-model = { version = "=0.2.0", path = "../model" }
 thiserror.workspace = true
 time.workspace = true
 tracing.workspace = true
+
+[target.'cfg(target_os = "linux")'.dependencies]
+procfs.workspace = true
 
 [dev-dependencies]
 proptest.workspace = true

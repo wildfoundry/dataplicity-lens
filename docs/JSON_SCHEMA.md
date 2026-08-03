@@ -2,7 +2,7 @@
 
 ## Versioning
 
-Every JSON document and JSON Lines record contains `schema_version`. Version `1` may gain additive,
+Every JSON document and JSON Lines record contains `schema_version`. Version `2` may gain additive,
 optional fields. Removing a field, changing its meaning or changing a unit requires a new schema
 version.
 
@@ -10,10 +10,20 @@ version.
 
 ```json
 {
-  "schema_version": "1",
+  "schema_version": "2",
   "generated_at": "2026-08-03T00:00:00Z",
   "host": {},
   "processes": [],
+  "services": [],
+  "log_sources": [],
+  "logs": [],
+  "mounts": [],
+  "filesystems": [],
+  "deleted_open_files": [],
+  "block_devices": [],
+  "interfaces": [],
+  "routes": [],
+  "sockets": [],
   "findings": [],
   "relationships": [],
   "build": {},
@@ -35,7 +45,11 @@ longer existed at the point a coherent record could be collected.
 JSON Lines output emits one host record, then process records, then finding records. Each line has:
 
 ```json
-{"schema_version":"1","generated_at":"...","record_type":"process","value":{}}
+{"schema_version":"2","generated_at":"...","record_type":"process","value":{}}
 ```
 
 Terminal colour, spacing and glyphs never appear in structured output.
+
+Specialist commands emit the same complete document and filter only the relevant collections. This
+keeps relationships and findings interpretable across tools. Optional owner, restart and inode fields
+are omitted or `null` when the host does not expose them.

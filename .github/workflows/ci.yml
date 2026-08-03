@@ -51,7 +51,7 @@ jobs:
           LENS_GIT_SHA: ${{ github.sha }}
           LENS_BUILT_BY: GitHub Actions
         run: cargo build --workspace --all-features --release --locked
-      - run: scripts/smoke-test.sh target/release/lens-top
+      - run: scripts/smoke-suite.sh target/release
 
   security:
     name: Licences and advisories
@@ -90,4 +90,4 @@ jobs:
         env:
           LENS_GIT_SHA: ${{ github.sha }}
           LENS_BUILT_BY: GitHub Actions
-        run: cross build --release --locked --target "${{ matrix.target }}" -p lens-top
+        run: cross build --release --locked --target "${{ matrix.target }}" --workspace

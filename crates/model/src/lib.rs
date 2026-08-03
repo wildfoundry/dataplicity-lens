@@ -10,6 +10,7 @@ pub use entity::{
 };
 pub use finding::{Evidence, Finding, Severity};
 pub use snapshot::{
-    BuildInfo, Host, IoCounters, LoadAverage, Memory, Metric, MetricPoint, MetricSeries, Process,
-    ProcessCounts, ProcessState, SchemaVersion, Snapshot, Timestamp,
+    BlockDevice, BuildInfo, DeletedOpenFile, Filesystem, Host, Interface, IoCounters, LoadAverage,
+    LogEntry, LogSource, Memory, Metric, MetricPoint, MetricSeries, Mount, Process, ProcessCounts,
+    ProcessState, Route, SchemaVersion, Service, Snapshot, Socket, Timestamp,
 };

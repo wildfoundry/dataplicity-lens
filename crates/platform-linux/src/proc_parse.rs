@@ -51,8 +51,9 @@ pub fn parse_proc_stat(input: &str) -> Result<CpuStat, ParseError> {
         .filter(|line| {
             line.strip_prefix("cpu")
                 .and_then(|suffix| suffix.split_whitespace().next())
-                .is_some_and(|suffix| {
-                    !suffix.is_empty() && suffix.chars().all(|c| c.is_ascii_digit())
+                .is_some_and(|index| {
+                    line.as_bytes().get(3).is_some_and(u8::is_ascii_digit)
+                        && index.chars().all(|character| character.is_ascii_digit())
                 })
         })
         .count();

@@ -1,0 +1,5 @@
+Id=nginx.service
+NRestarts=0
+
+Id=failed-agent.service
+NRestarts=6

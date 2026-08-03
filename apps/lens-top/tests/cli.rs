@@ -30,7 +30,7 @@ fn demo_json_has_versioned_contract() {
     assert!(output.status.success());
     let value: serde_json::Value =
         serde_json::from_slice(&output.stdout).expect("valid JSON output");
-    assert_eq!(value["schema_version"], "1");
+    assert_eq!(value["schema_version"], "2");
     assert_eq!(value["host"]["hostname"], "production-gateway-04");
     assert_eq!(value["processes"].as_array().map(Vec::len), Some(1));
 }

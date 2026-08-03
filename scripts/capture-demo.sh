@@ -1,11 +1,14 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-binary="${LENS_TOP_BINARY:-./target/release/lens-top}"
+directory="${LENS_BINARY_DIR:-./target/release}"
+binaries=(lens lens-top lens-services lens-logs lens-disk lens-net lens-health)
 mkdir -p dist/demo
-if [[ ! -x "$binary" ]]; then
-  cargo build --release --locked -p lens-top
+if [[ ! -x "$directory/lens" ]]; then
+  cargo build --release --locked --workspace
 fi
-COLUMNS=120 "$binary" --demo --plain > dist/demo/lens-top.txt
-"$binary" --demo --json > dist/demo/lens-top.json
-printf 'Wrote %s and %s\n' dist/demo/lens-top.txt dist/demo/lens-top.json
+for binary in "${binaries[@]}"; do
+  COLUMNS=120 "$directory/$binary" --demo --plain > "dist/demo/${binary}.txt"
+  "$directory/$binary" --demo --json > "dist/demo/${binary}.json"
+done
+printf 'Wrote deterministic plain and JSON captures for %s\n' "${binaries[*]}"

@@ -13,12 +13,17 @@ lens-ui     lens-diagnostics      |
       \          |               /
        \      lens-output        /
         \         ^             /
-             apps/lens-top
+       apps/lens* / lens-system
 ```
 
 `lens-model` owns canonical user-facing types. Platform collection produces the model; history mutates
 sample-derived rates; diagnostics consumes snapshots and bounded history; output and UI render the
 same model. The application composes those parts and owns CLI/configuration policy.
+
+The schema-version-2 `Snapshot` is the shared system contract. It contains host, process, service,
+log source, mount, filesystem, interface, route, socket and finding entities plus typed relationships.
+`lens-system` composes the read-only Linux collectors, and every specialist binary consumes that
+composition rather than invoking or parsing system interfaces itself.
 
 No presentation crate reads `/proc`, and no collector emits terminal strings.
 
@@ -46,7 +51,7 @@ History is session-local and bounded. CPU usage is calculated from process tick 
 host tick deltas. I/O rates use counter deltas over measured elapsed time. Counter decreases are
 saturating, protecting against process replacement, resets and malformed data.
 
-No persistence is included in v0.1.0.
+No persistence is included in v0.2.0.
 
 ## Findings
 
@@ -60,8 +65,8 @@ The terminal session is represented by a guard. Raw mode and the alternate scree
 `Drop` implementation, including normal errors and unwinding panics. Ctrl+C is handled as an ordinary
 key event while raw mode is active. Non-terminal stdout never opens the TUI.
 
-## Future tools
+## Specialist boundaries
 
-Future applications should reuse model entities, relationship types, query grammar, diagnostics,
-output and UI components. A new crate is justified only by a durable responsibility, not by a desire
-to split small files.
+Every specialist application is a thin entry point into `lens-system`; none invokes Linux collection
+commands itself. New applications must reuse model entities, relationship types, query grammar,
+diagnostics, output and UI components. A new crate is justified only by a durable responsibility.

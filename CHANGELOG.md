@@ -10,6 +10,13 @@ versioning once the first public release is tagged.
 - Shared Linux process, history, diagnostics, terminal UI and output architecture.
 - A production-safe `lens-top` process explorer with TUI, plain, JSON and JSON Lines output.
 - Deterministic demo mode, fixture tests, packaging and release automation.
+- The `lens` cockpit plus service, log, disk, network and health specialist binaries.
+- Schema-version-2 system entities and cross-domain relationships.
+- Complete-suite GNU/musl archives, Debian/RPM packaging and Pages documentation.
+
+## [0.2.0] - unreleased
+
+Lens suite MVP release target.
 
 ## [0.1.0] - unreleased
 

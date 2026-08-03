@@ -6,9 +6,10 @@ Linux already exposes almost everything you need to know. The problem is that th
 scattered across tools that were never designed together. Lens gives processes, services, logs,
 storage and networking one consistent interaction model.
 
-This repository currently ships the first tool, **`lens-top`**: a read-only Linux process explorer
-with a fast terminal interface, stable plain text and versioned JSON output. The later Lens tools are
-a roadmap, not features claimed to exist today.
+This repository ships a read-only cockpit and six focused commands: **`lens`**, **`lens-top`**,
+**`lens-services`**, **`lens-logs`**, **`lens-disk`**, **`lens-net`** and **`lens-health`**. They share
+one canonical snapshot, relationship and finding model rather than collecting competing versions of
+the same host.
 
 Dataplicity Lens is an open-source Linux operations toolkit maintained by WildFoundry Ltd, the team
 behind Dataplicity. It is licensed under Apache License 2.0, works locally without an account, and
@@ -18,7 +19,7 @@ contains no telemetry.
 
 ## Demo
 
-`lens-top --demo` uses deterministic committed data, so screenshots, documentation and tests do not
+Every binary supports deterministic `--demo` data, so screenshots, documentation and tests do not
 depend on the machine running them.
 
 ```text
@@ -47,27 +48,41 @@ for your architecture, verify it against `SHA256SUMS`, then install it.
 
 ```sh
 # Archive example
-curl -LO <release-asset-url>/lens-top-v0.1.0-x86_64-unknown-linux-gnu.tar.gz
+curl -LO <release-asset-url>/dataplicity-lens-v0.2.0-x86_64-unknown-linux-gnu.tar.gz
 curl -LO <release-asset-url>/SHA256SUMS
 sha256sum --check SHA256SUMS --ignore-missing
-tar -xzf lens-top-v0.1.0-x86_64-unknown-linux-gnu.tar.gz
-sudo install -m 0755 lens-top-v0.1.0-x86_64-unknown-linux-gnu/lens-top /usr/local/bin/
+tar -xzf dataplicity-lens-v0.2.0-x86_64-unknown-linux-gnu.tar.gz
+sudo install -m 0755 dataplicity-lens-v0.2.0-x86_64-unknown-linux-gnu/bin/* /usr/local/bin/
 
 # Debian package example
-sudo apt install ./lens-top_0.1.0_amd64.deb
+sudo apt install ./dataplicity-lens_0.2.0_amd64.deb
 
 # RPM package example
-sudo rpm -U ./lens-top-0.1.0-1.x86_64.rpm
+sudo rpm -U ./dataplicity-lens-0.2.0-1.x86_64.rpm
 ```
 
 Until the first release is published, build from source with the pinned toolchain:
 
 ```sh
-cargo build --release --locked -p lens-top
-./target/release/lens-top --demo
+cargo build --release --locked --workspace
+./target/release/lens --demo --plain
 ```
 
 ## Use
+
+Start with `lens` for a cockpit, or run a specialist directly. Each specialist supports `--plain`,
+`--json`, `--demo`, `--filter` and `--limit`; logs additionally support `--service`, `--severity` and
+`--since`.
+
+```sh
+lens
+lens-services --service nginx
+lens-logs --since "1 hour ago" --severity error
+lens-logs --log-file /var/log/my-app.log --process worker
+lens-disk --filter /var
+lens-net --filter 443
+lens-health --json
+```
 
 When stdout is a terminal, running `lens-top` starts the interactive interface. When stdout is not a
 terminal, it automatically emits one plain snapshot, which makes pipes and scheduled collection
@@ -110,7 +125,7 @@ lens-top --demo
 | `?` | Help |
 | `q` or `Ctrl+C` | Quit |
 
-The first release is intentionally read-only. It does not kill, renice or restart processes.
+The suite is intentionally read-only. It does not kill, renice, restart, delete or reconfigure.
 
 ## Plain and structured output
 
@@ -146,7 +161,8 @@ lens-top --print-default-config
 The workspace keeps applications thin and gives shared crates real responsibilities:
 
 ```text
-apps/lens-top          CLI, configuration, demo source and orchestration
+apps/lens*             Thin cockpit, process explorer and specialist entry points
+crates/system          Shared service, log, storage and network composition
 crates/model           Canonical entities, snapshots, findings and relationships
 crates/core            Shared filtering, sorting, grouping and search grammar
 crates/platform-linux  Read-only Linux collection and robust kernel parsers
@@ -170,7 +186,7 @@ sub-100 ms startup and smooth one-second refreshes; actual measurements are trac
 
 ## Security and privacy
 
-`lens-top` needs no root account, daemon, setuid binary, network connection, Dataplicity account or
+Lens needs no root account, daemon, setuid binary, network connection, Dataplicity account or
 cloud service. It does not read process environments by default and sends nothing off the host.
 Normal permission restrictions are preserved and shown as unavailable data.
 
@@ -178,17 +194,15 @@ Release builds use locked dependencies, immutable action references, licence and
 SBOMs, checksums and package smoke tests. See [`SECURITY.md`](SECURITY.md) and
 [`docs/RELEASING.md`](docs/RELEASING.md).
 
-## Roadmap
+## Shipped suite
 
-The planned family is:
-
-- `lens-services` — service health, dependencies, startup time, restart loops, processes and logs
-- `lens-logs` — journal/file logs, repeated-message folding, rate changes and crash context
-- `lens-disk` — filesystems, mounts, growth, inodes and responsible processes/services
-- `lens-net` — interfaces, routes, listeners, DNS, process ownership and connectivity diagnosis
+- `lens-services` — service state, restart loops and related processes
+- `lens-logs` — recent journal logs, repeated-message folding and service/severity/time filters
+- `lens-disk` — block devices, filesystems, mounts, inodes and deleted-open files
+- `lens-net` — interfaces, routes and listener ownership
 - `lens-health` — composed findings from the same shared probes, without duplicate collectors
 
-No placeholder binaries are created for those tools. See [`docs/ROADMAP.md`](docs/ROADMAP.md).
+See [`docs/ROADMAP.md`](docs/ROADMAP.md) for shipped and future scope.
 
 ## Contribute
 

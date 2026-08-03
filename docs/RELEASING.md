@@ -10,6 +10,20 @@
 6. Native packages are installed and smoke-tested before publication.
 7. The release job publishes only after all architecture jobs succeed.
 
+To reproduce package assembly after building both targets and generating the `lens-top` man page and
+completions:
+
+```sh
+VERSION=0.2.0 TARGET=x86_64-unknown-linux-gnu DEB_ARCH=amd64 RPM_ARCH=x86_64 scripts/package-suite.sh
+VERSION=0.2.0 TARGET=x86_64-unknown-linux-musl PACKAGE_NATIVE=false scripts/package-suite.sh
+scripts/smoke-suite.sh target/x86_64-unknown-linux-gnu/release
+scripts/verify-release.sh dist/release
+```
+
+Every archive and native package contains `lens`, `lens-top`, `lens-services`, `lens-logs`,
+`lens-disk`, `lens-net` and `lens-health`. Archive verification also checks the generated man page,
+completions, licences, checksums and CycloneDX output.
+
 `workflow_dispatch` and pull requests run the same machinery in dry-run mode without publishing a
 GitHub Release. No locally compiled artifact may be uploaded as a release asset.
 
