@@ -1,0 +1,40 @@
+@media (max-width: 760px) {
+  .header-inner { width: min(calc(100% - 28px), var(--content)); gap: 12px; }
+  .menu-button { display: inline-grid; }
+  .site-nav {
+    position: absolute;
+    top: 64px;
+    left: 14px;
+    right: 14px;
+    display: none;
+    padding: 10px;
+    border: 1px solid var(--line);
+    border-radius: 12px;
+    background: var(--bg-raised);
+    box-shadow: var(--shadow);
+  }
+  .site-nav.is-open { display: grid; }
+  .site-nav a { padding: 11px 12px; }
+  .header-actions { margin-left: auto; }
+  .github-label { display: none; }
+  .container, .narrow { width: min(calc(100% - 28px), var(--content)); }
+  .hero { padding: 58px 0 62px; }
+  .terminal-body { min-height: 360px; padding: 17px 16px; font-size: 9.5px; }
+  .terminal-table { grid-template-columns: 36px 1.35fr 46px 46px 0.7fr; column-gap: 7px; }
+  .terminal-table span:nth-child(3), .terminal-table span:nth-child(6), .terminal-table span:nth-child(7) { display: none; }
+  .stat-strip { grid-template-columns: repeat(2, 1fr); }
+  .stat:nth-child(2) { border-right: 0; }
+  .stat:nth-child(-n+2) { border-bottom: 1px solid var(--line); }
+  .card-grid { grid-template-columns: 1fr; }
+  .section { padding: 72px 0; }
+  .project-band-inner, .footer-grid { grid-template-columns: 1fr; }
+  .footer-links { justify-content: flex-start; }
+  .key-grid { grid-template-columns: 1fr; }
+  .roadmap-item { grid-template-columns: 1fr; gap: 10px; }
+  .status { justify-self: start; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  html { scroll-behavior: auto; }
+  *, *::before, *::after { animation-duration: 0.01ms !important; transition-duration: 0.01ms !important; }
+}

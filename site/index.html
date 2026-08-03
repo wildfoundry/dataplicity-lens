@@ -1,0 +1,83 @@
+<!doctype html>
+<html lang="en" data-theme="dark">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="description" content="Dataplicity Lens is a coherent, modern open-source toolkit for understanding Linux systems. The first tool is lens-top.">
+  <meta name="theme-color" content="#07100e">
+  <meta property="og:title" content="Dataplicity Lens — Linux, in focus">
+  <meta property="og:description" content="A coherent, modern toolkit for understanding Linux systems.">
+  <meta property="og:type" content="website">
+  <title>Dataplicity Lens — Linux, in focus</title>
+  <link rel="icon" href="assets/favicon.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="styles-1.css"><link rel="stylesheet" href="styles-2.css"><link rel="stylesheet" href="styles-3.css"><link rel="stylesheet" href="styles-4.css">
+  <script>try{document.documentElement.dataset.theme=localStorage.getItem('lens-theme')||matchMedia('(prefers-color-scheme: light)').matches?'light':'dark'}catch{}</script>
+</head>
+<body>
+<a class="skip-link" href="#main">Skip to content</a>
+<header class="site-header">
+  <div class="header-inner">
+    <a class="brand" href="index.html" aria-label="Dataplicity Lens home"><img src="assets/lens-mark.svg" alt=""><span class="brand-title">Dataplicity Lens<small>Linux tools</small></span></a>
+    <nav class="site-nav" data-nav aria-label="Primary navigation">
+      <a href="index.html" aria-current="page">Overview</a><a href="lens-top.html">lens-top</a><a href="architecture.html">Architecture</a><a href="roadmap.html">Roadmap</a>
+    </nav>
+    <div class="header-actions">
+      <a class="button button-quiet" href="https://github.com/wildfoundry/dataplicity-lens" aria-label="View Dataplicity Lens on GitHub"><svg viewBox="0 0 24 24" aria-hidden="true"><path fill="currentColor" d="M12 .7a11.5 11.5 0 0 0-3.64 22.41c.58.1.79-.25.79-.56v-2.24c-3.22.7-3.9-1.37-3.9-1.37-.52-1.34-1.28-1.7-1.28-1.7-1.05-.72.08-.7.08-.7 1.16.08 1.77 1.19 1.77 1.19 1.03 1.76 2.7 1.25 3.36.96.1-.75.4-1.25.73-1.54-2.57-.29-5.27-1.28-5.27-5.68 0-1.26.45-2.29 1.19-3.1-.12-.29-.52-1.47.11-3.06 0 0 .97-.31 3.16 1.18a10.9 10.9 0 0 1 5.75 0c2.2-1.49 3.16-1.18 3.16-1.18.63 1.59.23 2.77.11 3.06.74.81 1.19 1.84 1.19 3.1 0 4.41-2.7 5.38-5.28 5.67.42.36.79 1.07.79 2.16v3.2c0 .31.22.67.8.56A11.5 11.5 0 0 0 12 .7Z"/></svg><span class="github-label">GitHub</span></a>
+      <button class="icon-button" type="button" data-theme-toggle aria-label="Use light theme"></button>
+      <button class="icon-button menu-button" type="button" data-menu-toggle aria-expanded="false" aria-label="Open navigation"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 7h14M5 12h14M5 17h14" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg></button>
+    </div>
+  </div>
+</header>
+<main id="main">
+  <section class="hero">
+    <div class="container hero-grid">
+      <div class="hero-copy">
+        <span class="eyebrow">Open source · Linux · Read-only</span>
+        <h1>Linux,<br>in focus.</h1>
+        <p>A coherent, modern toolkit for understanding Linux systems. One interaction model for processes, services, logs, storage and networking.</p>
+        <div class="hero-actions"><a class="button button-primary" href="lens-top.html">Explore lens-top <span aria-hidden="true">→</span></a><a class="button" href="https://github.com/wildfoundry/dataplicity-lens">View source</a></div>
+        <div class="hero-note">No account · No daemon · No telemetry</div>
+      </div>
+      <div class="terminal" role="img" aria-label="A lens-top terminal showing host health and a process table">
+        <div class="terminal-bar"><span class="terminal-dot"></span><span class="terminal-dot"></span><span class="terminal-dot"></span><span class="terminal-title">lens-top — production-gateway-04</span></div>
+        <div class="terminal-body">
+<span class="terminal-line"><span class="t-accent">Dataplicity Lens</span> · production-gateway-04       <span class="t-muted">1.0s · running</span></span>
+<span class="terminal-line">CPU  <span class="t-accent">18%</span>  ▁▂▂▃▄▃▂▂    Memory  <span class="t-warm">44%</span>  ▂▂▃▃▄▄▄▅    Load  0.41 0.38 0.31</span>
+<span class="terminal-line">Processes  5        Running  1       Zombies  <span class="t-danger">1</span>       Findings  1</span>
+<div class="terminal-table terminal-row-head"><span>PID</span><span>PROCESS</span><span>USER</span><span>CPU</span><span>MEM</span><span>READ</span><span>WRITE</span><span>STATE</span></div>
+<div class="terminal-table terminal-row-active"><span>8421</span><span>image-worker</span><span>service</span><span class="t-accent">38.2%</span><span>12.4%</span><span>4.2 MB/s</span><span>380 KB/s</span><span>Running</span></div>
+<div class="terminal-table"><span>1027</span><span>postgres</span><span>postgres</span><span>7.8%</span><span class="t-warm">18.1%</span><span>820 KB/s</span><span>1.1 MB/s</span><span>Sleeping</span></div>
+<div class="terminal-table"><span>2214</span><span>mqtt-bridge</span><span>mqtt</span><span>3.1%</span><span>1.8%</span><span>110 KB/s</span><span>90 KB/s</span><span>Sleeping</span></div>
+<div class="terminal-table"><span>756</span><span>systemd-journal</span><span>root</span><span>0.8%</span><span>0.9%</span><span>20 KB/s</span><span>42 KB/s</span><span>Sleeping</span></div>
+<div class="terminal-table"><span>9462</span><span>convert</span><span>service</span><span>0.0%</span><span>0.0%</span><span>-</span><span>-</span><span class="t-danger">Zombie</span></div>
+<span class="terminal-line"> </span>
+<span class="terminal-line t-warm">Attention</span>
+<span class="terminal-line"><span class="t-danger">zombie process detected</span>: PID 9462, parent image-worker</span>
+<span class="terminal-line"> </span>
+<span class="terminal-line t-muted">/ Search  f Filter  s Sort  g Group  Enter Inspect  ? Help  q Quit</span>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <section class="section-tight"><div class="container"><div class="stat-strip"><div class="stat"><strong>v0.1</strong><span>First release target</span></div><div class="stat"><strong>Apache-2.0</strong><span>Permissive open source</span></div><div class="stat"><strong>JSON + JSONL</strong><span>Stable machine output</span></div><div class="stat"><strong>GNU + musl</strong><span>x86-64 and ARM64</span></div></div></div></section>
+
+  <section class="section"><div class="container"><div class="section-kicker">The first tool</div><div class="section-heading"><h2>Start with the process view Linux should have had.</h2><p class="section-intro"><code>lens-top</code> combines a fast terminal interface, stable structured output and careful diagnostics without becoming another privileged management agent.</p></div><div class="card-grid"><article class="card"><div class="card-icon">01</div><h3>Useful immediately</h3><p>Run it interactively, pipe a plain snapshot, or feed versioned JSON into another system. The default follows the terminal it is given.</p><a href="lens-top.html#output">See output modes →</a></article><article class="card"><div class="card-icon">02</div><h3>Built for reality</h3><p>Handles short-lived processes, PID reuse, missing permissions, tiny terminals and broken pipes without turning routine Linux behaviour into a crash.</p><a href="architecture.html#collection">Read the collection model →</a></article><article class="card"><div class="card-icon">03</div><h3>Read-only by design</h3><p>No kill, renice or restart controls. Lens helps operators understand the system first and leaves mutation to explicit tools and workflows.</p><a href="architecture.html#boundaries">Understand the boundaries →</a></article></div></div></section>
+
+  <section class="section"><div class="container split"><div class="sticky-copy"><div class="section-kicker">Shared language</div><h2>Not a bag of unrelated commands.</h2><p class="section-intro">Every Lens tool is designed to share entities, relationships, filtering, output contracts and terminal behaviour.</p></div><div class="feature-list"><div class="feature"><span class="feature-index">01</span><div><h3>Processes connect to context</h3><p>Users, parents, services, cgroups and containers belong in the model, not in separate mental silos.</p></div></div><div class="feature"><span class="feature-index">02</span><div><h3>Findings carry evidence</h3><p>Diagnostics are deterministic and cautious. They explain what was observed, what it may mean and which entity is involved.</p></div></div><div class="feature"><span class="feature-index">03</span><div><h3>Automation is first-class</h3><p>Plain text is readable; JSON is explicit; JSON Lines is streamable. The same snapshot feeds all three.</p></div></div><div class="feature"><span class="feature-index">04</span><div><h3>Future tools reuse the core</h3><p>Services, logs, disk and networking will compose around the same model instead of shipping duplicate collectors and incompatible flags.</p></div></div></div></div></section>
+
+  <section class="section"><div class="container split split-reverse"><div><div class="code-block"><div class="code-head">shell <button class="copy-button" type="button" data-copy>Copy</button></div><pre><code><span class="token-comment"># Build the first release from source</span>
+<span class="token-prompt">$</span> <span class="token-command">cargo build</span> <span class="token-flag">--release --locked -p</span> <span class="token-value">lens-top</span>
+
+<span class="token-comment"># Launch the repeatable demo</span>
+<span class="token-prompt">$</span> <span class="token-command">./target/release/lens-top</span> <span class="token-flag">--demo</span>
+
+<span class="token-comment"># Machine-readable snapshot</span>
+<span class="token-prompt">$</span> <span class="token-command">lens-top</span> <span class="token-flag">--json --sort</span> <span class="token-value">memory</span> <span class="token-flag">--limit</span> <span class="token-value">20</span></code></pre></div></div><div class="sticky-copy"><div class="section-kicker">Predictable by default</div><h2>Made for humans, pipes and CI.</h2><p class="section-intro">The terminal UI is only one view. Redirect stdout and Lens emits a single plain snapshot automatically. Ask for JSON when the contract matters.</p><div class="hero-actions"><a class="button" href="lens-top.html#install">Installation</a><a class="button button-quiet" href="lens-top.html#configuration">Configuration</a></div></div></div></section>
+
+  <section class="project-band"><div class="container project-band-inner"><div><h3>Independent project. Familiar engineering values.</h3><p>Dataplicity Lens is maintained by WildFoundry Ltd, the team behind <a class="wordmark-dataplicity" href="https://www.dataplicity.com">Dataplicity</a>. The connection is deliberate; the tool remains local, open source and useful without a Dataplicity account.</p></div><a class="button" href="https://docs.dataplicity.com">Dataplicity docs</a></div></section>
+</main>
+<footer class="site-footer"><div class="container footer-grid"><div class="footer-copy"><strong>Dataplicity Lens</strong>Copyright 2026 WildFoundry Ltd. Apache License 2.0.</div><div class="footer-links"><a href="https://github.com/wildfoundry/dataplicity-lens">GitHub</a><a href="https://github.com/wildfoundry/dataplicity-lens/blob/main/CONTRIBUTING.md">Contributing</a><a href="https://github.com/wildfoundry/dataplicity-lens/blob/main/SECURITY.md">Security</a><a href="https://www.dataplicity.com">Dataplicity</a></div></div></footer>
+<script src="app.js"></script>
+</body>
+</html>

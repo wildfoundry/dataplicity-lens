@@ -1,0 +1,106 @@
+name: Main development artifacts
+
+on:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: main-build-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+  CARGO_TERM_COLOR: always
+  VERSION: 0.1.0
+
+jobs:
+  build:
+    name: ${{ matrix.name }} development artifacts
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: x86-64
+            runner: ubuntu-24.04
+            gnu_target: x86_64-unknown-linux-gnu
+            musl_target: x86_64-unknown-linux-musl
+            deb_arch: amd64
+            rpm_arch: x86_64
+          - name: ARM64
+            runner: ubuntu-24.04-arm
+            gnu_target: aarch64-unknown-linux-gnu
+            musl_target: aarch64-unknown-linux-musl
+            deb_arch: arm64
+            rpm_arch: aarch64
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          fetch-depth: 0
+      - name: Activate pinned Rust toolchain and install package tools
+        run: |
+          rustup show active-toolchain
+          sudo apt-get update
+          sudo apt-get install --yes musl-tools rpm ruby-dev
+          sudo gem install --no-document fpm
+      - name: Build GNU and musl binaries
+        env:
+          LENS_GIT_SHA: ${{ github.sha }}
+          LENS_BUILT_BY: GitHub Actions
+        run: |
+          cargo build --release --locked --target "${{ matrix.gnu_target }}" -p lens-top
+          cargo build --release --locked --target "${{ matrix.musl_target }}" -p lens-top
+          strip "target/${{ matrix.gnu_target }}/release/lens-top" || true
+          strip "target/${{ matrix.musl_target }}/release/lens-top" || true
+      - name: Generate man page and completions
+        run: scripts/generate-assets.sh "target/${{ matrix.gnu_target }}/release/lens-top" dist/generated
+      - name: Package GNU binary
+        env:
+          TARGET: ${{ matrix.gnu_target }}
+          DEB_ARCH: ${{ matrix.deb_arch }}
+          RPM_ARCH: ${{ matrix.rpm_arch }}
+        run: scripts/package.sh
+      - name: Package musl archive
+        env:
+          TARGET: ${{ matrix.musl_target }}
+        run: |
+          root="lens-top-v${VERSION}-${TARGET}"
+          out="dist/${TARGET}"
+          mkdir -p "$out/$root/completions"
+          install -m 0755 "target/${TARGET}/release/lens-top" "$out/$root/lens-top"
+          install -m 0644 LICENSE NOTICE README.md "$out/$root/"
+          install -m 0644 dist/generated/man/lens-top.1 "$out/$root/lens-top.1"
+          install -m 0644 dist/generated/completions/* "$out/$root/completions/"
+          tar -C "$out" -czf "$out/${root}.tar.gz" "$root"
+          rm -rf "$out/$root"
+      - name: Smoke-test binaries and native packages
+        env:
+          GNU_TARGET: ${{ matrix.gnu_target }}
+          MUSL_TARGET: ${{ matrix.musl_target }}
+          DEB_ARCH: ${{ matrix.deb_arch }}
+          RPM_ARCH: ${{ matrix.rpm_arch }}
+        run: |
+          scripts/smoke-test.sh "target/${GNU_TARGET}/release/lens-top"
+          scripts/smoke-test.sh "target/${MUSL_TARGET}/release/lens-top"
+          sudo apt-get install --yes "./dist/${GNU_TARGET}/lens-top_${VERSION}_${DEB_ARCH}.deb"
+          lens-top --demo --plain --limit 1 >/dev/null
+          sudo apt-get remove --yes lens-top
+          sudo rpm --install --nodeps "dist/${GNU_TARGET}/lens-top-${VERSION}-1.${RPM_ARCH}.rpm"
+          lens-top --demo --json --limit 1 >/dev/null
+          sudo rpm --erase lens-top
+      - name: Generate checksums
+        run: find dist -type f -not -name 'SHA256SUMS*' -print0 | sort -z | xargs -0 sha256sum > "dist/SHA256SUMS-${{ matrix.name }}"
+      - name: Upload retained development artifacts
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: lens-top-main-${{ matrix.name }}-${{ github.sha }}
+          path: |
+            dist/${{ matrix.gnu_target }}/*
+            dist/${{ matrix.musl_target }}/*
+            dist/SHA256SUMS-${{ matrix.name }}
+          retention-days: 14
+          if-no-files-found: error

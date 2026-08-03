@@ -1,71 +1,61 @@
 # Dataplicity Lens philosophy
 
-Linux operators live inside a small set of tools that are indispensable, ugly,
-inconsistent, and far harder to learn than their jobs should require. Lens is
-an attempt to replace that accidental complexity without replacing the Unix
-ideas that made those tools useful.
+## Making the command line make sense
 
-## The rules
+Linux already exposes the facts. Lens makes the system make sense.
 
-### Show the system, not the implementation
+Linux tools are individually powerful, but they were rarely designed together. Routine inspection
+therefore demands that an operator remember unrelated commands, output formats, filters and mental
+models. Lens exists to make that work coherent without hiding the Linux system underneath it.
 
-A diagnostic tool should answer the operator's question before exposing the
-kernel detail behind it. Detail remains available, but it is not the opening
-move.
+**A coherent command line for modern Linux.**
 
-### Beautiful is operational
+## Principles
 
-Legibility is not decoration. Alignment, hierarchy, colour restraint, sensible
-units, stable ordering, and explicit warnings reduce mistakes under pressure.
-A terminal UI should be calm when the system is not.
+### Consistency
 
-### One model, many surfaces
+A user who learns one Lens tool should already know how to use the others. Keys, search grammar,
+filters, sorting, grouping, output schemas, severity language and visual hierarchy are shared product
+interfaces rather than local implementation choices.
 
-Interactive terminal views, tables, JSON, future web rendering, and automated
-diagnostics must all consume the same domain model. Presentation code must not
-reimplement collection logic.
+### Relationships, not isolated lists
 
-### Useful alone, stronger together
+A process belongs to a user and a parent, often a service, cgroup or container, opens files and
+sockets, and writes logs. Lens models those relationships explicitly so future tools can preserve
+context as the user moves between domains.
 
-Every Lens tool must solve one familiar Linux task by itself. Shared crates,
-keyboard conventions, output schemas, diagnostics, and release machinery make
-the suite feel like one instrument rather than a bag of commands.
+### Progressive disclosure
 
-### Machine-readable is a first-class interface
+Show the useful summary first. Keep the raw evidence available. Experts should be able to drill down
+without forcing every user to begin at kernel-detail level.
 
-Anything visible to a human should also be available as stable structured
-output. Scripts should never need to scrape the terminal UI.
+### Human-first and machine-friendly
 
-### Read-only by default
+The interactive terminal experience must be excellent, but every important result is also available
+as stable plain text, JSON or JSON Lines. Scripts must never need to scrape a TUI.
 
-Observation is safe. Mutation is deliberate, explicit, and auditable. The
-initial Lens suite diagnoses; it does not silently repair.
+### Beauty is clarity
 
-### Fast enough to become muscle memory
+Colour, spacing, alignment and graphics communicate meaning. They are not decoration. A calm,
+legible display reduces operational mistakes when a system is under pressure.
 
-Startup should feel immediate. Refreshes should not stall the interface.
-Dependencies must earn their place, and collection work should remain bounded.
+### Fast and native
 
-### No account, daemon, or telemetry required
+Lens tools start quickly, remain responsive over SSH and serial terminals, bound their history and
+memory use, and avoid dependencies that do not earn their cost.
 
-Lens works locally and offline. It does not require Dataplicity, transmit usage,
-or turn a basic Linux tool into a sales funnel. The project can earn attention
-for Dataplicity by being excellent and visibly maintained by WildFoundry.
+### Local and private
 
-### Compatibility beats novelty
+No account, cloud service, daemon, telemetry or network connection is required. Lens is safe to run
+on production hosts and does not turn system inspection into a lead-capture flow.
 
-The suite should run on ordinary supported Linux distributions, package cleanly,
-behave predictably over SSH, and degrade gracefully in restricted containers.
-New ideas belong in the interaction, not in gratuitous platform requirements.
+### Open
 
-### Stable names and composable output
+Lens is licensed under Apache License 2.0, forkable and useful independently of Dataplicity.
+Dataplicity Lens is maintained by WildFoundry Ltd, the team behind Dataplicity; that provenance
+should build trust without interrupting use.
 
-Commands, fields, exit codes, and meanings are interfaces. Changes should be
-additive where practical and versioned when they cannot be.
+### Read-only first
 
-## What Lens should become
-
-A cohesive replacement layer for the routine tools operators reach for every
-day: processes, services, logs, disks, networks, and system health. Each tool
-should be immediately understandable on its own and unmistakably part of the
-same family.
+The first release observes and explains. It does not kill, renice, restart or mutate production
+systems. Mutation can be considered later only with explicit, auditable interaction design.

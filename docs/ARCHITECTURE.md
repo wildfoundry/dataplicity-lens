@@ -1,52 +1,67 @@
 # Architecture
 
-Lens is a Rust workspace with deliberately narrow dependency directions.
+## Dependency direction
 
 ```text
-                   +------------------+
-                   |    lens-top      |
-                   +---------+--------+
-                             |
-               +-------------+-------------+
-               |             |             |
-          lens-ui       lens-output   platform-linux
-               |             |             |
-               +-------+-----+-------------+
-                       |
-                   lens-core
-                       |
-          +------------+------------+
-          |                         |
-     lens-model             lens-diagnostics
-          |                         |
-          +-------------------------+
+lens-model
+  ^     ^       ^
+  |     |       |
+lens-core   lens-history   lens-platform-linux
+  ^             ^                 ^
+  |             |                 |
+lens-ui     lens-diagnostics      |
+      \          |               /
+       \      lens-output        /
+        \         ^             /
+             apps/lens-top
 ```
 
-`lens-model` owns serialisable facts. `lens-core` owns source contracts and
-view transformations. Platform crates collect facts. UI and output crates
-render them. Applications compose these pieces and contain almost no business
-logic.
+`lens-model` owns canonical user-facing types. Platform collection produces the model; history mutates
+sample-derived rates; diagnostics consumes snapshots and bounded history; output and UI render the
+same model. The application composes those parts and owns CLI/configuration policy.
 
-## Dependency rules
+No presentation crate reads `/proc`, and no collector emits terminal strings.
 
-1. Models cannot depend on a platform or renderer.
-2. Platform crates cannot depend on UI crates.
-3. Output formats consume the same model used by the TUI.
-4. Diagnostics return data, not preformatted terminal output.
-5. Applications may choose policy, but reusable behaviour belongs in crates.
-6. Future tools should add domain types to `lens-model` only when those types
-   are genuinely shared.
+## Identity and PID reuse
 
-## Future applications
+A process is identified by `(pid, start_time_ticks)`, not PID alone. Deltas and histories are joined
+only when both values match. A process disappearing during collection is skipped; it is not an error.
+Broken parent references and tree cycles are bounded and rendered safely.
 
-The workspace layout is intended to accommodate additional binaries under
-`apps/` without cloning infrastructure:
+## Collection policy
 
-- `lens-services`: service state, dependencies, restart history
-- `lens-logs`: structured local log exploration and correlation
-- `lens-disk`: filesystem, inode, mount, and I/O pressure
-- `lens-net`: sockets, routes, listeners, DNS, and traffic
-- `lens-health`: concise cross-domain host assessment
+The Linux collector reads only local, read-only interfaces:
 
-Common keyboard handling, formatting, severity language, output conventions,
-and Linux capability detection should remain shared.
+- `/proc/stat`, `/proc/meminfo`, `/proc/loadavg`, `/proc/uptime`
+- `/proc/[pid]/stat`, `status`, `cmdline`, `io`, `cgroup`, `fd`, `exe`
+- `/proc/sys/kernel/hostname`, `/proc/sys/kernel/osrelease`
+- `/etc/os-release`, `/etc/passwd`
+
+Required host-level files produce a clear top-level error. Optional process fields are represented as
+unavailable and collection continues. Environment variables are deliberately not read.
+
+## History and rates
+
+History is session-local and bounded. CPU usage is calculated from process tick deltas relative to
+host tick deltas. I/O rates use counter deltas over measured elapsed time. Counter decreases are
+saturating, protecting against process replacement, resets and malformed data.
+
+No persistence is included in v0.1.0.
+
+## Findings
+
+Findings are deterministic structures with identifiers, severity, evidence, related entities and
+suggested actions. They use cautious wording when evidence is suggestive. The diagnostics engine does
+not make network calls or use an AI model.
+
+## Terminal safety
+
+The terminal session is represented by a guard. Raw mode and the alternate screen are restored in its
+`Drop` implementation, including normal errors and unwinding panics. Ctrl+C is handled as an ordinary
+key event while raw mode is active. Non-terminal stdout never opens the TUI.
+
+## Future tools
+
+Future applications should reuse model entities, relationship types, query grammar, diagnostics,
+output and UI components. A new crate is justified only by a durable responsibility, not by a desire
+to split small files.

@@ -1,5 +1,8 @@
 /target
 /dist
+/stage
 *.swp
 *.tmp
 .DS_Store
+.idea/
+.vscode/

@@ -1,0 +1,20 @@
+name: Feature request
+description: Propose an improvement consistent with the Lens philosophy
+title: "[feature] "
+body:
+  - type: textarea
+    attributes:
+      label: Operator problem
+      description: Describe the job or question, not only the desired control.
+    validations:
+      required: true
+  - type: textarea
+    attributes:
+      label: Proposed behaviour
+      description: Explain interactive and machine-readable behaviour.
+    validations:
+      required: true
+  - type: textarea
+    attributes:
+      label: Alternatives
+      description: Existing Linux tools or workflows considered.

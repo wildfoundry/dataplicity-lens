@@ -1,11 +1,9 @@
 name: CI
 
 on:
-  push:
-    branches:
-      - main
-      - "agent/**"
   pull_request:
+  push:
+    branches: [main]
 
 permissions:
   contents: read
@@ -14,31 +12,82 @@ concurrency:
   group: ci-${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: 1
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+
 jobs:
-  quality:
-    name: Format, lint, test, and build
+  lockfile:
+    name: Locked dependencies
     runs-on: ubuntu-24.04
     steps:
-      - name: Check out repository
-        uses: actions/checkout@v4
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - name: Activate pinned toolchain
+        run: rustup show active-toolchain
+      - name: Verify committed lockfile
+        run: |
+          cargo generate-lockfile
+          git diff --exit-code -- Cargo.lock
 
-      - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@master
-        with:
-          toolchain: 1.85.1
-          components: rustfmt, clippy
-
-      - name: Cache Rust build data
-        uses: Swatinem/rust-cache@v2
-
-      - name: Check formatting
-        run: cargo fmt --all -- --check
-
-      - name: Run Clippy
-        run: cargo clippy --workspace --all-targets --all-features -- -D warnings
-
-      - name: Run tests
-        run: cargo test --workspace --all-features
-
+  quality:
+    name: Format, lint, test and document
+    needs: lockfile
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - name: Activate pinned toolchain
+        run: rustup show active-toolchain
+      - run: cargo fmt --all -- --check
+      - run: cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
+      - name: Run unit, fixture, snapshot and integration tests
+        run: cargo test --workspace --all-features --locked
+      - name: Build documentation with warnings denied
+        env:
+          RUSTDOCFLAGS: -D warnings
+        run: cargo doc --workspace --all-features --no-deps --locked
       - name: Build release workspace
-        run: cargo build --workspace --all-features --release
+        env:
+          LENS_GIT_SHA: ${{ github.sha }}
+          LENS_BUILT_BY: GitHub Actions
+        run: cargo build --workspace --all-features --release --locked
+      - run: scripts/smoke-test.sh target/release/lens-top
+
+  security:
+    name: Licences and advisories
+    needs: lockfile
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - name: Activate pinned toolchain
+        run: rustup show active-toolchain
+      - name: Install security tools
+        run: |
+          cargo install cargo-deny --version 0.20.2 --locked
+          cargo install cargo-audit --version 0.22.2 --locked
+      - run: cargo deny check
+      - run: cargo audit
+
+  target-builds:
+    name: Build ${{ matrix.target }}
+    needs: lockfile
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        target:
+          - x86_64-unknown-linux-gnu
+          - aarch64-unknown-linux-gnu
+          - x86_64-unknown-linux-musl
+          - aarch64-unknown-linux-musl
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - name: Activate pinned toolchain
+        run: rustup show active-toolchain
+      - name: Install cross
+        run: cargo install cross --version 0.2.5 --locked
+      - name: Build release target from clean source
+        env:
+          LENS_GIT_SHA: ${{ github.sha }}
+          LENS_BUILT_BY: GitHub Actions
+        run: cross build --release --locked --target "${{ matrix.target }}" -p lens-top

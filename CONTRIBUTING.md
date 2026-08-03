@@ -1,17 +1,24 @@
 # Contributing
 
-Lens is intentionally opinionated. Contributions should preserve the dependency
-rules in `docs/ARCHITECTURE.md`, keep structured output aligned with the domain
-model, and avoid platform or presentation logic leaking across crate boundaries.
+Dataplicity Lens is intentionally opinionated. Contributions should preserve the shared model,
+interaction grammar, deterministic diagnostics and output contracts described in `PHILOSOPHY.md` and
+`docs/ARCHITECTURE.md`.
 
 Before opening a pull request, run:
 
-```text
+```sh
 cargo fmt --all -- --check
 cargo clippy --workspace --all-targets --all-features -- -D warnings
-cargo test --workspace --all-features
+cargo test --workspace --all-features --locked
+cargo build --workspace --release --locked
+cargo deny check
+cargo audit
 ```
 
-New tools belong under `apps/`. Shared behaviour belongs in an existing crate or
-a narrowly named new crate. Avoid adding dependencies for trivial formatting or
-small data transformations.
+New applications belong under `apps/`. Shared behaviour belongs in an existing crate unless a new
+crate has a clear, durable responsibility. Avoid adding dependencies for trivial transformations.
+Production code must not use `unsafe`, and `unwrap()` or `expect()` require a comment explaining why
+the invariant is sound.
+
+Please include tests for parser edge cases, output changes and interaction behaviour. Changes to the
+JSON schema must remain additive within schema version `1` or deliberately introduce a new version.
