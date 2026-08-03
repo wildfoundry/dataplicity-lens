@@ -4,13 +4,12 @@ set -euo pipefail
 out="${1:-dist/sbom}"
 mkdir -p "$out"
 
+cargo cyclonedx --format json --all >/dev/null
+
 generated=()
 while IFS= read -r -d '' file; do
   generated+=("$file")
-done < <(
-  cargo cyclonedx --format json --all
-  find apps crates -type f \( -name '*.cdx.json' -o -name 'bom.json' \) -print0
-)
+done < <(find apps crates -type f \( -name '*.cdx.json' -o -name 'bom.json' \) -print0)
 
 if (( ${#generated[@]} == 0 )); then
   echo "cargo-cyclonedx did not produce an SBOM" >&2
