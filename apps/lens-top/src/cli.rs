@@ -61,8 +61,8 @@ pub enum CompletionShell {
 #[derive(Debug, Parser)]
 #[command(
     name = "lens-top",
-    about = "A coherent, modern Linux process explorer",
-    long_about = "Dataplicity Lens makes Linux process and system activity easier to understand. It provides an interactive terminal UI plus stable plain, JSON and JSON Lines output.",
+    about = "A coherent, modern Linux and macOS process explorer",
+    long_about = "Dataplicity Lens makes Linux and macOS process and system activity easier to understand. It provides an interactive terminal UI plus stable plain, JSON and JSON Lines output.",
     disable_version_flag = true
 )]
 pub struct Args {

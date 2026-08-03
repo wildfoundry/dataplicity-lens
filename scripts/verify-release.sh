@@ -6,7 +6,7 @@ directory="${1:-dist/release}"
 for pattern in 'dataplicity-lens-v*-*.tar.gz' 'dataplicity-lens_*.deb' 'dataplicity-lens-*.rpm'; do
   find "$directory" -maxdepth 1 -type f -name "$pattern" -print -quit | grep -q . || { echo "missing release asset matching $pattern" >&2; exit 1; }
 done
-[[ $(find "$directory" -maxdepth 1 -type f -name 'dataplicity-lens-v*-*.tar.gz' | wc -l) -ge 4 ]] || { echo "expected four target archives" >&2; exit 1; }
+[[ $(find "$directory" -maxdepth 1 -type f -name 'dataplicity-lens-v*-*.tar.gz' | wc -l) -ge 6 ]] || { echo "expected six Linux and macOS target archives" >&2; exit 1; }
 [[ $(find "$directory" -maxdepth 1 -type f -name 'dataplicity-lens_*.deb' | wc -l) -ge 2 ]] || { echo "expected two Debian packages" >&2; exit 1; }
 [[ $(find "$directory" -maxdepth 1 -type f -name 'dataplicity-lens-*.rpm' | wc -l) -ge 2 ]] || { echo "expected two RPM packages" >&2; exit 1; }
 for archive in "$directory"/dataplicity-lens-v*-*.tar.gz; do

@@ -546,18 +546,17 @@ fn relationships(hostname: &str, processes: &[Process]) -> Vec<Relationship> {
             to: EntityId::User(process.user.uid),
             kind: RelationshipKind::OwnedByUser,
         });
-        if let Some(parent) = process.parent_pid {
-            if let Some(parent_process) = processes.iter().find(|candidate| candidate.pid == parent)
-            {
-                values.push(Relationship {
-                    from: process_id.clone(),
-                    to: EntityId::Process {
-                        pid: parent,
-                        start_ticks: parent_process.start_time_ticks,
-                    },
-                    kind: RelationshipKind::ParentProcess,
-                });
-            }
+        if let Some(parent) = process.parent_pid
+            && let Some(parent_process) = processes.iter().find(|candidate| candidate.pid == parent)
+        {
+            values.push(Relationship {
+                from: process_id.clone(),
+                to: EntityId::Process {
+                    pid: parent,
+                    start_ticks: parent_process.start_time_ticks,
+                },
+                kind: RelationshipKind::ParentProcess,
+            });
         }
         if let Some(cgroup) = &process.cgroup {
             values.push(Relationship {

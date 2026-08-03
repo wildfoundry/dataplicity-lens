@@ -1,8 +1,8 @@
 # Dataplicity Lens
 
-**A coherent, modern toolkit for understanding Linux systems.**
+**A coherent, modern toolkit for understanding Linux and macOS systems.**
 
-Linux already exposes almost everything you need to know. The problem is that the information is
+Modern operating systems already expose almost everything you need to know. The problem is that the information is
 scattered across tools that were never designed together. Lens gives processes, services, logs,
 storage and networking one consistent interaction model.
 
@@ -11,7 +11,7 @@ This repository ships a read-only cockpit and six focused commands: **`lens`**, 
 one canonical snapshot, relationship and finding model rather than collecting competing versions of
 the same host.
 
-Dataplicity Lens is an open-source Linux operations toolkit maintained by WildFoundry Ltd, the team
+Dataplicity Lens is an open-source system operations toolkit maintained by WildFoundry Ltd, the team
 behind Dataplicity. It is licensed under Apache License 2.0, works locally without an account, and
 contains no telemetry.
 
@@ -42,6 +42,19 @@ scripts/capture-demo.sh
 ```
 
 ## Install
+
+### macOS with Homebrew
+
+From a source checkout, build and install the full suite through Homebrew:
+
+```sh
+scripts/test-homebrew-local.sh --keep
+```
+
+The script creates a local source archive, installs the committed formula from source, and runs both
+the deterministic suite checks and a native macOS process collection check. `--keep` leaves the
+formula installed so you can run `lens`, `lens-top --once`, or any specialist command. Omit it for a
+clean verification run that uninstalls its temporary tap and package automatically.
 
 The intended installation path is a signed GitHub Release asset. Choose the archive or native package
 for your architecture, verify it against `SHA256SUMS`, then install it.

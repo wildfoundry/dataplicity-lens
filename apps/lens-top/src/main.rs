@@ -22,7 +22,10 @@ use lens_diagnostics::evaluate;
 use lens_history::HistoryStore;
 use lens_model::{BuildInfo, EntityId, Relationship, RelationshipKind, Snapshot};
 use lens_output::{OutputFormat, PlainOptions, write_snapshot};
+#[cfg(target_os = "linux")]
 use lens_platform_linux::LinuxCollector;
+#[cfg(target_os = "macos")]
+use lens_platform_macos::MacOsCollector;
 use lens_ui::{ColorMode, UiOptions, run_tui};
 use tracing_subscriber::EnvFilter;
 
@@ -137,7 +140,10 @@ fn run() -> Result<()> {
 
 #[derive(Debug)]
 enum Source {
+    #[cfg(target_os = "linux")]
     Linux(LinuxCollector),
+    #[cfg(target_os = "macos")]
+    MacOs(MacOsCollector),
     Demo(DemoSource),
 }
 
@@ -155,9 +161,20 @@ impl Sampler {
         let source = if demo {
             Source::Demo(DemoSource::default())
         } else {
-            let mut collector = LinuxCollector::default();
-            collector.set_refresh_interval(interval);
-            Source::Linux(collector)
+            #[cfg(target_os = "linux")]
+            {
+                let mut collector = LinuxCollector::default();
+                collector.set_refresh_interval(interval);
+                Source::Linux(collector)
+            }
+            #[cfg(target_os = "macos")]
+            {
+                let mut collector = MacOsCollector::default();
+                collector.set_refresh_interval(interval);
+                Source::MacOs(collector)
+            }
+            #[cfg(not(any(target_os = "linux", target_os = "macos")))]
+            compile_error!("lens-top currently supports Linux and macOS");
         };
         Self {
             source,
@@ -176,7 +193,10 @@ impl Sampler {
                 now.duration_since(previous).as_secs_f64()
             });
         let mut snapshot = match &mut self.source {
+            #[cfg(target_os = "linux")]
             Source::Linux(collector) => collector.collect().context("collect Linux snapshot")?,
+            #[cfg(target_os = "macos")]
+            Source::MacOs(collector) => collector.collect().context("collect macOS snapshot")?,
             Source::Demo(source) => source.collect(self.interval.as_millis() as u64),
         };
         self.history.apply(&mut snapshot, elapsed);

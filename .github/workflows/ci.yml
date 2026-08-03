@@ -91,3 +91,34 @@ jobs:
           LENS_GIT_SHA: ${{ github.sha }}
           LENS_BUILT_BY: GitHub Actions
         run: cross build --release --locked --target "${{ matrix.target }}" --workspace
+
+  macos-native:
+    name: macOS ${{ matrix.arch }} native suite
+    needs: lockfile
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: Apple-Silicon
+            runner: macos-15
+          - arch: Intel
+            runner: macos-15-intel
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - name: Activate pinned toolchain
+        run: rustup show active-toolchain
+      - run: cargo test --workspace --all-features --locked
+      - name: Build and smoke-test native macOS suite
+        env:
+          LENS_GIT_SHA: ${{ github.sha }}
+          LENS_BUILT_BY: GitHub Actions macOS
+        run: |
+          cargo build --workspace --all-features --release --locked
+          scripts/smoke-suite.sh target/release
+          target/release/lens-top --once --json > /tmp/lens-macos.json
+          grep -q '"hostname"' /tmp/lens-macos.json
+          grep -q '"processes"' /tmp/lens-macos.json
+      - name: Install and test through Homebrew
+        if: matrix.arch == 'Apple-Silicon'
+        run: scripts/test-homebrew-local.sh

@@ -1068,6 +1068,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "lens-platform-macos"
+version = "0.2.0"
+dependencies = [
+ "lens-model",
+ "thiserror 2.0.11",
+]
+
+[[package]]
 name = "lens-services"
 version = "0.2.0"
 dependencies = [
@@ -1085,6 +1093,7 @@ dependencies = [
  "crossterm",
  "lens-model",
  "lens-platform-linux",
+ "lens-platform-macos",
  "serde",
  "serde_json",
  "time",
@@ -1106,6 +1115,7 @@ dependencies = [
  "lens-model",
  "lens-output",
  "lens-platform-linux",
+ "lens-platform-macos",
  "lens-ui",
  "serde",
  "serde_json",

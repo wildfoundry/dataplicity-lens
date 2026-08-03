@@ -195,9 +195,62 @@ jobs:
           retention-days: 14
           if-no-files-found: error
 
+  build-macos:
+    name: Build and package macOS ${{ matrix.arch }}
+    needs: [prepare, validate]
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: Apple-Silicon
+            runner: macos-15
+            target: aarch64-apple-darwin
+          - arch: Intel
+            runner: macos-15-intel
+            target: x86_64-apple-darwin
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Build clean native release binaries
+        env:
+          LENS_GIT_SHA: ${{ github.sha }}
+          LENS_BUILT_BY: GitHub Actions macOS
+        run: |
+          rustup show active-toolchain
+          cargo clean
+          cargo build --release --locked --target "${{ matrix.target }}" --workspace
+      - name: Generate man pages and completions
+        run: scripts/generate-assets.sh "target/${{ matrix.target }}/release/lens-top" dist/generated
+      - name: Build and smoke-test macOS archive
+        env:
+          VERSION: ${{ needs.prepare.outputs.version }}
+          TARGET: ${{ matrix.target }}
+          PACKAGE_NATIVE: "false"
+        run: |
+          scripts/package-suite.sh
+          scripts/smoke-suite.sh "target/${TARGET}/release"
+          "target/${TARGET}/release/lens-top" --once --json > /tmp/lens-macos.json
+          grep -q '"hostname"' /tmp/lens-macos.json
+      - name: Gather release asset
+        env:
+          VERSION: ${{ needs.prepare.outputs.version }}
+          TARGET: ${{ matrix.target }}
+        run: |
+          mkdir -p release-assets
+          cp "dist/${TARGET}/dataplicity-lens-v${VERSION}-${TARGET}.tar.gz" release-assets/
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: release-macos-${{ matrix.arch }}
+          path: release-assets/*
+          retention-days: 14
+          if-no-files-found: error
+
   assemble:
     name: Assemble and verify release bundle
-    needs: [prepare, build]
+    needs: [prepare, build, build-macos]
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2

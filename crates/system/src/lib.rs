@@ -23,7 +23,10 @@ use lens_model::{
     Cgroup, IoCounters, Process, ProcessId, ProcessState, SchemaVersion, ServiceReference,
     Timestamp, User,
 };
+#[cfg(target_os = "linux")]
 use lens_platform_linux::LinuxCollector;
+#[cfg(target_os = "macos")]
+use lens_platform_macos::MacOsCollector;
 
 pub const SCHEMA_VERSION: &str = "2";
 
@@ -78,7 +81,7 @@ pub enum CompletionShell {
 }
 
 #[derive(Debug, Parser)]
-#[command(version, about = "A coherent view of a Linux system")]
+#[command(version, about = "A coherent view of a Linux or macOS system")]
 pub struct ViewArgs {
     /// Emit stable JSON rather than human-readable output.
     #[arg(long)]
@@ -450,7 +453,11 @@ pub fn collect() -> SystemSnapshot {
 }
 
 pub fn collect_with_options(since: Option<&str>, log_files: &[PathBuf]) -> SystemSnapshot {
-    let mut snapshot = LinuxCollector::default().collect().unwrap_or_else(|error| {
+    #[cfg(target_os = "linux")]
+    let collected = LinuxCollector::default().collect();
+    #[cfg(target_os = "macos")]
+    let collected = MacOsCollector::default().collect();
+    let mut snapshot = collected.unwrap_or_else(|error| {
         let mut snapshot = SystemSnapshot::empty(hostname());
         snapshot
             .collection_warnings
@@ -468,10 +475,7 @@ pub fn collect_with_options(since: Option<&str>, log_files: &[PathBuf]) -> Syste
     let routes = collect_routes(warnings);
     let sockets = collect_sockets(warnings);
     snapshot.services = services;
-    snapshot.log_sources = vec![LogSource {
-        id: "systemd-journal".to_owned(),
-        kind: "journal".to_owned(),
-    }];
+    snapshot.log_sources = vec![platform_log_source()];
     snapshot.log_sources.extend(file_sources);
     snapshot.logs = logs;
     snapshot.filesystems = filesystems(&mounts);
@@ -486,6 +490,19 @@ pub fn collect_with_options(since: Option<&str>, log_files: &[PathBuf]) -> Syste
         .relationships
         .extend(domain_relationships(&snapshot));
     snapshot
+}
+
+fn platform_log_source() -> LogSource {
+    #[cfg(target_os = "linux")]
+    return LogSource {
+        id: "systemd-journal".into(),
+        kind: "journal".into(),
+    };
+    #[cfg(target_os = "macos")]
+    return LogSource {
+        id: "macos-unified-log".into(),
+        kind: "unified-log".into(),
+    };
 }
 
 fn command(program: &str, args: &[&str], warnings: &mut Vec<String>) -> Option<String> {
@@ -509,6 +526,7 @@ fn command(program: &str, args: &[&str], warnings: &mut Vec<String>) -> Option<S
     }
 }
 
+#[cfg(target_os = "linux")]
 fn collect_services(warnings: &mut Vec<String>) -> Vec<Service> {
     let mut services: Vec<Service> = command(
         "systemctl",
@@ -546,6 +564,39 @@ fn collect_services(warnings: &mut Vec<String>) -> Vec<Service> {
     services
 }
 
+#[cfg(target_os = "macos")]
+fn collect_services(warnings: &mut Vec<String>) -> Vec<Service> {
+    command("launchctl", &["list"], warnings)
+        .map(|text| {
+            text.lines()
+                .skip(1)
+                .filter_map(parse_launchd_service)
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+#[cfg(target_os = "macos")]
+fn parse_launchd_service(line: &str) -> Option<Service> {
+    let mut fields = line.split_whitespace();
+    let pid = fields.next()?;
+    let status = fields.next()?;
+    let name = fields.collect::<Vec<_>>().join(" ");
+    if name.is_empty() {
+        return None;
+    }
+    let running = pid != "-";
+    Some(Service {
+        name: name.clone(),
+        load: "loaded".into(),
+        active: if running { "active" } else { "inactive" }.into(),
+        sub: if running { "running" } else { "exited" }.into(),
+        description: format!("launchd job {name} (last exit status {status})"),
+        restart_count: None,
+    })
+}
+
+#[cfg(any(target_os = "linux", test))]
 fn parse_service(line: &str) -> Option<Service> {
     let mut fields = line.split_whitespace();
     let first = fields.next()?;
@@ -568,6 +619,7 @@ fn parse_service(line: &str) -> Option<Service> {
     })
 }
 
+#[cfg(any(target_os = "linux", test))]
 fn parse_service_restart_counts(text: &str) -> Vec<(String, u64)> {
     text.split("\n\n")
         .filter_map(|block| {
@@ -585,6 +637,7 @@ fn parse_service_restart_counts(text: &str) -> Vec<(String, u64)> {
         .collect()
 }
 
+#[cfg(target_os = "linux")]
 fn collect_logs(warnings: &mut Vec<String>, since: Option<&str>) -> Vec<LogEntry> {
     let mut args = vec!["--no-pager", "--output=short-iso", "-n", "200"];
     if let Some(since) = since {
@@ -604,6 +657,51 @@ fn collect_logs(warnings: &mut Vec<String>, since: Option<&str>) -> Vec<LogEntry
     entries
 }
 
+#[cfg(target_os = "macos")]
+fn collect_logs(warnings: &mut Vec<String>, since: Option<&str>) -> Vec<LogEntry> {
+    let period = since.unwrap_or("1h");
+    let text = command(
+        "/usr/bin/log",
+        &[
+            "show", "--style", "syslog", "--last", period, "--info", "--debug",
+        ],
+        warnings,
+    )
+    .unwrap_or_default();
+    let mut entries = Vec::<LogEntry>::new();
+    let lines: Vec<_> = text.lines().skip(1).collect();
+    for line in lines.iter().rev().take(200).rev() {
+        let entry = parse_macos_log_entry(line);
+        if let Some(previous) = entries
+            .last_mut()
+            .filter(|item| item.message == entry.message)
+        {
+            previous.repeated += 1;
+        } else {
+            entries.push(entry);
+        }
+    }
+    entries
+}
+
+#[cfg(target_os = "macos")]
+fn parse_macos_log_entry(line: &str) -> LogEntry {
+    let mut fields = line.split_whitespace();
+    let timestamp = match (fields.next(), fields.next(), fields.next()) {
+        (Some(date), Some(time), Some(zone)) => format!("{date}T{time}{zone}"),
+        _ => String::new(),
+    };
+    LogEntry {
+        timestamp,
+        source: "macos-unified-log".into(),
+        unit: None,
+        priority: log_priority(line),
+        message: line.to_owned(),
+        repeated: 1,
+    }
+}
+
+#[cfg(any(target_os = "linux", test))]
 fn parse_journal_entry(line: &str) -> LogEntry {
     let (timestamp, message) = line.split_once(' ').unwrap_or(("", line));
     let unit = message
@@ -673,12 +771,55 @@ fn log_priority(message: &str) -> Option<String> {
     }
 }
 
+#[cfg(target_os = "linux")]
 fn collect_mounts(warnings: &mut Vec<String>) -> Vec<Mount> {
     command("df", &["-P", "-B1", "-T"], warnings)
         .map(|text| text.lines().skip(1).filter_map(parse_mount).collect())
         .unwrap_or_default()
 }
 
+#[cfg(target_os = "macos")]
+fn collect_mounts(warnings: &mut Vec<String>) -> Vec<Mount> {
+    command("df", &["-Pk"], warnings)
+        .map(|text| text.lines().skip(1).filter_map(parse_macos_mount).collect())
+        .unwrap_or_default()
+}
+
+#[cfg(target_os = "macos")]
+fn parse_macos_mount(line: &str) -> Option<Mount> {
+    let fields: Vec<_> = line.split_whitespace().collect();
+    if fields.len() < 6 {
+        return None;
+    }
+    let blocks = fields[1].parse::<u64>().ok()?;
+    let used = fields[2].parse::<u64>().ok()?;
+    let available = fields[3].parse::<u64>().ok()?;
+    Some(Mount {
+        source: fields[0].to_owned(),
+        target: fields[5..].join(" "),
+        filesystem: macos_filesystem_kind(fields[0]),
+        total_bytes: blocks.saturating_mul(1024),
+        used_bytes: used.saturating_mul(1024),
+        available_bytes: available.saturating_mul(1024),
+        used_percent: fields[4].trim_end_matches('%').parse().unwrap_or_default(),
+        inode_total: None,
+        inode_used: None,
+    })
+}
+
+#[cfg(target_os = "macos")]
+fn macos_filesystem_kind(source: &str) -> String {
+    if source.starts_with("/dev/disk") {
+        "apfs"
+    } else if source == "devfs" {
+        "devfs"
+    } else {
+        "network"
+    }
+    .into()
+}
+
+#[cfg(any(target_os = "linux", test))]
 fn parse_mount(line: &str) -> Option<Mount> {
     let fields: Vec<_> = line.split_whitespace().collect();
     if fields.len() < 7 {
@@ -701,6 +842,7 @@ fn parse_mount(line: &str) -> Option<Mount> {
     })
 }
 
+#[cfg(target_os = "linux")]
 fn apply_inode_usage(mounts: &mut [Mount], warnings: &mut Vec<String>) {
     let Some(text) = command("df", &["-Pi"], warnings) else {
         return;
@@ -719,6 +861,27 @@ fn apply_inode_usage(mounts: &mut [Mount], warnings: &mut Vec<String>) {
         if let (Some(used), Some(free)) = (used, free) {
             mount.inode_total = Some(used + free);
             mount.inode_used = Some(used);
+        }
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn apply_inode_usage(mounts: &mut [Mount], warnings: &mut Vec<String>) {
+    let Some(text) = command("df", &["-Pi"], warnings) else {
+        return;
+    };
+    for line in text.lines().skip(1) {
+        let fields: Vec<_> = line.split_whitespace().collect();
+        if fields.len() < 9 {
+            continue;
+        }
+        let target = fields[8..].join(" ");
+        if let Some(mount) = mounts.iter_mut().find(|mount| mount.target == target) {
+            mount.inode_used = fields[5].parse().ok();
+            mount.inode_total = match (fields[5].parse::<u64>(), fields[6].parse::<u64>()) {
+                (Ok(used), Ok(free)) => Some(used.saturating_add(free)),
+                _ => None,
+            };
         }
     }
 }
@@ -744,6 +907,7 @@ fn collect_deleted_open_files(warnings: &mut Vec<String>) -> Vec<DeletedOpenFile
         .collect()
 }
 
+#[cfg(target_os = "linux")]
 fn collect_block_devices(warnings: &mut Vec<String>) -> Vec<BlockDevice> {
     command(
         "lsblk",
@@ -754,6 +918,35 @@ fn collect_block_devices(warnings: &mut Vec<String>) -> Vec<BlockDevice> {
     .unwrap_or_default()
 }
 
+#[cfg(target_os = "macos")]
+fn collect_block_devices(warnings: &mut Vec<String>) -> Vec<BlockDevice> {
+    command("diskutil", &["list"], warnings)
+        .map(|text| parse_diskutil(&text))
+        .unwrap_or_default()
+}
+
+#[cfg(target_os = "macos")]
+fn parse_diskutil(text: &str) -> Vec<BlockDevice> {
+    let mut devices = Vec::new();
+    for line in text.lines() {
+        if let Some(name) = line.trim().strip_prefix("/dev/").and_then(|value| {
+            value
+                .strip_suffix(" (internal, physical):")
+                .or_else(|| value.strip_suffix(" (synthesized):"))
+        }) {
+            devices.push(BlockDevice {
+                name: name.into(),
+                kind: "disk".into(),
+                size_bytes: 0,
+                filesystem: None,
+                mountpoints: Vec::new(),
+            });
+        }
+    }
+    devices
+}
+
+#[cfg(any(target_os = "linux", test))]
 fn parse_block_device(line: &str) -> Option<BlockDevice> {
     let value = |key: &str| {
         let marker = format!("{key}=\"");
@@ -774,12 +967,50 @@ fn parse_block_device(line: &str) -> Option<BlockDevice> {
     })
 }
 
+#[cfg(target_os = "linux")]
 fn collect_interfaces(warnings: &mut Vec<String>) -> Vec<Interface> {
     command("ip", &["-brief", "address", "show"], warnings)
         .map(|text| text.lines().filter_map(parse_interface).collect())
         .unwrap_or_default()
 }
 
+#[cfg(target_os = "macos")]
+fn collect_interfaces(warnings: &mut Vec<String>) -> Vec<Interface> {
+    command("ifconfig", &["-a"], warnings)
+        .map(|text| parse_ifconfig(&text))
+        .unwrap_or_default()
+}
+
+#[cfg(target_os = "macos")]
+fn parse_ifconfig(text: &str) -> Vec<Interface> {
+    let mut interfaces = Vec::<Interface>::new();
+    for line in text.lines() {
+        if !line.starts_with(char::is_whitespace) {
+            if let Some((name, details)) = line.split_once(':') {
+                interfaces.push(Interface {
+                    name: name.into(),
+                    state: if details.contains("<UP,") || details.contains(",UP,") {
+                        "UP"
+                    } else {
+                        "DOWN"
+                    }
+                    .into(),
+                    addresses: Vec::new(),
+                });
+            }
+        } else if let Some(interface) = interfaces.last_mut() {
+            let fields: Vec<_> = line.split_whitespace().collect();
+            if matches!(fields.first(), Some(&"inet") | Some(&"inet6"))
+                && let Some(address) = fields.get(1)
+            {
+                interface.addresses.push((*address).into());
+            }
+        }
+    }
+    interfaces
+}
+
+#[cfg(any(target_os = "linux", test))]
 fn parse_interface(line: &str) -> Option<Interface> {
     let mut fields = line.split_whitespace();
     Some(Interface {
@@ -789,6 +1020,7 @@ fn parse_interface(line: &str) -> Option<Interface> {
     })
 }
 
+#[cfg(target_os = "linux")]
 fn collect_routes(warnings: &mut Vec<String>) -> Vec<Route> {
     command("ip", &["route", "show"], warnings)
         .map(|text| {
@@ -800,6 +1032,30 @@ fn collect_routes(warnings: &mut Vec<String>) -> Vec<Route> {
         .unwrap_or_default()
 }
 
+#[cfg(target_os = "macos")]
+fn collect_routes(warnings: &mut Vec<String>) -> Vec<Route> {
+    command("netstat", &["-rn", "-f", "inet"], warnings)
+        .map(|text| {
+            text.lines()
+                .skip_while(|line| !line.starts_with("Destination"))
+                .skip(1)
+                .enumerate()
+                .filter_map(|(index, line)| {
+                    let fields: Vec<_> = line.split_whitespace().collect();
+                    (fields.len() >= 4).then(|| Route {
+                        id: format!("route-{index}"),
+                        destination: fields[0].into(),
+                        gateway: Some(fields[1].into()),
+                        interface: Some(fields[3].into()),
+                        raw: line.into(),
+                    })
+                })
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+#[cfg(any(target_os = "linux", test))]
 fn parse_route(index: usize, line: &str) -> Route {
     let fields: Vec<_> = line.split_whitespace().collect();
     let destination = fields.first().copied().unwrap_or("unknown").to_owned();
@@ -820,6 +1076,7 @@ fn parse_route(index: usize, line: &str) -> Route {
     }
 }
 
+#[cfg(target_os = "linux")]
 fn collect_sockets(warnings: &mut Vec<String>) -> Vec<Socket> {
     command("ss", &["-H", "-lntup"], warnings)
         .map(|text| {
@@ -846,6 +1103,36 @@ fn collect_sockets(warnings: &mut Vec<String>) -> Vec<Socket> {
         .unwrap_or_default()
 }
 
+#[cfg(target_os = "macos")]
+fn collect_sockets(warnings: &mut Vec<String>) -> Vec<Socket> {
+    command("lsof", &["-nP", "-iTCP", "-sTCP:LISTEN"], warnings)
+        .map(|text| {
+            text.lines()
+                .skip(1)
+                .filter_map(parse_macos_socket)
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+#[cfg(target_os = "macos")]
+fn parse_macos_socket(line: &str) -> Option<Socket> {
+    let fields: Vec<_> = line.split_whitespace().collect();
+    let pid = fields.get(1)?.parse::<u32>().ok().map(ProcessId);
+    let protocol_index = fields.iter().position(|field| *field == "TCP")?;
+    let local = fields.get(protocol_index + 1)?.to_string();
+    Some(Socket {
+        id: format!("tcp:{local}:{}", pid.map_or(0, |value| value.0)),
+        protocol: "tcp".into(),
+        state: "LISTEN".into(),
+        local,
+        peer: "*".into(),
+        owner: Some(fields[0].into()),
+        process_id: pid,
+    })
+}
+
+#[cfg(any(target_os = "linux", test))]
 fn parse_socket_pid(owner: &str) -> Option<ProcessId> {
     let start = owner.find("pid=")? + 4;
     let digits: String = owner[start..]
@@ -939,17 +1226,17 @@ fn domain_relationships(snapshot: &SystemSnapshot) -> Vec<Relationship> {
         }
     }
     for socket in &snapshot.sockets {
-        if let Some(pid) = socket.process_id {
-            if let Some(process) = snapshot.processes.iter().find(|process| process.pid == pid) {
-                values.push(Relationship {
-                    from: EntityId::Socket(socket.id.clone()),
-                    to: EntityId::Process {
-                        pid,
-                        start_ticks: process.start_time_ticks,
-                    },
-                    kind: RelationshipKind::SocketOwnedByProcess,
-                });
-            }
+        if let Some(pid) = socket.process_id
+            && let Some(process) = snapshot.processes.iter().find(|process| process.pid == pid)
+        {
+            values.push(Relationship {
+                from: EntityId::Socket(socket.id.clone()),
+                to: EntityId::Process {
+                    pid,
+                    start_ticks: process.start_time_ticks,
+                },
+                kind: RelationshipKind::SocketOwnedByProcess,
+            });
         }
         let local_host = endpoint_host(&socket.local);
         if let Some(interface) = snapshot.interfaces.iter().find(|interface| {
@@ -1766,6 +2053,30 @@ mod tests {
             entries.last().expect("last entry").unit.as_deref(),
             Some("failed-agent")
         );
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn parses_native_macos_domains() {
+        let service = parse_launchd_service("123\t0\tcom.example.worker").expect("launchd job");
+        assert_eq!(service.active, "active");
+        assert_eq!(service.name, "com.example.worker");
+
+        let mount = parse_macos_mount("/dev/disk3s1s1 1000 250 750 25% /").expect("mount");
+        assert_eq!(mount.filesystem, "apfs");
+        assert_eq!(mount.total_bytes, 1_024_000);
+
+        let interfaces = parse_ifconfig(
+            "lo0: flags=8049<UP,LOOPBACK,RUNNING> mtu 16384\n\tinet 127.0.0.1 netmask 0xff000000\nen0: flags=0<> mtu 1500\n",
+        );
+        assert_eq!(interfaces[0].state, "UP");
+        assert_eq!(interfaces[0].addresses, ["127.0.0.1"]);
+
+        let socket =
+            parse_macos_socket("worker 42 user 10u IPv4 0x0 0t0 TCP 127.0.0.1:8080 (LISTEN)")
+                .expect("socket");
+        assert_eq!(socket.process_id, Some(ProcessId(42)));
+        assert_eq!(socket.local, "127.0.0.1:8080");
     }
 
     #[test]
