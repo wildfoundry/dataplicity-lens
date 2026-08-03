@@ -45,9 +45,12 @@ scripts/capture-demo.sh
 
 ### macOS with Homebrew
 
-From a source checkout, build and install the full suite through Homebrew:
+Install Homebrew and Apple's command-line tools if they are not already present, then build, install
+and test the full suite from the repository:
 
 ```sh
+git clone https://github.com/wildfoundry/dataplicity-lens.git
+cd dataplicity-lens
 scripts/test-homebrew-local.sh --keep
 ```
 
@@ -55,6 +58,29 @@ The script creates a local source archive, installs the committed formula from s
 the deterministic suite checks and a native macOS process collection check. `--keep` leaves the
 formula installed so you can run `lens`, `lens-top --once`, or any specialist command. Omit it for a
 clean verification run that uninstalls its temporary tap and package automatically.
+
+Run Lens as your normal account; it does not need `sudo`. Start with the deterministic demo and then
+check native macOS collection:
+
+```sh
+lens --demo
+lens-top --once
+lens-services
+lens-logs --since "1 hour ago"
+lens-disk
+lens-net
+lens-health --json
+```
+
+To remove the retained local test installation:
+
+```sh
+brew uninstall dataplicity-lens
+brew untap local/dataplicity-lens-test
+```
+
+See [`docs/INSTALLING.md`](docs/INSTALLING.md) for prerequisites, troubleshooting, direct source
+builds and the behaviour of macOS privacy restrictions.
 
 The intended installation path is a signed GitHub Release asset. Choose the archive or native package
 for your architecture, verify it against `SHA256SUMS`, then install it.
@@ -179,6 +205,7 @@ crates/system          Shared service, log, storage and network composition
 crates/model           Canonical entities, snapshots, findings and relationships
 crates/core            Shared filtering, sorting, grouping and search grammar
 crates/platform-linux  Read-only Linux collection and robust kernel parsers
+crates/platform-macos  Read-only macOS collection and command parsers
 crates/history         Bounded deltas, trends and process appearance/disappearance
 crates/diagnostics     Deterministic evidence-based findings
 crates/output          Plain, JSON and JSON Lines contracts

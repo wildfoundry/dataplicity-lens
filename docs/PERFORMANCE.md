@@ -1,8 +1,8 @@
 # Performance targets and measurement
 
-The v0.1 design targets:
+The v0.2 design targets:
 
-- startup below 100 ms on an ordinary modern Linux host
+- startup below 100 ms on an ordinary modern Linux or macOS host
 - smooth one-second refresh with at least 10,000 processes
 - low idle overhead
 - no unbounded history or cache growth
@@ -18,4 +18,4 @@ cargo bench -p lens-top --bench process_pipeline --locked
 
 Release validation should additionally record startup time, peak RSS and collection time on small and
 large `/proc` fixtures. UID lookups are cached, histories are bounded, and expensive persistence is
-not part of v0.1.0.
+not part of v0.2.0.
