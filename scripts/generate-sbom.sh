@@ -3,17 +3,30 @@ set -euo pipefail
 
 out="${1:-dist/sbom}"
 mkdir -p "$out"
-work="$(mktemp -d)"
-trap 'rm -rf "$work"' EXIT
 
-# cargo-cyclonedx 0.5.7 writes bom.json beside each workspace manifest.
-cargo cyclonedx --format json --all
-find . -name 'bom.json' -not -path './target/*' -print0 | while IFS= read -r -d '' file; do
-  package="$(basename "$(dirname "$file")")"
-  cp "$file" "$out/${package}.cdx.json"
+generated=()
+while IFS= read -r -d '' file; do
+  generated+=("$file")
+done < <(
+  cargo cyclonedx --format json --all
+  find apps crates -type f \( -name '*.cdx.json' -o -name 'bom.json' \) -print0
+)
+
+if (( ${#generated[@]} == 0 )); then
+  echo "cargo-cyclonedx did not produce an SBOM" >&2
+  exit 1
+fi
+
+for file in "${generated[@]}"; do
+  name="$(basename "$file")"
+  if [[ "$name" == "bom.json" ]]; then
+    name="$(basename "$(dirname "$file")").cdx.json"
+  fi
+  cp "$file" "$out/$name"
+  rm -f "$file"
 done
 
 if ! find "$out" -type f -name '*.cdx.json' -print -quit | grep -q .; then
-  echo "cargo-cyclonedx did not produce an SBOM" >&2
+  echo "no CycloneDX JSON files were collected" >&2
   exit 1
 fi
