@@ -10,7 +10,7 @@ repository.workspace = true
 workspace = true
 
 [dependencies]
-lens-model = { path = "../model" }
+lens-model = { version = "=0.1.0", path = "../model" }
 procfs.workspace = true
 thiserror.workspace = true
 time.workspace = true
