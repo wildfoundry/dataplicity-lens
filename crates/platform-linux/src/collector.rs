@@ -47,8 +47,8 @@ impl LinuxCollector {
             etc_root: etc_root.into(),
             refresh_interval: Duration::from_secs(1),
             uid_names: HashMap::new(),
-            clock_ticks: procfs::ticks_per_second().max(1),
-            page_size: procfs::page_size().max(1),
+            clock_ticks: clock_ticks(),
+            page_size: page_size(),
         }
     }
 
@@ -153,6 +153,16 @@ impl LinuxCollector {
                 idle_cpu_ticks: cpu.idle_ticks,
             },
             processes,
+            services: Vec::new(),
+            log_sources: Vec::new(),
+            logs: Vec::new(),
+            mounts: Vec::new(),
+            filesystems: Vec::new(),
+            deleted_open_files: Vec::new(),
+            block_devices: Vec::new(),
+            interfaces: Vec::new(),
+            routes: Vec::new(),
+            sockets: Vec::new(),
             findings: Vec::new(),
             relationships,
             build: None,
@@ -277,6 +287,26 @@ impl LinuxCollector {
         self.uid_names.insert(uid, name.clone());
         name
     }
+}
+
+#[cfg(target_os = "linux")]
+fn clock_ticks() -> u64 {
+    procfs::ticks_per_second().max(1)
+}
+
+#[cfg(not(target_os = "linux"))]
+const fn clock_ticks() -> u64 {
+    100
+}
+
+#[cfg(target_os = "linux")]
+fn page_size() -> u64 {
+    procfs::page_size().max(1)
+}
+
+#[cfg(not(target_os = "linux"))]
+const fn page_size() -> u64 {
+    4_096
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -516,18 +546,17 @@ fn relationships(hostname: &str, processes: &[Process]) -> Vec<Relationship> {
             to: EntityId::User(process.user.uid),
             kind: RelationshipKind::OwnedByUser,
         });
-        if let Some(parent) = process.parent_pid {
-            if let Some(parent_process) = processes.iter().find(|candidate| candidate.pid == parent)
-            {
-                values.push(Relationship {
-                    from: process_id.clone(),
-                    to: EntityId::Process {
-                        pid: parent,
-                        start_ticks: parent_process.start_time_ticks,
-                    },
-                    kind: RelationshipKind::ParentProcess,
-                });
-            }
+        if let Some(parent) = process.parent_pid
+            && let Some(parent_process) = processes.iter().find(|candidate| candidate.pid == parent)
+        {
+            values.push(Relationship {
+                from: process_id.clone(),
+                to: EntityId::Process {
+                    pid: parent,
+                    start_ticks: parent_process.start_time_ticks,
+                },
+                kind: RelationshipKind::ParentProcess,
+            });
         }
         if let Some(cgroup) = &process.cgroup {
             values.push(Relationship {
@@ -573,5 +602,16 @@ mod tests {
         })
         .expect("service should be inferred");
         assert_eq!(service.name, "sshd.service");
+    }
+
+    #[test]
+    fn committed_host_fixture_collects_deterministically() {
+        let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tests/fixtures");
+        let mut collector = LinuxCollector::new(root.join("proc"), root.join("system"));
+        let snapshot = collector.collect().expect("fixture should collect");
+        assert_eq!(snapshot.schema_version, SchemaVersion::default());
+        assert_eq!(snapshot.host.memory.total_bytes, 8_388_608_000);
+        assert_eq!(snapshot.host.cpu_count, 2);
+        assert!(snapshot.processes.is_empty());
     }
 }

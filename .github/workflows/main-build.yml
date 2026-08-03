@@ -14,7 +14,7 @@ concurrency:
 env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
   CARGO_TERM_COLOR: always
-  VERSION: 0.1.0
+  VERSION: 0.2.0
 
 jobs:
   build:
@@ -52,10 +52,10 @@ jobs:
           LENS_GIT_SHA: ${{ github.sha }}
           LENS_BUILT_BY: GitHub Actions
         run: |
-          cargo build --release --locked --target "${{ matrix.gnu_target }}" -p lens-top
-          cargo build --release --locked --target "${{ matrix.musl_target }}" -p lens-top
-          strip "target/${{ matrix.gnu_target }}/release/lens-top" || true
-          strip "target/${{ matrix.musl_target }}/release/lens-top" || true
+          cargo build --release --locked --target "${{ matrix.gnu_target }}" --workspace
+          cargo build --release --locked --target "${{ matrix.musl_target }}" --workspace
+          find "target/${{ matrix.gnu_target }}/release" -maxdepth 1 -type f -perm -111 -exec strip {} \; || true
+          find "target/${{ matrix.musl_target }}/release" -maxdepth 1 -type f -perm -111 -exec strip {} \; || true
       - name: Generate man page and completions
         run: scripts/generate-assets.sh "target/${{ matrix.gnu_target }}/release/lens-top" dist/generated
       - name: Package GNU binary
@@ -63,20 +63,12 @@ jobs:
           TARGET: ${{ matrix.gnu_target }}
           DEB_ARCH: ${{ matrix.deb_arch }}
           RPM_ARCH: ${{ matrix.rpm_arch }}
-        run: scripts/package.sh
+        run: scripts/package-suite.sh
       - name: Package musl archive
         env:
           TARGET: ${{ matrix.musl_target }}
-        run: |
-          root="lens-top-v${VERSION}-${TARGET}"
-          out="dist/${TARGET}"
-          mkdir -p "$out/$root/completions"
-          install -m 0755 "target/${TARGET}/release/lens-top" "$out/$root/lens-top"
-          install -m 0644 LICENSE NOTICE README.md "$out/$root/"
-          install -m 0644 dist/generated/man/lens-top.1 "$out/$root/lens-top.1"
-          install -m 0644 dist/generated/completions/* "$out/$root/completions/"
-          tar -C "$out" -czf "$out/${root}.tar.gz" "$root"
-          rm -rf "$out/$root"
+          PACKAGE_NATIVE: "false"
+        run: scripts/package-suite.sh
       - name: Smoke-test binaries and native packages
         env:
           GNU_TARGET: ${{ matrix.gnu_target }}
@@ -84,20 +76,20 @@ jobs:
           DEB_ARCH: ${{ matrix.deb_arch }}
           RPM_ARCH: ${{ matrix.rpm_arch }}
         run: |
-          scripts/smoke-test.sh "target/${GNU_TARGET}/release/lens-top"
-          scripts/smoke-test.sh "target/${MUSL_TARGET}/release/lens-top"
-          sudo apt-get install --yes "./dist/${GNU_TARGET}/lens-top_${VERSION}_${DEB_ARCH}.deb"
-          lens-top --demo --plain --limit 1 >/dev/null
-          sudo apt-get remove --yes lens-top
-          sudo rpm --install --nodeps "dist/${GNU_TARGET}/lens-top-${VERSION}-1.${RPM_ARCH}.rpm"
-          lens-top --demo --json --limit 1 >/dev/null
-          sudo rpm --erase lens-top
+          scripts/smoke-suite.sh "target/${GNU_TARGET}/release"
+          scripts/smoke-suite.sh "target/${MUSL_TARGET}/release"
+          sudo apt-get install --yes "./dist/${GNU_TARGET}/dataplicity-lens_${VERSION}_${DEB_ARCH}.deb"
+          scripts/smoke-suite.sh /usr/bin
+          sudo apt-get remove --yes dataplicity-lens
+          sudo rpm --install --nodeps "dist/${GNU_TARGET}/dataplicity-lens-${VERSION}-1.${RPM_ARCH}.rpm"
+          scripts/smoke-suite.sh /usr/bin
+          sudo rpm --erase dataplicity-lens
       - name: Generate checksums
         run: find dist -type f -not -name 'SHA256SUMS*' -print0 | sort -z | xargs -0 sha256sum > "dist/SHA256SUMS-${{ matrix.name }}"
       - name: Upload retained development artifacts
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
-          name: lens-top-main-${{ matrix.name }}-${{ github.sha }}
+          name: dataplicity-lens-main-${{ matrix.name }}-${{ github.sha }}
           path: |
             dist/${{ matrix.gnu_target }}/*
             dist/${{ matrix.musl_target }}/*

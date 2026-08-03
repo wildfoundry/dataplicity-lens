@@ -184,8 +184,41 @@ pub fn write_json_lines(writer: &mut impl Write, snapshot: &Snapshot) -> io::Res
     for process in &snapshot.processes {
         write_json_line(writer, snapshot, "process", process)?;
     }
+    for service in &snapshot.services {
+        write_json_line(writer, snapshot, "service", service)?;
+    }
+    for source in &snapshot.log_sources {
+        write_json_line(writer, snapshot, "log_source", source)?;
+    }
+    for entry in &snapshot.logs {
+        write_json_line(writer, snapshot, "log", entry)?;
+    }
+    for mount in &snapshot.mounts {
+        write_json_line(writer, snapshot, "mount", mount)?;
+    }
+    for filesystem in &snapshot.filesystems {
+        write_json_line(writer, snapshot, "filesystem", filesystem)?;
+    }
+    for file in &snapshot.deleted_open_files {
+        write_json_line(writer, snapshot, "deleted_open_file", file)?;
+    }
+    for device in &snapshot.block_devices {
+        write_json_line(writer, snapshot, "block_device", device)?;
+    }
+    for interface in &snapshot.interfaces {
+        write_json_line(writer, snapshot, "interface", interface)?;
+    }
+    for route in &snapshot.routes {
+        write_json_line(writer, snapshot, "route", route)?;
+    }
+    for socket in &snapshot.sockets {
+        write_json_line(writer, snapshot, "socket", socket)?;
+    }
     for finding in &snapshot.findings {
         write_json_line(writer, snapshot, "finding", finding)?;
+    }
+    for relationship in &snapshot.relationships {
+        write_json_line(writer, snapshot, "relationship", relationship)?;
     }
     Ok(())
 }
@@ -299,7 +332,7 @@ mod tests {
 
     fn fixture() -> Snapshot {
         Snapshot {
-            schema_version: SchemaVersion("1".to_owned()),
+            schema_version: SchemaVersion("2".to_owned()),
             generated_at: Timestamp("2026-08-03T00:00:00Z".to_owned()),
             host: Host {
                 hostname: "demo-host".to_owned(),
@@ -326,6 +359,16 @@ mod tests {
                 idle_cpu_ticks: 0,
             },
             processes: Vec::new(),
+            services: Vec::new(),
+            log_sources: Vec::new(),
+            logs: Vec::new(),
+            mounts: Vec::new(),
+            filesystems: Vec::new(),
+            deleted_open_files: Vec::new(),
+            block_devices: Vec::new(),
+            interfaces: Vec::new(),
+            routes: Vec::new(),
+            sockets: Vec::new(),
             findings: Vec::new(),
             relationships: Vec::new(),
             build: None,

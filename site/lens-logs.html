@@ -1,0 +1,4 @@
+<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>lens-logs — Dataplicity Lens</title><link rel="stylesheet" href="styles-1.css"></head><body><main><p><a href="lens-suite.html">Lens suite</a></p><h1><code>lens-logs</code></h1><p>Reads recent local journal messages, infers service and severity context, and folds adjacent repeated messages without hiding the repeat count.</p><pre>lens-logs --since "1 hour ago"
+lens-logs --service ssh --process sshd --severity error
+lens-logs --log-file /var/log/my-app.log
+lens-logs --demo --json</pre><p>Journal access follows the invoking user's permissions. Missing access is reported as unavailable data.</p></main></body></html>

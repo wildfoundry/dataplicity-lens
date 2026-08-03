@@ -1,0 +1,17 @@
+[package]
+name = "lens"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+anyhow.workspace = true
+lens-system = { path = "../../crates/system", version = "=0.2.0" }
+
+[dev-dependencies]
+serde_json.workspace = true
+
+[lints]
+workspace = true

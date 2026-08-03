@@ -8,7 +8,11 @@ from urllib.parse import urlparse
 
 ROOT = Path(sys.argv[1] if len(sys.argv) > 1 else "site").resolve()
 HTML_FILES = sorted(ROOT.glob("*.html"))
-REQUIRED = {"index.html", "lens-top.html", "architecture.html", "roadmap.html", "404.html"}
+REQUIRED = {
+    "index.html", "lens-suite.html", "lens.html", "lens-top.html", "lens-services.html",
+    "lens-logs.html", "lens-disk.html", "lens-net.html", "lens-health.html",
+    "architecture.html", "roadmap.html", "404.html",
+}
 
 class Links(html.parser.HTMLParser):
     def __init__(self) -> None:

@@ -1,0 +1,36 @@
+class DataplicityLens < Formula
+  desc "Read-only system observability toolkit for Linux and macOS"
+  homepage "https://wildfoundry.github.io/dataplicity-lens/"
+  url "https://github.com/wildfoundry/dataplicity-lens.git", branch: "main"
+  version "0.2.0"
+  license "Apache-2.0"
+
+  depends_on "rust" => :build
+
+  def install
+    packages = %w[lens lens-top lens-services lens-logs lens-disk lens-net lens-health]
+    packages.each do |package|
+      system "cargo", "install", *std_cargo_args(path: "apps/#{package}")
+    end
+
+    system "scripts/generate-assets.sh", bin/"lens-top", "dist/generated"
+    man1.install Dir["dist/generated/man/*.1"]
+    bash_completion.install Dir["dist/generated/completions/*.bash"]
+    zsh_completion.install Dir["dist/generated/completions/_*"]
+    fish_completion.install Dir["dist/generated/completions/*.fish"]
+  end
+
+  test do
+    commands = %w[lens lens-top lens-services lens-logs lens-disk lens-net lens-health]
+    commands.each do |command|
+      output = shell_output("#{bin}/#{command} --demo --json")
+      assert_match '"schema_version": "2"', output
+    end
+
+    if ENV["LENS_HOMEBREW_SKIP_NATIVE"] != "1"
+      native = shell_output("#{bin}/lens-top --once --json")
+      assert_match '"hostname":', native
+      assert_match '"processes":', native
+    end
+  end
+end

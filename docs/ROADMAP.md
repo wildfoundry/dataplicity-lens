@@ -1,6 +1,6 @@
 # Roadmap
 
-## v0.1 — lens-top
+## v0.1 — lens-top (shipped foundation)
 
 - Process and host collection
 - Session-local CPU, memory and I/O trends
@@ -9,29 +9,18 @@
 - Deterministic findings and demo mode
 - GNU/musl binaries, Debian/RPM packages, completions, man page, SBOMs and checksums
 
-## lens-services
+## v0.2 — Lens suite
 
-Service health, dependency relationships, startup duration, restart loops, processes and related logs.
+- `lens` cockpit with specialist navigation and stable non-interactive output
+- `lens-services` with service state, restart counts and process context
+- `lens-logs` with journal/file inputs, folding and service/process/severity/time filtering
+- `lens-disk` with block devices, capacity, inodes and deleted-open files
+- `lens-net` with interfaces, routes, listeners and owner relationships
+- `lens-health` with deterministic cross-domain findings
+- Shared schema version 2, fixtures, Pages documentation and complete-suite packages
 
-## lens-logs
+## Later evidence-led work
 
-Journal and file logs, repeated-message folding, rate changes, severity filters, crash context and
-service/process relationships.
-
-## lens-disk
-
-Filesystems, mounts, block devices, directory responsibility, growth, inodes and deleted-but-open
-files, connected to the processes and services responsible.
-
-## lens-net
-
-Interfaces, addresses, routes, listeners, connections, DNS, process ownership and connectivity
-diagnosis.
-
-## lens-health
-
-Composed findings from all mature shared probes. It must not create a second set of collectors or a
-second diagnostics language. The findings model is deliberately suitable for later reuse by
-Dataplicity Pulse.
-
-The roadmap does not imply that these later binaries exist yet.
+Potential additions include service dependency/startup timing, log-rate baselines, directory growth,
+DNS and connection probes. They should reuse the canonical model and only ship when their evidence
+and operating cost are understood.

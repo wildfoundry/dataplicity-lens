@@ -20,6 +20,13 @@ pub enum EntityId {
     Cgroup(String),
     Service(String),
     Container(String),
+    LogSource(String),
+    Mount(String),
+    Filesystem(String),
+    Interface(String),
+    Route(String),
+    Socket(String),
+    BlockDevice(String),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -61,6 +68,14 @@ pub enum RelationshipKind {
     MemberOfCgroup,
     MemberOfService,
     MemberOfContainer,
+    HostedOn,
+    EmittedByService,
+    MountedFilesystem,
+    RouteUsesInterface,
+    SocketOwnedByProcess,
+    SocketBoundToInterface,
+    BlockDeviceMountedAt,
+    ProcessUsesMount,
     FindingConcerns,
     FindingOnHost,
 }

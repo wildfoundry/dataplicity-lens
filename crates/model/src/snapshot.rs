@@ -9,7 +9,7 @@ pub struct SchemaVersion(pub String);
 
 impl Default for SchemaVersion {
     fn default() -> Self {
-        Self("1".to_owned())
+        Self("2".to_owned())
     }
 }
 
@@ -206,12 +206,114 @@ pub struct BuildInfo {
     pub built_by: String,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Service {
+    pub name: String,
+    pub load: String,
+    pub active: String,
+    pub sub: String,
+    pub description: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub restart_count: Option<u64>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct LogSource {
+    pub id: String,
+    pub kind: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct LogEntry {
+    pub timestamp: String,
+    pub source: String,
+    pub unit: Option<String>,
+    pub priority: Option<String>,
+    pub message: String,
+    pub repeated: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct Mount {
+    pub source: String,
+    pub target: String,
+    pub filesystem: String,
+    pub total_bytes: u64,
+    pub used_bytes: u64,
+    pub available_bytes: u64,
+    pub used_percent: f64,
+    pub inode_total: Option<u64>,
+    pub inode_used: Option<u64>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Filesystem {
+    pub id: String,
+    pub kind: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DeletedOpenFile {
+    pub pid: Option<ProcessId>,
+    pub command: String,
+    pub path: String,
+    pub size_bytes: Option<u64>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct BlockDevice {
+    pub name: String,
+    pub kind: String,
+    pub size_bytes: u64,
+    pub filesystem: Option<String>,
+    pub mountpoints: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Interface {
+    pub name: String,
+    pub state: String,
+    pub addresses: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Route {
+    pub id: String,
+    pub destination: String,
+    pub gateway: Option<String>,
+    pub interface: Option<String>,
+    pub raw: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Socket {
+    pub id: String,
+    pub protocol: String,
+    pub state: String,
+    pub local: String,
+    pub peer: String,
+    pub owner: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub process_id: Option<ProcessId>,
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Snapshot {
     pub schema_version: SchemaVersion,
     pub generated_at: Timestamp,
     pub host: Host,
     pub processes: Vec<Process>,
+    pub services: Vec<Service>,
+    pub log_sources: Vec<LogSource>,
+    pub logs: Vec<LogEntry>,
+    pub mounts: Vec<Mount>,
+    pub filesystems: Vec<Filesystem>,
+    pub deleted_open_files: Vec<DeletedOpenFile>,
+    #[serde(default)]
+    pub block_devices: Vec<BlockDevice>,
+    pub interfaces: Vec<Interface>,
+    pub routes: Vec<Route>,
+    pub sockets: Vec<Socket>,
     pub findings: Vec<Finding>,
     pub relationships: Vec<Relationship>,
     pub build: Option<BuildInfo>,
@@ -238,6 +340,16 @@ impl Snapshot {
                 idle_cpu_ticks: 0,
             },
             processes: Vec::new(),
+            services: Vec::new(),
+            log_sources: Vec::new(),
+            logs: Vec::new(),
+            mounts: Vec::new(),
+            filesystems: Vec::new(),
+            deleted_open_files: Vec::new(),
+            block_devices: Vec::new(),
+            interfaces: Vec::new(),
+            routes: Vec::new(),
+            sockets: Vec::new(),
             findings: Vec::new(),
             relationships: Vec::new(),
             build: None,
@@ -256,7 +368,7 @@ mod tests {
     }
 
     #[test]
-    fn schema_defaults_to_one() {
-        assert_eq!(SchemaVersion::default().0, "1");
+    fn schema_defaults_to_current_version() {
+        assert_eq!(SchemaVersion::default().0, "2");
     }
 }

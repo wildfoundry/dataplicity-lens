@@ -6,9 +6,9 @@ on:
   workflow_dispatch:
     inputs:
       tag:
-        description: Version to validate, for example v0.1.0
+        description: Version to validate, for example v0.2.0
         required: true
-        default: v0.1.0
+        default: v0.2.0
         type: string
       dry_run:
         description: Build and validate without publishing
@@ -137,10 +137,10 @@ jobs:
           LENS_BUILT_BY: GitHub Actions
         run: |
           cargo clean
-          cargo build --release --locked --target "${{ matrix.gnu_target }}" -p lens-top
-          cargo build --release --locked --target "${{ matrix.musl_target }}" -p lens-top
-          strip "target/${{ matrix.gnu_target }}/release/lens-top" || true
-          strip "target/${{ matrix.musl_target }}/release/lens-top" || true
+          cargo build --release --locked --target "${{ matrix.gnu_target }}" --workspace
+          cargo build --release --locked --target "${{ matrix.musl_target }}" --workspace
+          find "target/${{ matrix.gnu_target }}/release" -maxdepth 1 -type f -perm -111 -exec strip {} \; || true
+          find "target/${{ matrix.musl_target }}/release" -maxdepth 1 -type f -perm -111 -exec strip {} \; || true
       - name: Generate man page and completions
         run: scripts/generate-assets.sh "target/${{ matrix.gnu_target }}/release/lens-top" dist/generated
       - name: Build GNU archive, Debian and RPM packages
@@ -149,22 +149,13 @@ jobs:
           TARGET: ${{ matrix.gnu_target }}
           DEB_ARCH: ${{ matrix.deb_arch }}
           RPM_ARCH: ${{ matrix.rpm_arch }}
-        run: scripts/package.sh
+        run: scripts/package-suite.sh
       - name: Build musl archive
         env:
           VERSION: ${{ needs.prepare.outputs.version }}
           TARGET: ${{ matrix.musl_target }}
-        run: |
-          set -euo pipefail
-          root="lens-top-v${VERSION}-${TARGET}"
-          out="dist/${TARGET}"
-          mkdir -p "$out/$root/completions"
-          install -m 0755 "target/${TARGET}/release/lens-top" "$out/$root/lens-top"
-          install -m 0644 LICENSE NOTICE README.md "$out/$root/"
-          install -m 0644 dist/generated/man/lens-top.1 "$out/$root/lens-top.1"
-          install -m 0644 dist/generated/completions/* "$out/$root/completions/"
-          tar -C "$out" -czf "$out/${root}.tar.gz" "$root"
-          rm -rf "$out/$root"
+          PACKAGE_NATIVE: "false"
+        run: scripts/package-suite.sh
       - name: Install and smoke-test generated packages
         env:
           VERSION: ${{ needs.prepare.outputs.version }}
@@ -173,15 +164,14 @@ jobs:
           DEB_ARCH: ${{ matrix.deb_arch }}
           RPM_ARCH: ${{ matrix.rpm_arch }}
         run: |
-          scripts/smoke-test.sh "target/${GNU_TARGET}/release/lens-top"
-          scripts/smoke-test.sh "target/${MUSL_TARGET}/release/lens-top"
-          sudo apt-get install --yes "./dist/${GNU_TARGET}/lens-top_${VERSION}_${DEB_ARCH}.deb"
-          lens-top --demo --plain --limit 2 >/dev/null
-          lens-top --demo --json --limit 2 >/dev/null
-          sudo apt-get remove --yes lens-top
-          sudo rpm --install --nodeps "dist/${GNU_TARGET}/lens-top-${VERSION}-1.${RPM_ARCH}.rpm"
-          lens-top --demo --plain --limit 2 >/dev/null
-          sudo rpm --erase lens-top
+          scripts/smoke-suite.sh "target/${GNU_TARGET}/release"
+          scripts/smoke-suite.sh "target/${MUSL_TARGET}/release"
+          sudo apt-get install --yes "./dist/${GNU_TARGET}/dataplicity-lens_${VERSION}_${DEB_ARCH}.deb"
+          scripts/smoke-suite.sh /usr/bin
+          sudo apt-get remove --yes dataplicity-lens
+          sudo rpm --install --nodeps "dist/${GNU_TARGET}/dataplicity-lens-${VERSION}-1.${RPM_ARCH}.rpm"
+          scripts/smoke-suite.sh /usr/bin
+          sudo rpm --erase dataplicity-lens
       - name: Generate CycloneDX SBOM
         run: scripts/generate-sbom.sh "dist/sbom-${{ matrix.name }}"
       - name: Gather release assets
@@ -193,10 +183,10 @@ jobs:
           RPM_ARCH: ${{ matrix.rpm_arch }}
         run: |
           mkdir -p release-assets
-          cp "dist/${GNU_TARGET}/lens-top-v${VERSION}-${GNU_TARGET}.tar.gz" release-assets/
-          cp "dist/${MUSL_TARGET}/lens-top-v${VERSION}-${MUSL_TARGET}.tar.gz" release-assets/
-          cp "dist/${GNU_TARGET}/lens-top_${VERSION}_${DEB_ARCH}.deb" release-assets/
-          cp "dist/${GNU_TARGET}/lens-top-${VERSION}-1.${RPM_ARCH}.rpm" release-assets/
+          cp "dist/${GNU_TARGET}/dataplicity-lens-v${VERSION}-${GNU_TARGET}.tar.gz" release-assets/
+          cp "dist/${MUSL_TARGET}/dataplicity-lens-v${VERSION}-${MUSL_TARGET}.tar.gz" release-assets/
+          cp "dist/${GNU_TARGET}/dataplicity-lens_${VERSION}_${DEB_ARCH}.deb" release-assets/
+          cp "dist/${GNU_TARGET}/dataplicity-lens-${VERSION}-1.${RPM_ARCH}.rpm" release-assets/
           cp dist/sbom-${{ matrix.name }}/*.json release-assets/
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
@@ -205,9 +195,62 @@ jobs:
           retention-days: 14
           if-no-files-found: error
 
+  build-macos:
+    name: Build and package macOS ${{ matrix.arch }}
+    needs: [prepare, validate]
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: Apple-Silicon
+            runner: macos-15
+            target: aarch64-apple-darwin
+          - arch: Intel
+            runner: macos-15-intel
+            target: x86_64-apple-darwin
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Build clean native release binaries
+        env:
+          LENS_GIT_SHA: ${{ github.sha }}
+          LENS_BUILT_BY: GitHub Actions macOS
+        run: |
+          rustup show active-toolchain
+          cargo clean
+          cargo build --release --locked --target "${{ matrix.target }}" --workspace
+      - name: Generate man pages and completions
+        run: scripts/generate-assets.sh "target/${{ matrix.target }}/release/lens-top" dist/generated
+      - name: Build and smoke-test macOS archive
+        env:
+          VERSION: ${{ needs.prepare.outputs.version }}
+          TARGET: ${{ matrix.target }}
+          PACKAGE_NATIVE: "false"
+        run: |
+          scripts/package-suite.sh
+          scripts/smoke-suite.sh "target/${TARGET}/release"
+          "target/${TARGET}/release/lens-top" --once --json > /tmp/lens-macos.json
+          grep -q '"hostname"' /tmp/lens-macos.json
+      - name: Gather release asset
+        env:
+          VERSION: ${{ needs.prepare.outputs.version }}
+          TARGET: ${{ matrix.target }}
+        run: |
+          mkdir -p release-assets
+          cp "dist/${TARGET}/dataplicity-lens-v${VERSION}-${TARGET}.tar.gz" release-assets/
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: release-macos-${{ matrix.arch }}
+          path: release-assets/*
+          retention-days: 14
+          if-no-files-found: error
+
   assemble:
     name: Assemble and verify release bundle
-    needs: [prepare, build]
+    needs: [prepare, build, build-macos]
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
@@ -228,7 +271,7 @@ jobs:
         run: echo "Release dry-run succeeded for ${{ needs.prepare.outputs.tag }} at ${{ github.sha }}." > dist/release/DRY-RUN.txt
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
-          name: lens-top-${{ needs.prepare.outputs.tag }}-release-bundle
+          name: dataplicity-lens-${{ needs.prepare.outputs.tag }}-release-bundle
           path: dist/release/*
           retention-days: 30
           if-no-files-found: error
@@ -245,7 +288,7 @@ jobs:
     steps:
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
-          name: lens-top-${{ needs.prepare.outputs.tag }}-release-bundle
+          name: dataplicity-lens-${{ needs.prepare.outputs.tag }}-release-bundle
           path: dist/release
       - name: Create GitHub artifact attestations
         id: attest

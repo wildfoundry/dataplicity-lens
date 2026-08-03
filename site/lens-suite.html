@@ -1,0 +1,7 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Lens suite — Dataplicity Lens</title><link rel="stylesheet" href="styles-1.css"></head>
+<body><main><h1>Dataplicity Lens suite</h1><p>All Lens tools are read-only and support Linux and macOS. They share a versioned snapshot model, deterministic demo mode, plain text and JSON contracts.</p>
+<h2>Commands</h2><ul><li><a href="lens.html"><code>lens</code></a> — cockpit and navigation</li><li><a href="lens-top.html"><code>lens-top</code></a> — processes</li><li><a href="lens-services.html"><code>lens-services</code></a> — systemd service state</li><li><a href="lens-logs.html"><code>lens-logs</code></a> — journal messages</li><li><a href="lens-disk.html"><code>lens-disk</code></a> — mounts and storage pressure</li><li><a href="lens-net.html"><code>lens-net</code></a> — interfaces, routes and listeners</li><li><a href="lens-health.html"><code>lens-health</code></a> — cross-domain findings</li></ul>
+<pre>cargo build --release --workspace
+lens --demo --plain
+lens-net --demo --json</pre><p>Unavailable platform interfaces become warnings; the tools never change system state. See <a href="architecture.html">architecture</a> and <a href="lens-top.html">lens-top</a>.</p></main></body></html>
