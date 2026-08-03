@@ -1,6 +1,12 @@
 [workspace]
 members = [
+    "apps/lens",
     "apps/lens-top",
+    "apps/lens-services",
+    "apps/lens-logs",
+    "apps/lens-disk",
+    "apps/lens-net",
+    "apps/lens-health",
     "crates/core",
     "crates/model",
     "crates/platform-linux",
@@ -8,17 +14,18 @@ members = [
     "crates/diagnostics",
     "crates/output",
     "crates/ui",
+    "crates/system",
 ]
 resolver = "2"
 
 [workspace.package]
-version = "0.1.0"
+version = "0.2.0"
 edition = "2024"
 rust-version = "1.88"
 license = "Apache-2.0"
 authors = ["WildFoundry Ltd"]
 repository = "https://github.com/wildfoundry/dataplicity-lens"
-homepage = "https://github.com/wildfoundry/dataplicity-lens"
+homepage = "https://wildfoundry.github.io/dataplicity-lens/"
 
 [workspace.dependencies]
 anyhow = "=1.0.103"
