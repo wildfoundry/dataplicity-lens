@@ -240,7 +240,7 @@ fn generate_assets(name: &'static str, args: &ViewArgs) -> Result<bool> {
 }
 
 struct CockpitTerminal {
-    stdout: io::Stdout,
+    stdout: TerminalWriter<io::Stdout>,
 }
 
 impl CockpitTerminal {
@@ -251,7 +251,9 @@ impl CockpitTerminal {
             let _ = terminal::disable_raw_mode();
             return Err(error.into());
         }
-        Ok(Self { stdout })
+        Ok(Self {
+            stdout: TerminalWriter::new(stdout),
+        })
     }
 }
 
@@ -262,7 +264,46 @@ impl Drop for CockpitTerminal {
     }
 }
 
-fn cockpit_loop(stdout: &mut io::Stdout) -> Result<()> {
+/// Raw terminal mode disables output post-processing, including the conversion
+/// of `\n` to `\r\n`. Preserve normal line starts explicitly so interactive
+/// screens render correctly in terminals that honour that setting (notably
+/// Terminal.app on macOS).
+struct TerminalWriter<W> {
+    inner: W,
+    trailing_carriage_return: bool,
+}
+
+impl<W> TerminalWriter<W> {
+    const fn new(inner: W) -> Self {
+        Self {
+            inner,
+            trailing_carriage_return: false,
+        }
+    }
+}
+
+impl<W: Write> Write for TerminalWriter<W> {
+    fn write(&mut self, buffer: &[u8]) -> io::Result<usize> {
+        let mut converted = Vec::with_capacity(buffer.len() + 8);
+        let mut previous_was_carriage_return = self.trailing_carriage_return;
+        for &byte in buffer {
+            if byte == b'\n' && !previous_was_carriage_return {
+                converted.push(b'\r');
+            }
+            converted.push(byte);
+            previous_was_carriage_return = byte == b'\r';
+        }
+        self.inner.write_all(&converted)?;
+        self.trailing_carriage_return = previous_was_carriage_return;
+        Ok(buffer.len())
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        self.inner.flush()
+    }
+}
+
+fn cockpit_loop(stdout: &mut impl Write) -> Result<()> {
     let mut selected = 0usize;
     loop {
         let snapshot = collect();
@@ -332,7 +373,7 @@ fn move_selection(selected: usize, delta: isize, length: usize) -> usize {
         .min(length.saturating_sub(1))
 }
 
-fn specialist_loop(view: View, args: &ViewArgs, stdout: &mut io::Stdout) -> Result<()> {
+fn specialist_loop(view: View, args: &ViewArgs, stdout: &mut impl Write) -> Result<()> {
     loop {
         let snapshot = filter_snapshot(
             collect_with_options(args.since.as_deref(), &args.log_file),
@@ -364,7 +405,7 @@ fn specialist_loop(view: View, args: &ViewArgs, stdout: &mut io::Stdout) -> Resu
     }
 }
 
-fn prompt_search(stdout: &mut io::Stdout) -> Result<Option<String>> {
+fn prompt_search(stdout: &mut impl Write) -> Result<Option<String>> {
     let mut query = String::new();
     loop {
         execute!(
@@ -392,7 +433,7 @@ fn prompt_search(stdout: &mut io::Stdout) -> Result<Option<String>> {
     }
 }
 
-fn show_cockpit_help(stdout: &mut io::Stdout) -> Result<()> {
+fn show_cockpit_help(stdout: &mut impl Write) -> Result<()> {
     execute!(
         stdout,
         cursor::MoveTo(0, 0),
@@ -2125,6 +2166,16 @@ mod tests {
         let output = String::from_utf8(output).expect("UTF-8");
         assert!(output.contains("production-gateway-04"));
         assert!(output.contains("Failed services"));
+    }
+
+    #[test]
+    fn terminal_writer_restores_line_starts_in_raw_mode() {
+        let mut output = Vec::new();
+        {
+            let mut terminal = TerminalWriter::new(&mut output);
+            write!(terminal, "first\nsecond\r\nthird\n").expect("terminal output");
+        }
+        assert_eq!(output, b"first\r\nsecond\r\nthird\r\n");
     }
 
     #[test]
