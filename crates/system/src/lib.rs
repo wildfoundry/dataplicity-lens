@@ -405,19 +405,175 @@ fn spawn_cockpit_collection(
     receiver
 }
 
-fn spawn_specialist_collection(view: View, args: ViewArgs) -> Receiver<SystemSnapshot> {
+struct SpecialistUpdate {
+    snapshot: SystemSnapshot,
+    loading_more: bool,
+    status: &'static str,
+}
+
+fn send_specialist_update(
+    sender: &mpsc::Sender<SpecialistUpdate>,
+    snapshot: SystemSnapshot,
+    args: &ViewArgs,
+    loading_more: bool,
+    status: &'static str,
+) -> bool {
+    let snapshot = filter_snapshot(
+        snapshot,
+        args.filter.as_deref(),
+        args.service.as_deref(),
+        args.process.as_deref(),
+        args.severity.as_deref(),
+        args.limit,
+    );
+    sender
+        .send(SpecialistUpdate {
+            snapshot,
+            loading_more,
+            status,
+        })
+        .is_ok()
+}
+
+fn spawn_specialist_collection(view: View, args: ViewArgs) -> Receiver<SpecialistUpdate> {
     let (sender, receiver) = mpsc::channel();
     thread::spawn(move || {
-        let snapshot = collect_view_with_options(view, args.since.as_deref(), &args.log_file);
-        let snapshot = filter_snapshot(
-            snapshot,
-            args.filter.as_deref(),
-            args.service.as_deref(),
-            args.process.as_deref(),
-            args.severity.as_deref(),
-            args.limit,
-        );
-        let _ = sender.send(snapshot);
+        let mut snapshot = collect_base_snapshot();
+        match view {
+            View::Processes => {
+                let _ = send_specialist_update(&sender, snapshot, &args, false, "Ready");
+            }
+            View::Services => {
+                snapshot.services = collect_services(&mut snapshot.collection_warnings);
+                let _ = send_specialist_update(&sender, snapshot, &args, false, "Ready");
+            }
+            View::Logs => {
+                #[cfg(target_os = "macos")]
+                {
+                    let quick_period = args.since.as_deref().unwrap_or("1m");
+                    snapshot.logs =
+                        collect_logs(&mut snapshot.collection_warnings, Some(quick_period));
+                    let file_sources = collect_file_logs(
+                        &args.log_file,
+                        &mut snapshot.logs,
+                        &mut snapshot.collection_warnings,
+                    );
+                    snapshot.log_sources = vec![platform_log_source()];
+                    snapshot.log_sources.extend(file_sources);
+                    let loading_older = args.since.is_none();
+                    if !send_specialist_update(
+                        &sender,
+                        snapshot.clone(),
+                        &args,
+                        loading_older,
+                        if loading_older {
+                            "Recent messages ready; loading the previous hour…"
+                        } else {
+                            "Ready"
+                        },
+                    ) || !loading_older
+                    {
+                        return;
+                    }
+                    snapshot.logs = collect_logs(&mut snapshot.collection_warnings, Some("1h"));
+                    let file_sources = collect_file_logs(
+                        &args.log_file,
+                        &mut snapshot.logs,
+                        &mut snapshot.collection_warnings,
+                    );
+                    snapshot.log_sources = vec![platform_log_source()];
+                    snapshot.log_sources.extend(file_sources);
+                    let _ = send_specialist_update(&sender, snapshot, &args, false, "Ready");
+                }
+                #[cfg(target_os = "linux")]
+                {
+                    snapshot.logs =
+                        collect_logs(&mut snapshot.collection_warnings, args.since.as_deref());
+                    let file_sources = collect_file_logs(
+                        &args.log_file,
+                        &mut snapshot.logs,
+                        &mut snapshot.collection_warnings,
+                    );
+                    snapshot.log_sources = vec![platform_log_source()];
+                    snapshot.log_sources.extend(file_sources);
+                    let _ = send_specialist_update(&sender, snapshot, &args, false, "Ready");
+                }
+            }
+            View::Disk => {
+                let mut mounts = collect_mounts(&mut snapshot.collection_warnings);
+                apply_inode_usage(&mut mounts, &mut snapshot.collection_warnings);
+                snapshot.filesystems = filesystems(&mounts);
+                snapshot.mounts = mounts;
+                if !send_specialist_update(
+                    &sender,
+                    snapshot.clone(),
+                    &args,
+                    true,
+                    "Filesystems ready; checking devices and open deleted files…",
+                ) {
+                    return;
+                }
+                snapshot.deleted_open_files =
+                    collect_deleted_open_files(&mut snapshot.collection_warnings);
+                snapshot.block_devices = collect_block_devices(&mut snapshot.collection_warnings);
+                let _ = send_specialist_update(&sender, snapshot, &args, false, "Ready");
+            }
+            View::Net => {
+                snapshot.interfaces = collect_interfaces(&mut snapshot.collection_warnings);
+                snapshot.routes = collect_routes(&mut snapshot.collection_warnings);
+                if !send_specialist_update(
+                    &sender,
+                    snapshot.clone(),
+                    &args,
+                    true,
+                    "Interfaces and routes ready; checking listeners…",
+                ) {
+                    return;
+                }
+                snapshot.sockets = collect_sockets(&mut snapshot.collection_warnings);
+                let _ = send_specialist_update(&sender, snapshot, &args, false, "Ready");
+            }
+            View::Health => {
+                snapshot.services = collect_services(&mut snapshot.collection_warnings);
+                let mut mounts = collect_mounts(&mut snapshot.collection_warnings);
+                apply_inode_usage(&mut mounts, &mut snapshot.collection_warnings);
+                snapshot.filesystems = filesystems(&mounts);
+                snapshot.mounts = mounts;
+                snapshot.findings = diagnose(&snapshot);
+                if !send_specialist_update(
+                    &sender,
+                    snapshot.clone(),
+                    &args,
+                    true,
+                    "Core checks ready; checking logs, network and open files…",
+                ) {
+                    return;
+                }
+                #[cfg(target_os = "macos")]
+                let log_since = args.since.as_deref().or(Some("1m"));
+                #[cfg(target_os = "linux")]
+                let log_since = args.since.as_deref();
+                snapshot.logs = collect_logs(&mut snapshot.collection_warnings, log_since);
+                let file_sources = collect_file_logs(
+                    &args.log_file,
+                    &mut snapshot.logs,
+                    &mut snapshot.collection_warnings,
+                );
+                snapshot.log_sources = vec![platform_log_source()];
+                snapshot.log_sources.extend(file_sources);
+                snapshot.interfaces = collect_interfaces(&mut snapshot.collection_warnings);
+                snapshot.routes = collect_routes(&mut snapshot.collection_warnings);
+                snapshot.sockets = collect_sockets(&mut snapshot.collection_warnings);
+                snapshot.deleted_open_files =
+                    collect_deleted_open_files(&mut snapshot.collection_warnings);
+                snapshot.block_devices = collect_block_devices(&mut snapshot.collection_warnings);
+                snapshot.findings = diagnose(&snapshot);
+                snapshot
+                    .relationships
+                    .extend(domain_relationships(&snapshot));
+                let _ = send_specialist_update(&sender, snapshot, &args, false, "Ready");
+            }
+        }
     });
     receiver
 }
@@ -746,16 +902,428 @@ fn move_selection(selected: usize, delta: isize, length: usize) -> usize {
         .min(length.saturating_sub(1))
 }
 
+fn specialist_item_count(view: View, snapshot: &SystemSnapshot) -> usize {
+    match view {
+        View::Logs => snapshot.logs.len(),
+        View::Health => snapshot.findings.len(),
+        _ => 0,
+    }
+}
+
+fn specialist_has_data(view: View, snapshot: &SystemSnapshot) -> bool {
+    match view {
+        View::Processes => !snapshot.processes.is_empty(),
+        View::Services => !snapshot.services.is_empty(),
+        View::Logs => !snapshot.logs.is_empty(),
+        View::Disk => !snapshot.mounts.is_empty() || !snapshot.block_devices.is_empty(),
+        View::Net => !snapshot.interfaces.is_empty() || !snapshot.routes.is_empty(),
+        View::Health => !snapshot.findings.is_empty(),
+    }
+}
+
+fn preserve_specialist_selection(
+    view: View,
+    previous: &SystemSnapshot,
+    next: &SystemSnapshot,
+    selected: usize,
+) -> usize {
+    match view {
+        View::Logs => previous
+            .logs
+            .get(selected)
+            .and_then(|current| {
+                next.logs.iter().position(|candidate| {
+                    candidate.timestamp == current.timestamp
+                        && candidate.source == current.source
+                        && candidate.message == current.message
+                })
+            })
+            .unwrap_or_else(|| selected.min(next.logs.len().saturating_sub(1))),
+        View::Health => previous
+            .findings
+            .get(selected)
+            .and_then(|current| {
+                next.findings
+                    .iter()
+                    .position(|candidate| candidate.id == current.id)
+            })
+            .unwrap_or_else(|| selected.min(next.findings.len().saturating_sub(1))),
+        _ => 0,
+    }
+}
+
+fn truncate_text(text: &str, width: usize) -> String {
+    if text.chars().count() <= width {
+        return text.to_owned();
+    }
+    if width <= 1 {
+        return "…".chars().take(width).collect();
+    }
+    let mut value: String = text.chars().take(width - 1).collect();
+    value.push('…');
+    value
+}
+
+fn viewport_start(selected: usize, length: usize, capacity: usize) -> usize {
+    if capacity == 0 || length <= capacity {
+        0
+    } else {
+        selected
+            .saturating_sub(capacity / 2)
+            .min(length.saturating_sub(capacity))
+    }
+}
+
+fn severity_ink(severity: Severity) -> Ink {
+    match severity {
+        Severity::Information => Ink::Info,
+        Severity::Attention => Ink::Attention,
+        Severity::Critical => Ink::Critical,
+    }
+}
+
+fn log_ink(priority: Option<&str>) -> Ink {
+    match priority.unwrap_or_default().to_ascii_lowercase().as_str() {
+        "emerg" | "alert" | "crit" | "critical" | "err" | "error" => Ink::Critical,
+        "warning" | "warn" | "notice" => Ink::Attention,
+        _ => Ink::Muted,
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn render_specialist(
+    view: View,
+    snapshot: &SystemSnapshot,
+    selected: usize,
+    inspecting: bool,
+    loading: bool,
+    status: &str,
+    rows: u16,
+    stdout: &mut impl Write,
+) -> Result<()> {
+    execute!(
+        stdout,
+        cursor::MoveTo(0, 0),
+        terminal::Clear(ClearType::All)
+    )?;
+    let width = terminal::size()
+        .map(|(width, _)| usize::from(width).clamp(58, 150))
+        .unwrap_or(100);
+    let colour = terminal_colour_enabled();
+    let rule = "─".repeat(width.saturating_sub(2));
+    writeln!(stdout, "{}", ink(&format!("╭{rule}╮"), Ink::Border, colour))?;
+    writeln!(
+        stdout,
+        "  {}{}{}  {}  {}  {}",
+        ink("DATAPLICITY", Ink::Brand, colour),
+        ink(" / ", Ink::Muted, colour),
+        ink(&view.title().to_ascii_uppercase(), Ink::Bright, colour),
+        ink("◆", Ink::Border, colour),
+        ink(&snapshot.host.hostname, Ink::Info, colour),
+        if loading {
+            badge(" LOADING ", Ink::Attention, colour)
+        } else {
+            badge(" LIVE ", Ink::Success, colour)
+        },
+    )?;
+    writeln!(
+        stdout,
+        "  {}",
+        ink(
+            &truncate_text(status, width.saturating_sub(4)),
+            Ink::Muted,
+            colour
+        )
+    )?;
+    writeln!(stdout, "{}", ink(&format!("├{rule}┤"), Ink::Border, colour))?;
+
+    match view {
+        View::Health if loading && !specialist_has_data(view, snapshot) => writeln!(
+            stdout,
+            "\n  {}",
+            ink("Running system checks…", Ink::Muted, colour)
+        )?,
+        View::Logs => render_log_specialist(snapshot, selected, inspecting, rows, width, stdout)?,
+        View::Health => {
+            render_health_specialist(snapshot, selected, inspecting, rows, width, stdout)?
+        }
+        _ if loading && !specialist_has_data(view, snapshot) => writeln!(
+            stdout,
+            "\n  {}",
+            ink(
+                &format!("Loading {} data…", view.title().to_ascii_lowercase()),
+                Ink::Muted,
+                colour,
+            )
+        )?,
+        _ => render_plain(view, snapshot, stdout)?,
+    }
+
+    writeln!(
+        stdout,
+        "\n{}",
+        ink(&format!("├{rule}┤"), Ink::Border, colour)
+    )?;
+    if matches!(view, View::Logs | View::Health) && specialist_item_count(view, snapshot) > 0 {
+        if inspecting {
+            writeln!(
+                stdout,
+                "  {} {}   {} {}   {} {}",
+                keycap("Esc", colour),
+                ink("back", Ink::Muted, colour),
+                keycap("r", colour),
+                ink("refresh", Ink::Muted, colour),
+                keycap("q", colour),
+                ink("quit", Ink::Muted, colour),
+            )?;
+        } else {
+            writeln!(
+                stdout,
+                "  {} {}   {} {}   {} {}   {} {}",
+                keycap("↑↓", colour),
+                ink("move", Ink::Muted, colour),
+                keycap("↵", colour),
+                ink("inspect", Ink::Muted, colour),
+                keycap("r", colour),
+                ink("refresh", Ink::Muted, colour),
+                keycap("q", colour),
+                ink("quit", Ink::Muted, colour),
+            )?;
+        }
+    } else {
+        writeln!(
+            stdout,
+            "  {} {}   {} {}",
+            keycap("r", colour),
+            ink("refresh", Ink::Muted, colour),
+            keycap("q", colour),
+            ink("quit", Ink::Muted, colour),
+        )?;
+    }
+    writeln!(stdout, "{}", ink(&format!("╰{rule}╯"), Ink::Border, colour))?;
+    stdout.flush()?;
+    Ok(())
+}
+
+fn render_log_specialist(
+    snapshot: &SystemSnapshot,
+    selected: usize,
+    inspecting: bool,
+    rows: u16,
+    width: usize,
+    out: &mut impl Write,
+) -> Result<()> {
+    let colour = terminal_colour_enabled();
+    if snapshot.logs.is_empty() {
+        writeln!(
+            out,
+            "\n  {}",
+            ink("No matching log messages yet.", Ink::Muted, colour)
+        )?;
+        return Ok(());
+    }
+    let item = &snapshot.logs[selected.min(snapshot.logs.len() - 1)];
+    if inspecting {
+        writeln!(out, "\n  {}", ink("LOG MESSAGE", Ink::Label, colour))?;
+        writeln!(
+            out,
+            "  {}  {}",
+            badge(
+                &format!(
+                    " {} ",
+                    item.priority
+                        .as_deref()
+                        .unwrap_or("info")
+                        .to_ascii_uppercase()
+                ),
+                log_ink(item.priority.as_deref()),
+                colour,
+            ),
+            ink(&item.timestamp, Ink::Muted, colour),
+        )?;
+        writeln!(
+            out,
+            "  {} {}",
+            ink("SOURCE", Ink::Label, colour),
+            ink(&item.source, Ink::Bright, colour)
+        )?;
+        if let Some(unit) = &item.unit {
+            writeln!(
+                out,
+                "  {} {}",
+                ink("SERVICE", Ink::Label, colour),
+                ink(unit, Ink::Info, colour)
+            )?;
+        }
+        if item.repeated > 1 {
+            writeln!(
+                out,
+                "  {} {} times",
+                ink("REPEATED", Ink::Label, colour),
+                item.repeated
+            )?;
+        }
+        writeln!(out, "\n  {}", ink("MESSAGE", Ink::Label, colour))?;
+        writeln!(
+            out,
+            "  {}",
+            ink(
+                &truncate_text(&item.message, width.saturating_sub(4)),
+                Ink::Bright,
+                colour
+            )
+        )?;
+        return Ok(());
+    }
+
+    writeln!(
+        out,
+        "  {}  {}  {}  {}",
+        ink("LEVEL", Ink::Label, colour),
+        ink("TIME", Ink::Label, colour),
+        ink("SOURCE", Ink::Label, colour),
+        ink("MESSAGE", Ink::Label, colour),
+    )?;
+    let capacity = usize::from(rows.saturating_sub(9)).max(1);
+    let start = viewport_start(selected, snapshot.logs.len(), capacity);
+    let message_width = width.saturating_sub(50).max(16);
+    for (index, item) in snapshot.logs.iter().enumerate().skip(start).take(capacity) {
+        let priority = item.priority.as_deref().unwrap_or("info");
+        let time = item.timestamp.get(11..19).unwrap_or(&item.timestamp);
+        let source = item.unit.as_deref().unwrap_or(&item.source);
+        let repeat = if item.repeated > 1 {
+            format!(" ×{}", item.repeated)
+        } else {
+            String::new()
+        };
+        let row = format!(
+            "  {:<8} {:<8} {:<22} {}{}",
+            truncate_text(priority, 8),
+            time,
+            truncate_text(source, 22),
+            truncate_text(&item.message, message_width.saturating_sub(repeat.len())),
+            repeat,
+        );
+        if index == selected {
+            writeln!(out, "{}", selected_row(&row, colour))?;
+        } else {
+            writeln!(
+                out,
+                "{}",
+                ink(&row, log_ink(item.priority.as_deref()), colour)
+            )?;
+        }
+    }
+    Ok(())
+}
+
+fn render_health_specialist(
+    snapshot: &SystemSnapshot,
+    selected: usize,
+    inspecting: bool,
+    rows: u16,
+    width: usize,
+    out: &mut impl Write,
+) -> Result<()> {
+    let colour = terminal_colour_enabled();
+    if snapshot.findings.is_empty() {
+        writeln!(out, "\n  {}", badge(" ALL CLEAR ", Ink::Success, colour))?;
+        writeln!(
+            out,
+            "  {}",
+            ink("No findings from the available checks.", Ink::Muted, colour)
+        )?;
+        return Ok(());
+    }
+    let finding = &snapshot.findings[selected.min(snapshot.findings.len() - 1)];
+    if inspecting {
+        writeln!(
+            out,
+            "\n  {}  {}",
+            badge(
+                &format!(" {} ", finding.severity.label().to_ascii_uppercase()),
+                severity_ink(finding.severity),
+                colour,
+            ),
+            ink(&finding.title, Ink::Bright, colour),
+        )?;
+        writeln!(
+            out,
+            "  {}",
+            ink(
+                &truncate_text(&finding.summary, width.saturating_sub(4)),
+                Ink::Muted,
+                colour
+            )
+        )?;
+        if !finding.evidence.is_empty() {
+            writeln!(out, "\n  {}", ink("EVIDENCE", Ink::Label, colour))?;
+            for evidence in &finding.evidence {
+                let unit = evidence.unit.as_deref().unwrap_or_default();
+                writeln!(
+                    out,
+                    "  {}  {} {}",
+                    ink("•", severity_ink(finding.severity), colour),
+                    evidence.label,
+                    format!("{} {unit}", evidence.value).trim()
+                )?;
+            }
+        }
+        if !finding.suggested_actions.is_empty() {
+            writeln!(out, "\n  {}", ink("WHAT TO CHECK", Ink::Label, colour))?;
+            for action in &finding.suggested_actions {
+                writeln!(
+                    out,
+                    "  {}  {}",
+                    ink("→", Ink::Info, colour),
+                    truncate_text(action, width.saturating_sub(6))
+                )?;
+            }
+        }
+        return Ok(());
+    }
+
+    writeln!(out, "  {} findings\n", snapshot.findings.len())?;
+    let capacity = usize::from(rows.saturating_sub(10)).max(1);
+    let start = viewport_start(selected, snapshot.findings.len(), capacity);
+    for (index, finding) in snapshot
+        .findings
+        .iter()
+        .enumerate()
+        .skip(start)
+        .take(capacity)
+    {
+        let row = format!(
+            "  {:<11} {:<30} {}",
+            finding.severity.label().to_ascii_uppercase(),
+            truncate_text(&finding.title, 30),
+            truncate_text(&finding.summary, width.saturating_sub(47).max(12)),
+        );
+        if index == selected {
+            writeln!(out, "{}", selected_row(&row, colour))?;
+        } else {
+            writeln!(out, "{}", ink(&row, severity_ink(finding.severity), colour))?;
+        }
+    }
+    Ok(())
+}
+
 fn specialist_loop(view: View, args: &ViewArgs, stdout: &mut impl Write) -> Result<()> {
     let mut snapshot = SystemSnapshot::empty(hostname());
     let mut receiver = spawn_specialist_collection(view, args.clone());
     let mut loading = true;
+    let mut status = format!("Loading {} data…", view.title().to_ascii_lowercase());
+    let mut selected = 0usize;
+    let mut inspecting = false;
     let mut redraw = true;
     loop {
         match receiver.try_recv() {
-            Ok(collected) => {
-                snapshot = collected;
-                loading = false;
+            Ok(update) => {
+                selected =
+                    preserve_specialist_selection(view, &snapshot, &update.snapshot, selected);
+                snapshot = update.snapshot;
+                loading = update.loading_more;
+                status = update.status.to_owned();
                 redraw = true;
             }
             Err(TryRecvError::Disconnected) if loading => {
@@ -769,23 +1337,10 @@ fn specialist_loop(view: View, args: &ViewArgs, stdout: &mut impl Write) -> Resu
         }
 
         if redraw {
-            execute!(
-                stdout,
-                cursor::MoveTo(0, 0),
-                terminal::Clear(ClearType::All)
+            let (_, rows) = terminal::size().unwrap_or((100, 30));
+            render_specialist(
+                view, &snapshot, selected, inspecting, loading, &status, rows, stdout,
             )?;
-            writeln!(stdout, "{} · {}\n", view.title(), snapshot.host.hostname)?;
-            if loading {
-                writeln!(
-                    stdout,
-                    "Loading {} data…",
-                    view.title().to_ascii_lowercase()
-                )?;
-            } else {
-                render_plain(view, &snapshot, stdout)?;
-            }
-            writeln!(stdout, "\nr refresh   q quit")?;
-            stdout.flush()?;
             redraw = false;
         }
 
@@ -793,14 +1348,34 @@ fn specialist_loop(view: View, args: &ViewArgs, stdout: &mut impl Write) -> Resu
             && let Event::Key(key) = event::read()?
         {
             match key.code {
-                KeyCode::Char('q') | KeyCode::Esc => return Ok(()),
+                KeyCode::Char('q') => return Ok(()),
+                KeyCode::Esc if inspecting => {
+                    inspecting = false;
+                    redraw = true;
+                }
+                KeyCode::Esc => return Ok(()),
                 KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => {
                     return Ok(());
                 }
-                KeyCode::Char('r') if !loading => {
+                KeyCode::Up | KeyCode::Char('k') if !inspecting => {
+                    selected = move_selection(selected, -1, specialist_item_count(view, &snapshot));
+                    redraw = true;
+                }
+                KeyCode::Down | KeyCode::Char('j') if !inspecting => {
+                    selected = move_selection(selected, 1, specialist_item_count(view, &snapshot));
+                    redraw = true;
+                }
+                KeyCode::Enter if !inspecting && specialist_item_count(view, &snapshot) > 0 => {
+                    inspecting = true;
+                    redraw = true;
+                }
+                KeyCode::Char('r') => {
                     snapshot = SystemSnapshot::empty(hostname());
                     receiver = spawn_specialist_collection(view, args.clone());
                     loading = true;
+                    status = format!("Loading {} data…", view.title().to_ascii_lowercase());
+                    selected = 0;
+                    inspecting = false;
                     redraw = true;
                 }
                 _ => {}
@@ -899,45 +1474,6 @@ pub fn collect() -> SystemSnapshot {
 
 pub fn collect_with_options(since: Option<&str>, log_files: &[PathBuf]) -> SystemSnapshot {
     enrich_snapshot(collect_base_snapshot(), since, log_files)
-}
-
-fn collect_view_with_options(
-    view: View,
-    since: Option<&str>,
-    log_files: &[PathBuf],
-) -> SystemSnapshot {
-    if view == View::Health {
-        return collect_with_options(since, log_files);
-    }
-
-    let mut snapshot = collect_base_snapshot();
-    let warnings = &mut snapshot.collection_warnings;
-    match view {
-        View::Processes => {}
-        View::Services => snapshot.services = collect_services(warnings),
-        View::Logs => {
-            let mut logs = collect_logs(warnings, since);
-            let file_sources = collect_file_logs(log_files, &mut logs, warnings);
-            snapshot.log_sources = vec![platform_log_source()];
-            snapshot.log_sources.extend(file_sources);
-            snapshot.logs = logs;
-        }
-        View::Disk => {
-            let mut mounts = collect_mounts(warnings);
-            apply_inode_usage(&mut mounts, warnings);
-            snapshot.filesystems = filesystems(&mounts);
-            snapshot.deleted_open_files = collect_deleted_open_files(warnings);
-            snapshot.block_devices = collect_block_devices(warnings);
-            snapshot.mounts = mounts;
-        }
-        View::Net => {
-            snapshot.interfaces = collect_interfaces(warnings);
-            snapshot.routes = collect_routes(warnings);
-            snapshot.sockets = collect_sockets(warnings);
-        }
-        View::Health => unreachable!("health uses the complete collector"),
-    }
-    snapshot
 }
 
 fn collect_base_snapshot() -> SystemSnapshot {
@@ -1183,16 +1719,25 @@ fn collect_logs(warnings: &mut Vec<String>, since: Option<&str>) -> Vec<LogEntry
 #[cfg(target_os = "macos")]
 fn parse_macos_log_entry(line: &str) -> LogEntry {
     let mut fields = line.split_whitespace();
-    let timestamp = match (fields.next(), fields.next(), fields.next()) {
-        (Some(date), Some(time), Some(zone)) => format!("{date}T{time}{zone}"),
+    let timestamp = match (fields.next(), fields.next()) {
+        (Some(date), Some(time)) => format!("{date}T{time}"),
         _ => String::new(),
     };
+    let _hostname = fields.next();
+    let process = fields.next().unwrap_or_default();
+    let unit = process
+        .trim_end_matches(':')
+        .split('[')
+        .next()
+        .filter(|value| !value.is_empty())
+        .map(str::to_owned);
+    let message = fields.collect::<Vec<_>>().join(" ");
     LogEntry {
         timestamp,
         source: "macos-unified-log".into(),
-        unit: None,
-        priority: log_priority(line),
-        message: line.to_owned(),
+        unit,
+        priority: log_priority(&message),
+        message,
         repeated: 1,
     }
 }
@@ -2586,6 +3131,14 @@ mod tests {
                 .expect("socket");
         assert_eq!(socket.process_id, Some(ProcessId(42)));
         assert_eq!(socket.local, "127.0.0.1:8080");
+
+        let log = parse_macos_log_entry(
+            "2026-08-05 08:03:36.754714+1000 localhost worker[42]: [network] request failed",
+        );
+        assert_eq!(log.timestamp, "2026-08-05T08:03:36.754714+1000");
+        assert_eq!(log.unit.as_deref(), Some("worker"));
+        assert_eq!(log.message, "[network] request failed");
+        assert_eq!(log.priority.as_deref(), Some("error"));
     }
 
     #[test]
@@ -2676,6 +3229,66 @@ mod tests {
         assert_eq!(human_duration(90), "1m");
         assert_eq!(human_duration(7_500), "2h 5m");
         assert_eq!(human_duration(183_600), "2d 3h");
+    }
+
+    #[test]
+    fn log_specialist_supports_list_and_detail_views() {
+        let snapshot = demo_snapshot();
+        let mut list = Vec::new();
+        render_log_specialist(&snapshot, 0, false, 30, 120, &mut list).expect("log list");
+        let list = String::from_utf8(list).expect("UTF-8");
+        assert!(list.contains("LEVEL"));
+        assert!(list.contains("mosquitto.service"));
+        assert!(list.contains("No space left on device"));
+
+        let mut detail = Vec::new();
+        render_log_specialist(&snapshot, 0, true, 30, 120, &mut detail).expect("log detail");
+        let detail = String::from_utf8(detail).expect("UTF-8");
+        assert!(detail.contains("LOG MESSAGE"));
+        assert!(detail.contains("REPEATED"));
+        assert!(detail.contains("12 times"));
+    }
+
+    #[test]
+    fn health_specialist_explains_selected_finding() {
+        let snapshot = demo_snapshot();
+        let mut list = Vec::new();
+        render_health_specialist(&snapshot, 0, false, 30, 120, &mut list).expect("health list");
+        let list = String::from_utf8(list).expect("UTF-8");
+        assert!(list.contains("findings"));
+        assert!(list.contains(&snapshot.findings[0].title));
+
+        let mut detail = Vec::new();
+        render_health_specialist(&snapshot, 0, true, 30, 120, &mut detail).expect("health detail");
+        let detail = String::from_utf8(detail).expect("UTF-8");
+        assert!(detail.contains("EVIDENCE"));
+        assert!(detail.contains("WHAT TO CHECK"));
+        assert!(detail.contains(&snapshot.findings[0].summary));
+    }
+
+    #[test]
+    fn specialist_selection_and_viewports_remain_bounded() {
+        assert_eq!(move_selection(0, -1, 0), 0);
+        assert_eq!(move_selection(0, 1, 0), 0);
+        assert_eq!(viewport_start(8, 10, 4), 6);
+        assert_eq!(viewport_start(2, 10, 4), 0);
+        assert_eq!(truncate_text("abcdef", 4), "abc…");
+    }
+
+    #[test]
+    fn specialist_updates_preserve_the_selected_item() {
+        let previous = demo_snapshot();
+        let mut next = previous.clone();
+        next.logs.reverse();
+        next.findings.reverse();
+        assert_eq!(
+            &next.logs[preserve_specialist_selection(View::Logs, &previous, &next, 0)].message,
+            &previous.logs[0].message
+        );
+        assert_eq!(
+            &next.findings[preserve_specialist_selection(View::Health, &previous, &next, 0)].id,
+            &previous.findings[0].id
+        );
     }
 
     #[test]
