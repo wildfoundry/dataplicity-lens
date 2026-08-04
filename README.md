@@ -127,6 +127,10 @@ Start with `lens` for a cockpit, or run a specialist directly. Each specialist s
 `--json`, `--demo`, `--filter` and `--limit`; logs additionally support `--service`, `--severity` and
 `--since`.
 
+The interactive cockpit draws the host and process summary first. Services, recent logs, storage and
+network details then load once in the background, so a slow platform command does not hold up the
+opening screen or normal navigation. Plain and JSON output still wait for a complete snapshot.
+
 ```sh
 lens
 lens-services --service nginx

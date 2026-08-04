@@ -1,10 +1,14 @@
 #![forbid(unsafe_code)]
 
 use std::{
+    cmp::Ordering,
     env,
     io::{self, IsTerminal, Write},
     path::PathBuf,
     process::{Command, Stdio},
+    sync::mpsc::{self, Receiver, TryRecvError},
+    thread,
+    time::Duration,
 };
 
 use anyhow::{Context, Result};
@@ -198,7 +202,11 @@ pub fn run_cockpit() -> Result<()> {
     }
 
     let mut terminal = CockpitTerminal::enter()?;
-    cockpit_loop(&mut terminal.stdout)
+    cockpit_loop(
+        &mut terminal.stdout,
+        args.since.clone(),
+        args.log_file.clone(),
+    )
 }
 
 fn generate_assets(name: &'static str, args: &ViewArgs) -> Result<bool> {
@@ -303,67 +311,230 @@ impl<W: Write> Write for TerminalWriter<W> {
     }
 }
 
-fn cockpit_loop(stdout: &mut impl Write) -> Result<()> {
+fn cockpit_loop(
+    stdout: &mut impl Write,
+    since: Option<String>,
+    log_files: Vec<PathBuf>,
+) -> Result<()> {
     let mut selected = 0usize;
+    let mut snapshot = collect_base_snapshot();
+    let mut receiver = spawn_cockpit_collection(snapshot.clone(), since.clone(), log_files.clone());
+    let mut loading = true;
+    let mut redraw = true;
     loop {
-        let snapshot = collect();
-        execute!(
-            stdout,
-            cursor::MoveTo(0, 0),
-            terminal::Clear(ClearType::All)
-        )?;
-        writeln!(stdout, "DATAPLICITY LENS  ·  {}", snapshot.host.hostname)?;
-        writeln!(stdout, "Making Linux make sense.\n")?;
-        let critical = snapshot
-            .findings
-            .iter()
-            .filter(|f| f.severity == Severity::Critical)
-            .count();
-        let attention = snapshot
-            .findings
-            .iter()
-            .filter(|f| f.severity == Severity::Attention)
-            .count();
-        writeln!(
-            stdout,
-            "{} services · {} mounts · {} interfaces · {} listeners",
-            snapshot.services.len(),
-            snapshot.mounts.len(),
-            snapshot.interfaces.len(),
-            snapshot.sockets.len()
-        )?;
-        writeln!(stdout, "{critical} critical · {attention} attention\n")?;
-        for (index, view) in View::ALL.iter().enumerate() {
-            let marker = if index == selected { "▶" } else { " " };
-            writeln!(stdout, "{marker} {}", view.title())?;
+        match receiver.try_recv() {
+            Ok(collected) => {
+                snapshot = collected;
+                loading = false;
+                redraw = true;
+            }
+            Err(TryRecvError::Disconnected) if loading => {
+                snapshot
+                    .collection_warnings
+                    .push("background collection stopped unexpectedly".into());
+                loading = false;
+                redraw = true;
+            }
+            Err(TryRecvError::Empty | TryRecvError::Disconnected) => {}
         }
-        writeln!(
-            stdout,
-            "\n↑/↓ move   Enter open   / search   ? help   r refresh   q quit"
-        )?;
-        stdout.flush()?;
 
-        if let Event::Key(key) = event::read()? {
+        if redraw {
+            let rows = terminal::size().map_or(24, |(_, rows)| rows);
+            render_cockpit(&snapshot, selected, loading, rows, stdout)?;
+            redraw = false;
+        }
+
+        if event::poll(Duration::from_millis(100))?
+            && let Event::Key(key) = event::read()?
+        {
             match key.code {
                 KeyCode::Char('q') | KeyCode::Esc => return Ok(()),
                 KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => {
                     return Ok(());
                 }
-                KeyCode::Up | KeyCode::Char('k') => selected = selected.saturating_sub(1),
-                KeyCode::Down | KeyCode::Char('j') => {
-                    selected = move_selection(selected, 1, View::ALL.len())
+                KeyCode::Up | KeyCode::Char('k') => {
+                    selected = selected.saturating_sub(1);
+                    redraw = true;
                 }
-                KeyCode::Enter => launch(View::ALL[selected])?,
+                KeyCode::Down | KeyCode::Char('j') => {
+                    selected = move_selection(selected, 1, View::ALL.len());
+                    redraw = true;
+                }
+                KeyCode::Enter => {
+                    launch(View::ALL[selected])?;
+                    redraw = true;
+                }
                 KeyCode::Char('/') => {
                     if let Some(query) = prompt_search(stdout)? {
                         launch_search(View::ALL[selected], &query)?;
                     }
+                    redraw = true;
                 }
-                KeyCode::Char('?') => show_cockpit_help(stdout)?,
-                KeyCode::Char('r') => {}
+                KeyCode::Char('?') => {
+                    show_cockpit_help(stdout)?;
+                    redraw = true;
+                }
+                KeyCode::Char('r') if !loading => {
+                    snapshot = collect_base_snapshot();
+                    receiver = spawn_cockpit_collection(
+                        snapshot.clone(),
+                        since.clone(),
+                        log_files.clone(),
+                    );
+                    loading = true;
+                    redraw = true;
+                }
                 _ => {}
             }
         }
+    }
+}
+
+fn spawn_cockpit_collection(
+    base: SystemSnapshot,
+    since: Option<String>,
+    log_files: Vec<PathBuf>,
+) -> Receiver<SystemSnapshot> {
+    let (sender, receiver) = mpsc::channel();
+    thread::spawn(move || {
+        let snapshot = enrich_snapshot(base, since.as_deref(), &log_files);
+        let _ = sender.send(snapshot);
+    });
+    receiver
+}
+
+fn render_cockpit(
+    snapshot: &SystemSnapshot,
+    selected: usize,
+    loading: bool,
+    rows: u16,
+    stdout: &mut impl Write,
+) -> Result<()> {
+    execute!(
+        stdout,
+        cursor::MoveTo(0, 0),
+        terminal::Clear(ClearType::All)
+    )?;
+    let host = &snapshot.host;
+    writeln!(stdout, "DATAPLICITY LENS  ·  {}", host.hostname)?;
+    writeln!(
+        stdout,
+        "{} · kernel {} · up {}",
+        host.os_name
+            .as_deref()
+            .unwrap_or("Operating system unknown"),
+        host.kernel,
+        human_duration(host.uptime_seconds)
+    )?;
+    writeln!(
+        stdout,
+        "CPU {:>5.1}%  Memory {:>5.1}%  Load {:.2} {:.2} {:.2}",
+        host.cpu_percent,
+        host.memory.used_percent(),
+        host.load.one,
+        host.load.five,
+        host.load.fifteen
+    )?;
+    writeln!(
+        stdout,
+        "Processes {} total · {} running · {} sleeping · {} zombies",
+        host.process_counts.total,
+        host.process_counts.running,
+        host.process_counts.sleeping,
+        host.process_counts.zombie
+    )?;
+
+    if rows >= 22 {
+        let mut processes: Vec<_> = snapshot.processes.iter().collect();
+        processes.sort_by(|left, right| {
+            right
+                .cpu_percent
+                .partial_cmp(&left.cpu_percent)
+                .unwrap_or(Ordering::Equal)
+                .then_with(|| {
+                    right
+                        .memory_percent
+                        .partial_cmp(&left.memory_percent)
+                        .unwrap_or(Ordering::Equal)
+                })
+        });
+        writeln!(stdout, "\nBUSIEST PROCESSES")?;
+        for process in processes.into_iter().take(3) {
+            writeln!(
+                stdout,
+                "  {:>6}  {:<22} CPU {:>5.1}%  MEM {:>5.1}%",
+                process.pid, process.name, process.cpu_percent, process.memory_percent
+            )?;
+        }
+    }
+
+    let critical = snapshot
+        .findings
+        .iter()
+        .filter(|finding| finding.severity == Severity::Critical)
+        .count();
+    let attention = snapshot
+        .findings
+        .iter()
+        .filter(|finding| finding.severity == Severity::Attention)
+        .count();
+    writeln!(stdout, "\nSTATUS")?;
+    if loading {
+        writeln!(
+            stdout,
+            "  Checking services, logs, storage and network in the background…"
+        )?;
+    } else if snapshot.findings.is_empty() {
+        writeln!(stdout, "  No current findings from the available checks.")?;
+    } else {
+        writeln!(stdout, "  {critical} critical · {attention} attention")?;
+        if rows >= 28 {
+            for finding in snapshot.findings.iter().take(2) {
+                writeln!(stdout, "  · {:?}: {}", finding.severity, finding.title)?;
+            }
+        }
+    }
+
+    writeln!(stdout, "\nOPEN DETAIL")?;
+    for (index, view) in View::ALL.iter().enumerate() {
+        let marker = if index == selected { "▶" } else { " " };
+        writeln!(
+            stdout,
+            "{marker} {:<12} {}",
+            view.title(),
+            cockpit_view_summary(*view, snapshot, loading)
+        )?;
+    }
+    writeln!(
+        stdout,
+        "\n↑/↓ move   Enter open   / search   ? help   r refresh   q quit"
+    )?;
+    stdout.flush()?;
+    Ok(())
+}
+
+fn cockpit_view_summary(view: View, snapshot: &SystemSnapshot, loading: bool) -> String {
+    if loading && view != View::Processes {
+        return "checking…".into();
+    }
+    match view {
+        View::Processes => format!("{} processes", snapshot.processes.len()),
+        View::Services => format!("{} services", snapshot.services.len()),
+        View::Logs => format!("{} recent entries", snapshot.logs.len()),
+        View::Disk => snapshot
+            .mounts
+            .iter()
+            .find(|mount| mount.target == "/")
+            .map_or_else(
+                || format!("{} mounts", snapshot.mounts.len()),
+                |root| format!("/ {:.0}% used", root.used_percent),
+            ),
+        View::Net => format!(
+            "{} interfaces · {} listeners",
+            snapshot.interfaces.len(),
+            snapshot.sockets.len()
+        ),
+        View::Health => format!("{} findings", snapshot.findings.len()),
     }
 }
 
@@ -494,6 +665,10 @@ pub fn collect() -> SystemSnapshot {
 }
 
 pub fn collect_with_options(since: Option<&str>, log_files: &[PathBuf]) -> SystemSnapshot {
+    enrich_snapshot(collect_base_snapshot(), since, log_files)
+}
+
+fn collect_base_snapshot() -> SystemSnapshot {
     #[cfg(target_os = "linux")]
     let collected = LinuxCollector::default().collect();
     #[cfg(target_os = "macos")]
@@ -506,6 +681,14 @@ pub fn collect_with_options(since: Option<&str>, log_files: &[PathBuf]) -> Syste
         snapshot
     });
     snapshot.schema_version = SchemaVersion(SCHEMA_VERSION.to_owned());
+    snapshot
+}
+
+fn enrich_snapshot(
+    mut snapshot: SystemSnapshot,
+    since: Option<&str>,
+    log_files: &[PathBuf],
+) -> SystemSnapshot {
     let warnings = &mut snapshot.collection_warnings;
     let services = collect_services(warnings);
     let mut logs = collect_logs(warnings, since);
@@ -1883,6 +2066,19 @@ fn human_bytes(value: u64) -> String {
     format!("{number:.1}{}", UNITS[unit])
 }
 
+fn human_duration(seconds: u64) -> String {
+    let days = seconds / 86_400;
+    let hours = (seconds % 86_400) / 3_600;
+    let minutes = (seconds % 3_600) / 60;
+    if days > 0 {
+        format!("{days}d {hours}h")
+    } else if hours > 0 {
+        format!("{hours}h {minutes}m")
+    } else {
+        format!("{minutes}m")
+    }
+}
+
 pub fn demo_snapshot() -> SystemSnapshot {
     let mut snapshot = SystemSnapshot::empty("production-gateway-04");
     snapshot.schema_version = SchemaVersion(SCHEMA_VERSION.into());
@@ -2166,6 +2362,40 @@ mod tests {
         let output = String::from_utf8(output).expect("UTF-8");
         assert!(output.contains("production-gateway-04"));
         assert!(output.contains("Failed services"));
+    }
+
+    #[test]
+    fn cockpit_leads_with_host_status_while_details_load() {
+        let snapshot = demo_snapshot();
+        let mut loading_output = Vec::new();
+        render_cockpit(&snapshot, 0, true, 30, &mut loading_output).expect("loading cockpit");
+        let loading_output = String::from_utf8(loading_output).expect("UTF-8");
+        assert!(loading_output.contains("CPU"));
+        assert!(loading_output.contains("Memory"));
+        assert!(loading_output.contains("BUSIEST PROCESSES"));
+        assert!(loading_output.contains("Checking services, logs, storage and network"));
+        assert!(loading_output.contains("Processes    1 processes"));
+        assert!(loading_output.contains("Services     checking"));
+
+        let mut compact_output = Vec::new();
+        render_cockpit(&snapshot, 0, true, 20, &mut compact_output).expect("compact cockpit");
+        let compact_output = String::from_utf8(compact_output).expect("UTF-8");
+        assert!(!compact_output.contains("BUSIEST PROCESSES"));
+        assert!(compact_output.lines().count() <= 20);
+
+        let mut complete_output = Vec::new();
+        render_cockpit(&snapshot, 3, false, 30, &mut complete_output).expect("complete cockpit");
+        let complete_output = String::from_utf8(complete_output).expect("UTF-8");
+        assert!(complete_output.contains("critical ·"));
+        assert!(complete_output.contains("▶ Storage"));
+        assert!(complete_output.contains("/ 97% used"));
+    }
+
+    #[test]
+    fn cockpit_uptime_is_compact() {
+        assert_eq!(human_duration(90), "1m");
+        assert_eq!(human_duration(7_500), "2h 5m");
+        assert_eq!(human_duration(183_600), "2d 3h");
     }
 
     #[test]
