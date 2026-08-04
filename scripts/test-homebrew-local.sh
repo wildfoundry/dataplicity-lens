@@ -3,6 +3,12 @@ set -euo pipefail
 
 repo="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 formula="$repo/packaging/homebrew/dataplicity-lens.rb"
+version="$(awk '/^\[workspace.package\]$/{p=1;next}/^\[/{p=0}p&&/^version = /{gsub(/[" ]/,"",$3);print $3;exit}' "$repo/Cargo.toml")"
+formula_version="$(awk '/^  version /{gsub(/"/,"",$2);print $2;exit}' "$formula")"
+if [[ -z "$version" || "$formula_version" != "$version" ]]; then
+  echo "Homebrew formula version ($formula_version) does not match workspace version ($version)" >&2
+  exit 1
+fi
 work="$(mktemp -d)"
 tap="local/dataplicity-lens-test"
 keep=false
@@ -28,7 +34,7 @@ if brew list --formula dataplicity-lens >/dev/null 2>&1; then
   exit 1
 fi
 
-archive="$work/dataplicity-lens-0.3.0.tar.gz"
+archive="$work/dataplicity-lens-${version}.tar.gz"
 COPYFILE_DISABLE=1 tar \
   --exclude=.git \
   --exclude=target \
