@@ -91,6 +91,11 @@ builds and the behaviour of macOS privacy restrictions.
 The intended installation path is a signed GitHub Release asset. Choose the archive or native package
 for your architecture, verify it against `SHA256SUMS`, then install it.
 
+Raspberry Pi OS is supported in both forms. Run `dpkg --print-architecture`: use the
+`aarch64-unknown-linux-gnu` archive or `arm64` Debian package when it prints `arm64`, and use the
+`arm-unknown-linux-gnueabihf` archive or `armhf` Debian package when it prints `armhf`. The 32-bit
+ARMv6 hard-float build runs across the Raspberry Pi models supported by 32-bit Raspberry Pi OS.
+
 ```sh
 # Archive example
 curl -LO <release-asset-url>/dataplicity-lens-v0.2.0-x86_64-unknown-linux-gnu.tar.gz
@@ -101,6 +106,9 @@ sudo install -m 0755 dataplicity-lens-v0.2.0-x86_64-unknown-linux-gnu/bin/* /usr
 
 # Debian package example
 sudo apt install ./dataplicity-lens_0.2.0_amd64.deb
+
+# Raspberry Pi OS 32-bit example
+sudo apt install ./dataplicity-lens_0.2.0_armhf.deb
 
 # RPM package example
 sudo rpm -U ./dataplicity-lens-0.2.0-1.x86_64.rpm

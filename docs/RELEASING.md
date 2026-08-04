@@ -8,7 +8,8 @@
 5. The workflow generates man pages, shell completions, GNU/musl archives, Debian/RPM packages,
    CycloneDX SBOMs, SHA-256 checksums and provenance attestations where the repository plan permits.
 6. Native packages are installed and smoke-tested before publication.
-7. The release job publishes only after all architecture jobs succeed.
+7. ARMv6 hard-float Raspberry Pi binaries are run under emulation and their `armhf` packages are inspected.
+8. The release job publishes only after all architecture jobs succeed.
 
 To reproduce package assembly after building both targets and generating the `lens-top` man page and
 completions:
@@ -17,6 +18,9 @@ completions:
 VERSION=0.2.0 TARGET=x86_64-unknown-linux-gnu DEB_ARCH=amd64 RPM_ARCH=x86_64 scripts/package-suite.sh
 VERSION=0.2.0 TARGET=x86_64-unknown-linux-musl PACKAGE_NATIVE=false scripts/package-suite.sh
 scripts/smoke-suite.sh target/x86_64-unknown-linux-gnu/release
+# Raspberry Pi OS 32-bit builds use cross:
+cross build --release --locked --target arm-unknown-linux-gnueabihf --workspace
+VERSION=0.2.0 TARGET=arm-unknown-linux-gnueabihf DEB_ARCH=armhf RPM_ARCH=armv6hl scripts/package-suite.sh
 scripts/verify-release.sh dist/release
 ```
 

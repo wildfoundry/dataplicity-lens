@@ -112,12 +112,21 @@ jobs:
             musl_target: x86_64-unknown-linux-musl
             deb_arch: amd64
             rpm_arch: x86_64
+            cross: false
           - name: ARM64
             runner: ubuntu-24.04-arm
             gnu_target: aarch64-unknown-linux-gnu
             musl_target: aarch64-unknown-linux-musl
             deb_arch: arm64
             rpm_arch: aarch64
+            cross: false
+          - name: Raspberry-Pi-OS-32-bit
+            runner: ubuntu-24.04
+            gnu_target: arm-unknown-linux-gnueabihf
+            musl_target: arm-unknown-linux-musleabihf
+            deb_arch: armhf
+            rpm_arch: armv6hl
+            cross: true
     runs-on: ${{ matrix.runner }}
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
@@ -131,18 +140,28 @@ jobs:
           sudo apt-get install --yes musl-tools rpm ruby-dev
           sudo gem install --no-document fpm
           cargo install cargo-cyclonedx --version 0.5.7 --locked
+      - name: Install cross for Raspberry Pi builds
+        if: matrix.cross
+        run: cargo install cross --version 0.2.5 --locked
       - name: Build clean release binaries
         env:
           LENS_GIT_SHA: ${{ github.sha }}
           LENS_BUILT_BY: GitHub Actions
         run: |
           cargo clean
-          cargo build --release --locked --target "${{ matrix.gnu_target }}" --workspace
-          cargo build --release --locked --target "${{ matrix.musl_target }}" --workspace
+          if [[ "${{ matrix.cross }}" == "true" ]]; then
+            cross build --release --locked --target "${{ matrix.gnu_target }}" --workspace
+            cross build --release --locked --target "${{ matrix.musl_target }}" --workspace
+          else
+            cargo build --release --locked --target "${{ matrix.gnu_target }}" --workspace
+            cargo build --release --locked --target "${{ matrix.musl_target }}" --workspace
+          fi
           find "target/${{ matrix.gnu_target }}/release" -maxdepth 1 -type f -perm -111 -exec strip {} \; || true
           find "target/${{ matrix.musl_target }}/release" -maxdepth 1 -type f -perm -111 -exec strip {} \; || true
       - name: Generate man page and completions
-        run: scripts/generate-assets.sh "target/${{ matrix.gnu_target }}/release/lens-top" dist/generated
+        run: |
+          cargo build --release --locked -p lens-top
+          scripts/generate-assets.sh target/release/lens-top dist/generated
       - name: Build GNU archive, Debian and RPM packages
         env:
           VERSION: ${{ needs.prepare.outputs.version }}
@@ -157,6 +176,7 @@ jobs:
           PACKAGE_NATIVE: "false"
         run: scripts/package-suite.sh
       - name: Install and smoke-test generated packages
+        if: ${{ !matrix.cross }}
         env:
           VERSION: ${{ needs.prepare.outputs.version }}
           GNU_TARGET: ${{ matrix.gnu_target }}
@@ -172,6 +192,27 @@ jobs:
           sudo rpm --install --nodeps "dist/${GNU_TARGET}/dataplicity-lens-${VERSION}-1.${RPM_ARCH}.rpm"
           scripts/smoke-suite.sh /usr/bin
           sudo rpm --erase dataplicity-lens
+      - name: Smoke-test Raspberry Pi binaries and inspect packages
+        if: matrix.cross
+        env:
+          VERSION: ${{ needs.prepare.outputs.version }}
+          GNU_TARGET: ${{ matrix.gnu_target }}
+          MUSL_TARGET: ${{ matrix.musl_target }}
+          DEB_ARCH: ${{ matrix.deb_arch }}
+          RPM_ARCH: ${{ matrix.rpm_arch }}
+        run: |
+          for target in "$GNU_TARGET" "$MUSL_TARGET"; do
+            for binary in lens lens-top lens-services lens-logs lens-disk lens-net lens-health; do
+              cross run --release --locked --target "$target" --bin "$binary" -- --demo --json > smoke-output.json
+              grep -q '"schema_version": "2"' smoke-output.json
+            done
+          done
+          dpkg-deb --contents "./dist/${GNU_TARGET}/dataplicity-lens_${VERSION}_${DEB_ARCH}.deb" > deb-contents.txt
+          rpm --query --package --list "dist/${GNU_TARGET}/dataplicity-lens-${VERSION}-1.${RPM_ARCH}.rpm" > rpm-contents.txt
+          for binary in lens lens-top lens-services lens-logs lens-disk lens-net lens-health; do
+            grep -q "/usr/bin/${binary}$" deb-contents.txt
+            grep -q "/usr/bin/${binary}$" rpm-contents.txt
+          done
       - name: Generate CycloneDX SBOM
         run: scripts/generate-sbom.sh "dist/sbom-${{ matrix.name }}"
       - name: Gather release assets

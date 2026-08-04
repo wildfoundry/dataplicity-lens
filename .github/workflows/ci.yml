@@ -78,8 +78,10 @@ jobs:
         target:
           - x86_64-unknown-linux-gnu
           - aarch64-unknown-linux-gnu
+          - arm-unknown-linux-gnueabihf
           - x86_64-unknown-linux-musl
           - aarch64-unknown-linux-musl
+          - arm-unknown-linux-musleabihf
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
       - name: Activate pinned toolchain
