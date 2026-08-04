@@ -29,16 +29,20 @@ Every command supports `--demo`, which loads sample data so you can try the outp
 the state of the current machine.
 
 ```text
- Dataplicity Lens · production-gateway-04              1.0s · running
- CPU  18%  ▁▂▂▃▄▃▂▂      Memory  44%  ▂▂▃▃▄▄▄▅      Load  0.41 0.38 0.31
- Processes  5        Running  1       Zombies  1       Findings  1
- PID     PROCESS          USER       CPU     MEM      READ       WRITE      STATE
- 8421    image-worker     service    38.2%   12.4%    4.2 MB/s   380 KB/s   Running
- 1027    postgres         postgres    7.8%   18.1%    820 KB/s   1.1 MB/s   Sleeping
- 2214    mqtt-bridge      mqtt        3.1%    1.8%    110 KB/s   90 KB/s    Sleeping
- Attention
- zombie process detected: PID 9462, parent image-worker
- / Search   f Filter   s Sort   g Group   Enter Inspect   ? Help   q Quit
+  DATAPLICITY / LENS  ◆  production-gateway-04   LIVE
+  refresh 1.0s   •   group none   •   sort CPU ↓
+╭─ CPU   18.2% ───────────╮╭─ MEMORY   43.8% ────────╮╭─ SYSTEM PULSE ───────╮
+│ ▁▂▂▃▄▃▂▂▃▃▄▅▄▃          ││ ▂▂▃▃▄▄▄▅▅▄▄▃▃▂        ││ LOAD    0.41  0.38  0.31  │
+│                            ││                            ││ TASKS   5  1 running     │
+╰───────────────────────────╯╰───────────────────────────╯╰──────────────────────────╯
+╭─ PROCESSES  5 visible ──────────────────────────────────────────────────╮
+│ PID     PROCESS              USER          CPU%  MEM%      RSS ST │
+│ 8421    image-worker         service       38.2  12.4    848MB R  │
+│ 1027    postgres             postgres       7.8  18.1   1.15GB S  │
+│ 2214    mqtt-bridge          mqtt           3.1   1.8    118MB S  │
+│ 9462    image-helper         service        0.0   0.0       0B Z  │
+╰──────────────────────────────────────────────────────────────────╯
+  /  search    f  filter    s  sort    g  group    ↵  inspect    ?  help    q  quit
 ```
 
 Generate a repeatable text capture with:
