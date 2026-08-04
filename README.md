@@ -1,26 +1,32 @@
 # Dataplicity Lens
 
-**A coherent, modern toolkit for understanding Linux and macOS systems.**
+**Processes, services, logs, storage and networking in one terminal toolkit.**
 
-Modern operating systems already expose almost everything you need to know. The problem is that the information is
-scattered across tools that were never designed together. Lens gives processes, services, logs,
-storage and networking one consistent interaction model.
+Lens brings the system information we use most often into a consistent set of terminal commands for
+Linux and macOS. Start with a host overview, or go directly to processes, services, logs, storage,
+networking or health checks.
 
-This repository ships a read-only cockpit and six focused commands: **`lens`**, **`lens-top`**,
+This repository ships a system overview and six focused commands: **`lens`**, **`lens-top`**,
 **`lens-services`**, **`lens-logs`**, **`lens-disk`**, **`lens-net`** and **`lens-health`**. They share
-one canonical snapshot, relationship and finding model rather than collecting competing versions of
-the same host.
+the same host snapshot and process and service identities.
 
-Dataplicity Lens is an open-source system operations toolkit maintained by WildFoundry Ltd, the team
-behind Dataplicity. It is licensed under Apache License 2.0, works locally without an account, and
-contains no telemetry.
+## Why we built Lens
+
+At WildFoundry, we use Linux every day to build and support [Dataplicity](https://www.dataplicity.com/).
+Lens began as a tool for our own team: a quicker, more consistent way to inspect processes, services,
+logs, storage and networking while working on real systems.
+
+Lens is not a new service or a commercial add-on. Dataplicity remains our core product, and Lens works
+independently of it. We are publishing Lens because it is already useful to us, and making it available
+may also save time for Dataplicity customers and anyone else looking after Linux or macOS systems. That
+is the whole idea.
 
 > **Making Linux make sense.**
 
 ## Demo
 
-Every binary supports deterministic `--demo` data, so screenshots, documentation and tests do not
-depend on the machine running them.
+Every command supports `--demo`, which loads sample data so you can try the output without depending on
+the state of the current machine.
 
 ```text
  Dataplicity Lens · production-gateway-04              1.0s · running
@@ -54,12 +60,12 @@ cd dataplicity-lens
 scripts/test-homebrew-local.sh --keep
 ```
 
-The script creates a local source archive, installs the committed formula from source, and runs both
-the deterministic suite checks and a native macOS process collection check. `--keep` leaves the
+The script creates a local source archive, installs the committed formula from source, and checks both
+the sample output and native macOS process collection. `--keep` leaves the
 formula installed so you can run `lens`, `lens-top --once`, or any specialist command. Omit it for a
 clean verification run that uninstalls its temporary tap and package automatically.
 
-Run Lens as your normal account; it does not need `sudo`. Start with the deterministic demo and then
+Run Lens as your normal account; it does not need `sudo`. Start with the sample data and then
 check native macOS collection:
 
 ```sh
@@ -164,7 +170,7 @@ lens-top --demo
 | `?` | Help |
 | `q` or `Ctrl+C` | Quit |
 
-The suite is intentionally read-only. It does not kill, renice, restart, delete or reconfigure.
+The current release reports system state. It does not kill, renice, restart, delete or reconfigure.
 
 ## Plain and structured output
 
@@ -202,12 +208,12 @@ The workspace keeps applications thin and gives shared crates real responsibilit
 ```text
 apps/lens*             Thin cockpit, process explorer and specialist entry points
 crates/system          Shared service, log, storage and network composition
-crates/model           Canonical entities, snapshots, findings and relationships
+crates/model           Shared entities, snapshots, findings and relationships
 crates/core            Shared filtering, sorting, grouping and search grammar
-crates/platform-linux  Read-only Linux collection and robust kernel parsers
-crates/platform-macos  Read-only macOS collection and command parsers
+crates/platform-linux  Linux collection and kernel parsers
+crates/platform-macos  macOS collection and command parsers
 crates/history         Bounded deltas, trends and process appearance/disappearance
-crates/diagnostics     Deterministic evidence-based findings
+crates/diagnostics     System checks and findings
 crates/output          Plain, JSON and JSON Lines contracts
 crates/ui              Shared terminal shell, tables, overlays and detail views
 ```
