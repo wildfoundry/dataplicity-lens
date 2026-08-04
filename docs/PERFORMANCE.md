@@ -4,6 +4,8 @@ The v0.2 design targets:
 
 - draw the interactive host/process overview without waiting for supplemental system commands
 - keep navigation responsive while services, logs, storage and networking load in the background
+- show an interactive specialist immediately, then collect only that specialist's domain in the
+  background
 - smooth one-second refresh with at least 10,000 processes
 - low idle overhead
 - no unbounded history or cache growth

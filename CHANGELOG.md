@@ -19,6 +19,8 @@ versioning once the first public release is tagged.
 
 - The `lens` cockpit now opens with useful host and process status while slower service, log,
   storage and network checks continue in the background.
+- Interactive specialist screens now open immediately with a loading state and collect only the
+  selected domain; opening Storage no longer waits for unrelated log, service and network scans.
 - Documentation navigation groups the specialist commands under the suite instead of promoting one
   command on its own.
 
