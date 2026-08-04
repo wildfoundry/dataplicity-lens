@@ -75,7 +75,7 @@ kbd { display: inline-block; min-width: 27px; padding: 3px 7px; border: 1px soli
   .eyebrow { justify-content: center; }
   .hero-actions { justify-content: center; }
   .hero-note { text-align: center; }
-  .terminal { transform: none; max-width: 760px; margin: 0 auto; }
+  .terminal { max-width: 760px; margin: 0 auto; }
   .split, .split-reverse { grid-template-columns: 1fr; gap: 44px; }
   .sticky-copy { position: static; }
   .content-layout { grid-template-columns: 1fr; gap: 36px; }
