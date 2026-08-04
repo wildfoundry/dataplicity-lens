@@ -1,6 +1,6 @@
 class DataplicityLens < Formula
   desc "Local system operations toolkit for Linux and macOS"
-  homepage "https://wildfoundry.github.io/dataplicity-lens/"
+  homepage "https://github.com/wildfoundry/dataplicity-lens"
   url "https://github.com/wildfoundry/dataplicity-lens.git", branch: "main"
   version "0.3.0"
   license "Apache-2.0"
