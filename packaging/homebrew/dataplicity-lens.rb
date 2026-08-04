@@ -1,8 +1,8 @@
 class DataplicityLens < Formula
-  desc "Read-only system observability toolkit for Linux and macOS"
+  desc "Local system operations toolkit for Linux and macOS"
   homepage "https://wildfoundry.github.io/dataplicity-lens/"
   url "https://github.com/wildfoundry/dataplicity-lens.git", branch: "main"
-  version "0.2.0"
+  version "0.3.0"
   license "Apache-2.0"
 
   depends_on "rust" => :build
