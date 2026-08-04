@@ -64,6 +64,9 @@ install -m 0644 "$work/dataplicity-lens.rb" "$tap_dir/Formula/dataplicity-lens.r
 HOMEBREW_NO_AUTO_UPDATE=1 HOMEBREW_NO_INSTALL_FROM_API=1 \
   brew install --build-from-source "$tap/dataplicity-lens"
 installed=true
+# Homebrew 6 can leave a freshly installed formula from a temporary tap unlinked.
+# Make command availability part of the installation contract before running tests.
+HOMEBREW_NO_AUTO_UPDATE=1 brew link --overwrite dataplicity-lens >/dev/null
 HOMEBREW_NO_AUTO_UPDATE=1 HOMEBREW_NO_INSTALL_FROM_API=1 brew test "$tap/dataplicity-lens"
 
 if [[ "$keep" == true ]]; then
