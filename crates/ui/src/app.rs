@@ -37,6 +37,7 @@ pub struct App {
     pub snapshot: Snapshot,
     pub selected: usize,
     pub view: View,
+    inspected: Option<(ProcessId, u64)>,
     pub search: String,
     pub filter_expression: String,
     pub input_mode: Option<InputMode>,
@@ -66,6 +67,7 @@ impl App {
             snapshot,
             selected: 0,
             view: View::List,
+            inspected: None,
             search: String::new(),
             filter_expression: String::new(),
             input_mode: None,
@@ -104,9 +106,10 @@ impl App {
     }
 
     pub fn replace_snapshot(&mut self, snapshot: Snapshot) {
+        let selected_identity = self.selected_process().map(Process::identity);
         self.snapshot = snapshot;
         self.record_history();
-        self.clamp_selection();
+        self.restore_selection(selected_identity);
     }
 
     pub fn set_error(&mut self, error: String) {
@@ -139,6 +142,22 @@ impl App {
     }
 
     pub fn selected_process(&self) -> Option<&Process> {
+        if self.view == View::Detail {
+            let identity = self.inspected?;
+            return self
+                .snapshot
+                .processes
+                .iter()
+                .find(|process| process.identity() == identity);
+        }
+        self.process_at_selected_index()
+    }
+
+    pub const fn inspected_process_identity(&self) -> Option<(ProcessId, u64)> {
+        self.inspected
+    }
+
+    fn process_at_selected_index(&self) -> Option<&Process> {
         let visible = self.visible();
         visible
             .get(self.selected)
@@ -188,6 +207,7 @@ impl App {
             KeyCode::Esc => {
                 if self.view == View::Detail {
                     self.view = View::List;
+                    self.inspected = None;
                     Action::Redraw
                 } else {
                     Action::Quit
@@ -202,7 +222,8 @@ impl App {
                 Action::Redraw
             }
             KeyCode::Enter => {
-                if self.selected_process().is_some() {
+                if let Some(identity) = self.process_at_selected_index().map(Process::identity) {
+                    self.inspected = Some(identity);
                     self.view = View::Detail;
                     Action::Redraw
                 } else {
@@ -318,9 +339,22 @@ impl App {
         } else {
             self.selected = self.selected.saturating_sub(1);
         }
+        if self.view == View::Detail {
+            self.inspected = self.process_at_selected_index().map(Process::identity);
+        }
     }
 
-    fn clamp_selection(&mut self) {
+    fn restore_selection(&mut self, identity: Option<(ProcessId, u64)>) {
+        if let Some(identity) = identity
+            && let Some(position) = self
+                .visible()
+                .iter()
+                .position(|item| self.snapshot.processes[item.index].identity() == identity)
+        {
+            self.selected = position;
+            return;
+        }
+
         let length = self.visible().len();
         if length == 0 {
             self.selected = 0;
@@ -396,5 +430,133 @@ fn merge_filter(target: &mut ProcessFilter, extra: ProcessFilter) {
     }
     if extra.service_or_cgroup.is_some() {
         target.service_or_cgroup = extra.service_or_cgroup;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use crossterm::event::{KeyEvent, KeyModifiers};
+    use lens_core::{GroupMode, ProcessFilter, SortDirection, SortKey};
+    use lens_model::{IoCounters, ProcessState, User};
+
+    use super::*;
+    use crate::ColorMode;
+
+    fn options() -> UiOptions {
+        UiOptions {
+            interval: Duration::from_secs(1),
+            sort_key: SortKey::Cpu,
+            sort_direction: SortDirection::Descending,
+            group: GroupMode::None,
+            filter: ProcessFilter::default(),
+            limit: None,
+            history_length: 10,
+            color_mode: ColorMode::Never,
+            ascii: true,
+        }
+    }
+
+    fn process(pid: u32, start_time_ticks: u64, name: &str, cpu_percent: f64) -> Process {
+        Process {
+            pid: ProcessId(pid),
+            parent_pid: None,
+            name: name.to_owned(),
+            command_line: Some(name.to_owned()),
+            executable: None,
+            user: User {
+                uid: 501,
+                name: Some("operator".to_owned()),
+            },
+            state: ProcessState::Sleeping,
+            cpu_percent,
+            memory_percent: 1.0,
+            rss_bytes: 1024,
+            virtual_memory_bytes: 2048,
+            threads: 1,
+            io: IoCounters::default(),
+            runtime_seconds: 1,
+            cgroup: None,
+            service: None,
+            container: None,
+            file_descriptor_count: None,
+            child_pids: Vec::new(),
+            unavailable_fields: Vec::new(),
+            cpu_time_ticks: 0,
+            start_time_ticks,
+        }
+    }
+
+    fn snapshot(processes: Vec<Process>) -> Snapshot {
+        let mut snapshot = Snapshot::empty("fixture");
+        snapshot.processes = processes;
+        snapshot
+    }
+
+    fn key(code: KeyCode) -> KeyEvent {
+        KeyEvent::new(code, KeyModifiers::NONE)
+    }
+
+    #[test]
+    fn inspected_process_stays_pinned_when_cpu_sort_order_changes() {
+        let mut app = App::new(
+            snapshot(vec![
+                process(10, 100, "busy", 80.0),
+                process(20, 200, "selected", 20.0),
+            ]),
+            options(),
+            TerminalCapabilities::detect(ColorMode::Never, true),
+        );
+        app.handle_key(key(KeyCode::Down));
+        app.handle_key(key(KeyCode::Enter));
+
+        app.replace_snapshot(snapshot(vec![
+            process(10, 100, "busy", 1.0),
+            process(20, 200, "selected", 95.0),
+        ]));
+
+        assert_eq!(
+            app.selected_process().map(Process::identity),
+            Some((ProcessId(20), 200))
+        );
+        assert_eq!(app.selected, 0);
+    }
+
+    #[test]
+    fn inspected_process_does_not_follow_a_reused_pid() {
+        let mut app = App::new(
+            snapshot(vec![process(20, 200, "selected", 20.0)]),
+            options(),
+            TerminalCapabilities::detect(ColorMode::Never, true),
+        );
+        app.handle_key(key(KeyCode::Enter));
+
+        app.replace_snapshot(snapshot(vec![process(20, 999, "replacement", 20.0)]));
+
+        assert!(app.selected_process().is_none());
+        assert_eq!(app.inspected_process_identity(), Some((ProcessId(20), 200)));
+    }
+
+    #[test]
+    fn list_selection_stays_on_the_same_process_when_sort_order_changes() {
+        let mut app = App::new(
+            snapshot(vec![
+                process(10, 100, "busy", 80.0),
+                process(20, 200, "selected", 20.0),
+            ]),
+            options(),
+            TerminalCapabilities::detect(ColorMode::Never, true),
+        );
+        app.handle_key(key(KeyCode::Down));
+
+        app.replace_snapshot(snapshot(vec![
+            process(10, 100, "busy", 1.0),
+            process(20, 200, "selected", 95.0),
+        ]));
+
+        assert_eq!(
+            app.selected_process().map(Process::identity),
+            Some((ProcessId(20), 200))
+        );
+        assert_eq!(app.selected, 0);
     }
 }

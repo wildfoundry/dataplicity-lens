@@ -324,7 +324,21 @@ fn draw_processes(frame: &mut Frame<'_>, area: Rect, app: &App) {
 
 fn draw_detail(frame: &mut Frame<'_>, area: Rect, app: &App) {
     let Some(process) = app.selected_process() else {
-        frame.render_widget(Paragraph::new("No process selected"), area);
+        let message = app.inspected_process_identity().map_or_else(
+            || "No process selected".to_owned(),
+            |(pid, _)| {
+                format!(
+                    "Process PID {} is no longer running.\n\nPress Esc to return to the process list.",
+                    pid.0
+                )
+            },
+        );
+        frame.render_widget(
+            Paragraph::new(message)
+                .block(panel(" PROCESS EXITED ", app.capabilities))
+                .wrap(Wrap { trim: false }),
+            area,
+        );
         return;
     };
     let sections = Layout::default()
