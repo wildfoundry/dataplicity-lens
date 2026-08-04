@@ -17,6 +17,15 @@
   --warm-soft: rgba(244, 200, 106, 0.13);
   --danger: #ff8c82;
   --blue: #80bfff;
+  --code-bg: #050b09;
+  --code-text: #d7e7e1;
+  --code-line: #1b2c27;
+  --code-muted: #789087;
+  --code-copy: #9cb3aa;
+  --code-command: #77f2cc;
+  --code-flag: #80bfff;
+  --code-value: #f4c86a;
+  --code-danger: #ff8c82;
   --shadow: 0 24px 80px rgba(0, 0, 0, 0.36);
   --radius-sm: 10px;
   --radius-md: 16px;
@@ -45,6 +54,15 @@ html[data-theme="light"] {
   --warm-soft: rgba(156, 100, 0, 0.09);
   --danger: #b43129;
   --blue: #1c62a8;
+  --code-bg: #edf3ef;
+  --code-text: #162820;
+  --code-line: #c9d8d1;
+  --code-muted: #5d746b;
+  --code-copy: #49645a;
+  --code-command: #056b52;
+  --code-flag: #185f91;
+  --code-value: #875900;
+  --code-danger: #a72d27;
   --shadow: 0 24px 70px rgba(36, 63, 52, 0.12);
 }
 

@@ -1,7 +1,7 @@
-.token-prompt, .token-command { color: #77f2cc; }
-.token-flag { color: #80bfff; }
-.token-value { color: #f4c86a; }
-.token-comment { color: #789087; }
+.token-prompt, .token-command { color: var(--code-command); }
+.token-flag { color: var(--code-flag); }
+.token-value { color: var(--code-value); }
+.token-comment { color: var(--code-muted); }
 
 .project-band {
   border-top: 1px solid var(--line);
