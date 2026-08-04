@@ -84,7 +84,7 @@ pub enum CompletionShell {
     Fish,
 }
 
-#[derive(Debug, Parser)]
+#[derive(Debug, Clone, Parser)]
 #[command(version, about = "A coherent view of a Linux or macOS system")]
 pub struct ViewArgs {
     /// Emit stable JSON rather than human-readable output.
@@ -148,6 +148,11 @@ pub fn run_view(view: View) -> Result<()> {
     if generate_assets(view.binary(), &args)? {
         return Ok(());
     }
+    if !args.json && !args.plain && !args.demo && io::stdout().is_terminal() {
+        let mut terminal = CockpitTerminal::enter()?;
+        specialist_loop(view, &args, &mut terminal.stdout)?;
+        return Ok(());
+    }
     let snapshot = if args.demo {
         demo_snapshot()
     } else {
@@ -166,9 +171,6 @@ pub fn run_view(view: View) -> Result<()> {
         println!();
     } else if args.plain || args.demo || !io::stdout().is_terminal() {
         render_plain(view, &filtered, &mut io::stdout().lock())?;
-    } else {
-        let mut terminal = CockpitTerminal::enter()?;
-        specialist_loop(view, &args, &mut terminal.stdout)?;
     }
     Ok(())
 }
@@ -398,6 +400,23 @@ fn spawn_cockpit_collection(
     let (sender, receiver) = mpsc::channel();
     thread::spawn(move || {
         let snapshot = enrich_snapshot(base, since.as_deref(), &log_files);
+        let _ = sender.send(snapshot);
+    });
+    receiver
+}
+
+fn spawn_specialist_collection(view: View, args: ViewArgs) -> Receiver<SystemSnapshot> {
+    let (sender, receiver) = mpsc::channel();
+    thread::spawn(move || {
+        let snapshot = collect_view_with_options(view, args.since.as_deref(), &args.log_file);
+        let snapshot = filter_snapshot(
+            snapshot,
+            args.filter.as_deref(),
+            args.service.as_deref(),
+            args.process.as_deref(),
+            args.severity.as_deref(),
+            args.limit,
+        );
         let _ = sender.send(snapshot);
     });
     receiver
@@ -728,31 +747,62 @@ fn move_selection(selected: usize, delta: isize, length: usize) -> usize {
 }
 
 fn specialist_loop(view: View, args: &ViewArgs, stdout: &mut impl Write) -> Result<()> {
+    let mut snapshot = SystemSnapshot::empty(hostname());
+    let mut receiver = spawn_specialist_collection(view, args.clone());
+    let mut loading = true;
+    let mut redraw = true;
     loop {
-        let snapshot = filter_snapshot(
-            collect_with_options(args.since.as_deref(), &args.log_file),
-            args.filter.as_deref(),
-            args.service.as_deref(),
-            args.process.as_deref(),
-            args.severity.as_deref(),
-            args.limit,
-        );
-        execute!(
-            stdout,
-            cursor::MoveTo(0, 0),
-            terminal::Clear(ClearType::All)
-        )?;
-        writeln!(stdout, "{} · {}\n", view.title(), snapshot.host.hostname)?;
-        render_plain(view, &snapshot, stdout)?;
-        writeln!(stdout, "\nr refresh   q quit")?;
-        stdout.flush()?;
-        if let Event::Key(key) = event::read()? {
+        match receiver.try_recv() {
+            Ok(collected) => {
+                snapshot = collected;
+                loading = false;
+                redraw = true;
+            }
+            Err(TryRecvError::Disconnected) if loading => {
+                snapshot
+                    .collection_warnings
+                    .push(format!("{} collection stopped unexpectedly", view.title()));
+                loading = false;
+                redraw = true;
+            }
+            Err(TryRecvError::Empty | TryRecvError::Disconnected) => {}
+        }
+
+        if redraw {
+            execute!(
+                stdout,
+                cursor::MoveTo(0, 0),
+                terminal::Clear(ClearType::All)
+            )?;
+            writeln!(stdout, "{} · {}\n", view.title(), snapshot.host.hostname)?;
+            if loading {
+                writeln!(
+                    stdout,
+                    "Loading {} data…",
+                    view.title().to_ascii_lowercase()
+                )?;
+            } else {
+                render_plain(view, &snapshot, stdout)?;
+            }
+            writeln!(stdout, "\nr refresh   q quit")?;
+            stdout.flush()?;
+            redraw = false;
+        }
+
+        if event::poll(Duration::from_millis(100))?
+            && let Event::Key(key) = event::read()?
+        {
             match key.code {
                 KeyCode::Char('q') | KeyCode::Esc => return Ok(()),
                 KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => {
                     return Ok(());
                 }
-                KeyCode::Char('r') => {}
+                KeyCode::Char('r') if !loading => {
+                    snapshot = SystemSnapshot::empty(hostname());
+                    receiver = spawn_specialist_collection(view, args.clone());
+                    loading = true;
+                    redraw = true;
+                }
                 _ => {}
             }
         }
@@ -849,6 +899,45 @@ pub fn collect() -> SystemSnapshot {
 
 pub fn collect_with_options(since: Option<&str>, log_files: &[PathBuf]) -> SystemSnapshot {
     enrich_snapshot(collect_base_snapshot(), since, log_files)
+}
+
+fn collect_view_with_options(
+    view: View,
+    since: Option<&str>,
+    log_files: &[PathBuf],
+) -> SystemSnapshot {
+    if view == View::Health {
+        return collect_with_options(since, log_files);
+    }
+
+    let mut snapshot = collect_base_snapshot();
+    let warnings = &mut snapshot.collection_warnings;
+    match view {
+        View::Processes => {}
+        View::Services => snapshot.services = collect_services(warnings),
+        View::Logs => {
+            let mut logs = collect_logs(warnings, since);
+            let file_sources = collect_file_logs(log_files, &mut logs, warnings);
+            snapshot.log_sources = vec![platform_log_source()];
+            snapshot.log_sources.extend(file_sources);
+            snapshot.logs = logs;
+        }
+        View::Disk => {
+            let mut mounts = collect_mounts(warnings);
+            apply_inode_usage(&mut mounts, warnings);
+            snapshot.filesystems = filesystems(&mounts);
+            snapshot.deleted_open_files = collect_deleted_open_files(warnings);
+            snapshot.block_devices = collect_block_devices(warnings);
+            snapshot.mounts = mounts;
+        }
+        View::Net => {
+            snapshot.interfaces = collect_interfaces(warnings);
+            snapshot.routes = collect_routes(warnings);
+            snapshot.sockets = collect_sockets(warnings);
+        }
+        View::Health => unreachable!("health uses the complete collector"),
+    }
+    snapshot
 }
 
 fn collect_base_snapshot() -> SystemSnapshot {
@@ -2545,6 +2634,14 @@ mod tests {
         let output = String::from_utf8(output).expect("UTF-8");
         assert!(output.contains("production-gateway-04"));
         assert!(output.contains("Failed services"));
+    }
+
+    #[test]
+    fn cockpit_storage_selection_routes_to_lens_disk() {
+        let storage = View::ALL[3];
+        assert_eq!(storage, View::Disk);
+        assert_eq!(storage.title(), "Storage");
+        assert_eq!(storage.binary(), "lens-disk");
     }
 
     #[test]
