@@ -978,7 +978,7 @@ checksum = "bbd2bcb4c963f2ddae06a2efc7e9f3591312473c50c6685e1f298068316e66fe"
 
 [[package]]
 name = "lens"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "anyhow",
  "lens-system",
@@ -987,7 +987,7 @@ dependencies = [
 
 [[package]]
 name = "lens-core"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "lens-model",
  "serde",
@@ -995,7 +995,7 @@ dependencies = [
 
 [[package]]
 name = "lens-diagnostics"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "lens-history",
  "lens-model",
@@ -1003,35 +1003,35 @@ dependencies = [
 
 [[package]]
 name = "lens-disk"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "lens-system",
 ]
 
 [[package]]
 name = "lens-health"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "lens-system",
 ]
 
 [[package]]
 name = "lens-history"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "lens-model",
 ]
 
 [[package]]
 name = "lens-logs"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "lens-system",
 ]
 
 [[package]]
 name = "lens-model"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "serde",
  "time",
@@ -1039,14 +1039,14 @@ dependencies = [
 
 [[package]]
 name = "lens-net"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "lens-system",
 ]
 
 [[package]]
 name = "lens-output"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "insta",
  "lens-model",
@@ -1057,7 +1057,7 @@ dependencies = [
 
 [[package]]
 name = "lens-platform-linux"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "lens-model",
  "procfs",
@@ -1069,7 +1069,7 @@ dependencies = [
 
 [[package]]
 name = "lens-platform-macos"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "lens-model",
  "thiserror 2.0.11",
@@ -1077,14 +1077,14 @@ dependencies = [
 
 [[package]]
 name = "lens-services"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "lens-system",
 ]
 
 [[package]]
 name = "lens-system"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "anyhow",
  "clap",
@@ -1101,7 +1101,7 @@ dependencies = [
 
 [[package]]
 name = "lens-top"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "anyhow",
  "clap",
@@ -1126,7 +1126,7 @@ dependencies = [
 
 [[package]]
 name = "lens-ui"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "crossterm",
  "insta",

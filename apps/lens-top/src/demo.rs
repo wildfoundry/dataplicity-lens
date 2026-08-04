@@ -105,6 +105,7 @@ impl DemoSource {
             interfaces: Vec::new(),
             routes: Vec::new(),
             sockets: Vec::new(),
+            cellular_modems: Vec::new(),
             findings: Vec::new(),
             relationships: Vec::new(),
             build: None,

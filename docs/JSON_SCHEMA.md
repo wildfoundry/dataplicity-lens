@@ -24,6 +24,7 @@ version.
   "interfaces": [],
   "routes": [],
   "sockets": [],
+  "cellular_modems": [],
   "findings": [],
   "relationships": [],
   "build": {},
@@ -50,6 +51,7 @@ JSON Lines output emits one host record, then process records, then finding reco
 
 Terminal colour, spacing and glyphs never appear in structured output.
 
-Specialist commands emit the same complete document and filter only the relevant collections. This
-keeps relationships and findings interpretable across tools. Optional owner, restart and inode fields
-are omitted or `null` when the host does not expose them.
+Specialist commands emit the same document shape but collect only their relevant domain, leaving
+unrelated collections empty. This keeps scripts on one schema without making a log query wait for
+storage, network or service commands. Optional owner, restart and inode fields are omitted or `null`
+when the host does not expose them.

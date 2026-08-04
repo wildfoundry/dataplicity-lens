@@ -28,7 +28,7 @@ if brew list --formula dataplicity-lens >/dev/null 2>&1; then
   exit 1
 fi
 
-archive="$work/dataplicity-lens-0.2.0.tar.gz"
+archive="$work/dataplicity-lens-0.3.0.tar.gz"
 COPYFILE_DISABLE=1 tar \
   --exclude=.git \
   --exclude=target \

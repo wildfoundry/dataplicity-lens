@@ -10,7 +10,7 @@ repository.workspace = true
 workspace = true
 
 [dependencies]
-lens-model = { version = "=0.2.0", path = "../model" }
+lens-model = { version = "=0.3.0", path = "../model" }
 thiserror.workspace = true
 time.workspace = true
 tracing.workspace = true

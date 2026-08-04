@@ -297,6 +297,37 @@ pub struct Socket {
     pub process_id: Option<ProcessId>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CellularSim {
+    pub path: String,
+    pub active: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub iccid: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub operator_code: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub operator_name: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CellularModem {
+    pub path: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub manufacturer: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model: Option<String>,
+    pub state: String,
+    pub access_technologies: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub signal_quality_percent: Option<u8>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub operator_code: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub operator_name: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sim: Option<CellularSim>,
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Snapshot {
     pub schema_version: SchemaVersion,
@@ -314,6 +345,8 @@ pub struct Snapshot {
     pub interfaces: Vec<Interface>,
     pub routes: Vec<Route>,
     pub sockets: Vec<Socket>,
+    #[serde(default)]
+    pub cellular_modems: Vec<CellularModem>,
     pub findings: Vec<Finding>,
     pub relationships: Vec<Relationship>,
     pub build: Option<BuildInfo>,
@@ -350,6 +383,7 @@ impl Snapshot {
             interfaces: Vec::new(),
             routes: Vec::new(),
             sockets: Vec::new(),
+            cellular_modems: Vec::new(),
             findings: Vec::new(),
             relationships: Vec::new(),
             build: None,

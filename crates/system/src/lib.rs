@@ -3,15 +3,15 @@
 use std::{
     cmp::Ordering,
     env,
-    io::{self, IsTerminal, Write},
-    path::PathBuf,
+    io::{self, IsTerminal, Read, Seek, SeekFrom, Write},
+    path::{Path, PathBuf},
     process::{Command, Stdio},
     sync::mpsc::{self, Receiver, TryRecvError},
     thread,
-    time::Duration,
+    time::{Duration, Instant},
 };
 
-use anyhow::{Context, Result};
+use anyhow::{Context, Result, bail};
 use clap::{CommandFactory, Parser, ValueEnum};
 use crossterm::{
     cursor,
@@ -24,13 +24,14 @@ pub use lens_model::{
     Relationship, RelationshipKind, Route, Service, Snapshot as SystemSnapshot, Socket,
 };
 use lens_model::{
-    Cgroup, IoCounters, Process, ProcessId, ProcessState, SchemaVersion, ServiceReference,
-    Timestamp, User,
+    CellularModem, CellularSim, Cgroup, IoCounters, Process, ProcessId, ProcessState,
+    SchemaVersion, ServiceReference, Timestamp, User,
 };
 #[cfg(target_os = "linux")]
 use lens_platform_linux::LinuxCollector;
 #[cfg(target_os = "macos")]
 use lens_platform_macos::MacOsCollector;
+use serde::Serialize;
 
 pub const SCHEMA_VERSION: &str = "2";
 
@@ -84,6 +85,16 @@ pub enum CompletionShell {
     Fish,
 }
 
+#[derive(Debug, Clone, Copy, ValueEnum, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ServiceAction {
+    Start,
+    Stop,
+    Restart,
+    Enable,
+    Disable,
+}
+
 #[derive(Debug, Clone, Parser)]
 #[command(version, about = "A coherent view of a Linux or macOS system")]
 pub struct ViewArgs {
@@ -123,9 +134,21 @@ pub struct ViewArgs {
     /// Output path used with --generate-completion.
     #[arg(long, value_name = "PATH", requires = "generate_completion")]
     pub generate_output: Option<PathBuf>,
-    /// Maximum rows to emit.
-    #[arg(long, default_value_t = 100)]
+    /// Maximum rows to collect and emit; use 0 for every available row.
+    #[arg(long, default_value_t = 1000)]
     pub limit: usize,
+    /// Change a service state (lens-services on Linux only).
+    #[arg(long, value_enum, requires = "target")]
+    pub action: Option<ServiceAction>,
+    /// Exact service unit targeted by --action.
+    #[arg(long, requires = "action")]
+    pub target: Option<String>,
+    /// Confirm a requested state change for non-interactive use.
+    #[arg(long, requires = "action")]
+    pub yes: bool,
+    /// Print the planned state change without executing it.
+    #[arg(long, requires = "action")]
+    pub dry_run: bool,
 }
 
 pub type SystemFinding = lens_model::Finding;
@@ -148,6 +171,9 @@ pub fn run_view(view: View) -> Result<()> {
     if generate_assets(view.binary(), &args)? {
         return Ok(());
     }
+    if args.action.is_some() {
+        return run_service_action(view, &args);
+    }
     if !args.json && !args.plain && !args.demo && io::stdout().is_terminal() {
         let mut terminal = CockpitTerminal::enter()?;
         specialist_loop(view, &args, &mut terminal.stdout)?;
@@ -156,7 +182,7 @@ pub fn run_view(view: View) -> Result<()> {
     let snapshot = if args.demo {
         demo_snapshot()
     } else {
-        collect_with_options(args.since.as_deref(), &args.log_file)
+        collect_view(view, args.since.as_deref(), &args.log_file, args.limit)
     };
     let filtered = filter_snapshot(
         snapshot,
@@ -179,6 +205,9 @@ pub fn run_cockpit() -> Result<()> {
     let args = ViewArgs::parse();
     if generate_assets("lens", &args)? {
         return Ok(());
+    }
+    if args.action.is_some() {
+        bail!("service actions are available through lens-services");
     }
     if args.json || args.plain || args.demo || !io::stdout().is_terminal() {
         let snapshot = if args.demo {
@@ -209,6 +238,97 @@ pub fn run_cockpit() -> Result<()> {
         args.since.clone(),
         args.log_file.clone(),
     )
+}
+
+#[derive(Debug, Serialize)]
+struct ActionOutcome<'a> {
+    action: ServiceAction,
+    target: &'a str,
+    status: &'static str,
+    verified_state: Option<String>,
+}
+
+fn run_service_action(view: View, args: &ViewArgs) -> Result<()> {
+    if view != View::Services {
+        bail!("--action is only supported by lens-services");
+    }
+    let action = args.action.context("missing --action")?;
+    let target = args.target.as_deref().context("missing --target")?;
+    if target.trim().is_empty()
+        || target.starts_with('-')
+        || target.chars().any(char::is_whitespace)
+    {
+        bail!("--target must be one exact service unit name");
+    }
+    if !args.dry_run && !args.yes {
+        bail!("state changes require --yes; use --dry-run to inspect the plan safely");
+    }
+    if args.dry_run {
+        return write_action_outcome(
+            args,
+            &ActionOutcome {
+                action,
+                target,
+                status: "planned",
+                verified_state: None,
+            },
+        );
+    }
+    #[cfg(target_os = "macos")]
+    bail!(
+        "service actions are not yet supported safely for launchd; no change was made to {target}"
+    );
+    #[cfg(target_os = "linux")]
+    {
+        let verb = match action {
+            ServiceAction::Start => "start",
+            ServiceAction::Stop => "stop",
+            ServiceAction::Restart => "restart",
+            ServiceAction::Enable => "enable",
+            ServiceAction::Disable => "disable",
+        };
+        let mut warnings = Vec::new();
+        if command_with_timeout(
+            "systemctl",
+            &[verb, "--", target],
+            &mut warnings,
+            Duration::from_secs(15),
+        )
+        .is_none()
+        {
+            bail!("{}", warnings.join("; "));
+        }
+        let mut verify_warnings = Vec::new();
+        let verified_state = collect_services(&mut verify_warnings)
+            .into_iter()
+            .find(|service| service.name == target)
+            .map(|service| format!("{} / {}", service.active, service.sub));
+        write_action_outcome(
+            args,
+            &ActionOutcome {
+                action,
+                target,
+                status: "completed",
+                verified_state,
+            },
+        )
+    }
+}
+
+fn write_action_outcome(args: &ViewArgs, outcome: &ActionOutcome<'_>) -> Result<()> {
+    if args.json {
+        serde_json::to_writer_pretty(io::stdout().lock(), outcome)?;
+        println!();
+    } else {
+        println!(
+            "{:?} {}: {}",
+            outcome.action, outcome.target, outcome.status
+        );
+        if let Some(state) = &outcome.verified_state {
+            println!("Verified state: {state}");
+        }
+    }
+    Ok(())
 }
 
 fn generate_assets(name: &'static str, args: &ViewArgs) -> Result<bool> {
@@ -319,15 +439,15 @@ fn cockpit_loop(
     log_files: Vec<PathBuf>,
 ) -> Result<()> {
     let mut selected = 0usize;
-    let mut snapshot = collect_base_snapshot();
-    let mut receiver = spawn_cockpit_collection(snapshot.clone(), since.clone(), log_files.clone());
+    let mut snapshot = SystemSnapshot::empty(hostname());
+    let mut receiver = spawn_cockpit_collection(since.clone(), log_files.clone());
     let mut loading = true;
     let mut redraw = true;
     loop {
         match receiver.try_recv() {
-            Ok(collected) => {
-                snapshot = collected;
-                loading = false;
+            Ok(update) => {
+                snapshot = update.snapshot;
+                loading = update.loading;
                 redraw = true;
             }
             Err(TryRecvError::Disconnected) if loading => {
@@ -377,12 +497,8 @@ fn cockpit_loop(
                     redraw = true;
                 }
                 KeyCode::Char('r') if !loading => {
-                    snapshot = collect_base_snapshot();
-                    receiver = spawn_cockpit_collection(
-                        snapshot.clone(),
-                        since.clone(),
-                        log_files.clone(),
-                    );
+                    snapshot = SystemSnapshot::empty(hostname());
+                    receiver = spawn_cockpit_collection(since.clone(), log_files.clone());
                     loading = true;
                     redraw = true;
                 }
@@ -392,15 +508,32 @@ fn cockpit_loop(
     }
 }
 
+struct CockpitUpdate {
+    snapshot: SystemSnapshot,
+    loading: bool,
+}
+
 fn spawn_cockpit_collection(
-    base: SystemSnapshot,
     since: Option<String>,
     log_files: Vec<PathBuf>,
-) -> Receiver<SystemSnapshot> {
+) -> Receiver<CockpitUpdate> {
     let (sender, receiver) = mpsc::channel();
     thread::spawn(move || {
+        let base = collect_base_snapshot();
+        if sender
+            .send(CockpitUpdate {
+                snapshot: base.clone(),
+                loading: true,
+            })
+            .is_err()
+        {
+            return;
+        }
         let snapshot = enrich_snapshot(base, since.as_deref(), &log_files);
-        let _ = sender.send(snapshot);
+        let _ = sender.send(CockpitUpdate {
+            snapshot,
+            loading: false,
+        });
     });
     receiver
 }
@@ -438,7 +571,7 @@ fn send_specialist_update(
 fn spawn_specialist_collection(view: View, args: ViewArgs) -> Receiver<SpecialistUpdate> {
     let (sender, receiver) = mpsc::channel();
     thread::spawn(move || {
-        let mut snapshot = collect_base_snapshot();
+        let mut snapshot = domain_base_snapshot(view);
         match view {
             View::Processes => {
                 let _ = send_specialist_update(&sender, snapshot, &args, false, "Ready");
@@ -451,12 +584,16 @@ fn spawn_specialist_collection(view: View, args: ViewArgs) -> Receiver<Specialis
                 #[cfg(target_os = "macos")]
                 {
                     let quick_period = args.since.as_deref().unwrap_or("1m");
-                    snapshot.logs =
-                        collect_logs(&mut snapshot.collection_warnings, Some(quick_period));
+                    snapshot.logs = collect_logs(
+                        &mut snapshot.collection_warnings,
+                        Some(quick_period),
+                        args.limit,
+                    );
                     let file_sources = collect_file_logs(
                         &args.log_file,
                         &mut snapshot.logs,
                         &mut snapshot.collection_warnings,
+                        args.limit,
                     );
                     snapshot.log_sources = vec![platform_log_source()];
                     snapshot.log_sources.extend(file_sources);
@@ -475,11 +612,13 @@ fn spawn_specialist_collection(view: View, args: ViewArgs) -> Receiver<Specialis
                     {
                         return;
                     }
-                    snapshot.logs = collect_logs(&mut snapshot.collection_warnings, Some("1h"));
+                    snapshot.logs =
+                        collect_logs(&mut snapshot.collection_warnings, Some("1h"), args.limit);
                     let file_sources = collect_file_logs(
                         &args.log_file,
                         &mut snapshot.logs,
                         &mut snapshot.collection_warnings,
+                        args.limit,
                     );
                     snapshot.log_sources = vec![platform_log_source()];
                     snapshot.log_sources.extend(file_sources);
@@ -487,12 +626,16 @@ fn spawn_specialist_collection(view: View, args: ViewArgs) -> Receiver<Specialis
                 }
                 #[cfg(target_os = "linux")]
                 {
-                    snapshot.logs =
-                        collect_logs(&mut snapshot.collection_warnings, args.since.as_deref());
+                    snapshot.logs = collect_logs(
+                        &mut snapshot.collection_warnings,
+                        args.since.as_deref(),
+                        args.limit,
+                    );
                     let file_sources = collect_file_logs(
                         &args.log_file,
                         &mut snapshot.logs,
                         &mut snapshot.collection_warnings,
+                        args.limit,
                     );
                     snapshot.log_sources = vec![platform_log_source()];
                     snapshot.log_sources.extend(file_sources);
@@ -531,6 +674,7 @@ fn spawn_specialist_collection(view: View, args: ViewArgs) -> Receiver<Specialis
                     return;
                 }
                 snapshot.sockets = collect_sockets(&mut snapshot.collection_warnings);
+                snapshot.cellular_modems = collect_cellular(&mut snapshot.collection_warnings);
                 let _ = send_specialist_update(&sender, snapshot, &args, false, "Ready");
             }
             View::Health => {
@@ -553,11 +697,13 @@ fn spawn_specialist_collection(view: View, args: ViewArgs) -> Receiver<Specialis
                 let log_since = args.since.as_deref().or(Some("1m"));
                 #[cfg(target_os = "linux")]
                 let log_since = args.since.as_deref();
-                snapshot.logs = collect_logs(&mut snapshot.collection_warnings, log_since);
+                snapshot.logs =
+                    collect_logs(&mut snapshot.collection_warnings, log_since, args.limit);
                 let file_sources = collect_file_logs(
                     &args.log_file,
                     &mut snapshot.logs,
                     &mut snapshot.collection_warnings,
+                    args.limit,
                 );
                 snapshot.log_sources = vec![platform_log_source()];
                 snapshot.log_sources.extend(file_sources);
@@ -801,7 +947,7 @@ fn render_cockpit(
 }
 
 fn cockpit_view_summary(view: View, snapshot: &SystemSnapshot, loading: bool) -> String {
-    if loading && view != View::Processes {
+    if loading && (view != View::Processes || snapshot.processes.is_empty()) {
         return "checking…".into();
     }
     match view {
@@ -817,9 +963,10 @@ fn cockpit_view_summary(view: View, snapshot: &SystemSnapshot, loading: bool) ->
                 |root| format!("/ {:.0}% used", root.used_percent),
             ),
         View::Net => format!(
-            "{} interfaces · {} listeners",
+            "{} interfaces · {} listeners · {} modems",
             snapshot.interfaces.len(),
-            snapshot.sockets.len()
+            snapshot.sockets.len(),
+            snapshot.cellular_modems.len()
         ),
         View::Health => format!("{} findings", snapshot.findings.len()),
     }
@@ -904,9 +1051,17 @@ fn move_selection(selected: usize, delta: isize, length: usize) -> usize {
 
 fn specialist_item_count(view: View, snapshot: &SystemSnapshot) -> usize {
     match view {
+        View::Services => snapshot.services.len(),
         View::Logs => snapshot.logs.len(),
+        View::Disk => snapshot.mounts.len() + snapshot.block_devices.len(),
+        View::Net => {
+            snapshot.interfaces.len()
+                + snapshot.routes.len()
+                + snapshot.sockets.len()
+                + snapshot.cellular_modems.len()
+        }
         View::Health => snapshot.findings.len(),
-        _ => 0,
+        View::Processes => 0,
     }
 }
 
@@ -916,7 +1071,11 @@ fn specialist_has_data(view: View, snapshot: &SystemSnapshot) -> bool {
         View::Services => !snapshot.services.is_empty(),
         View::Logs => !snapshot.logs.is_empty(),
         View::Disk => !snapshot.mounts.is_empty() || !snapshot.block_devices.is_empty(),
-        View::Net => !snapshot.interfaces.is_empty() || !snapshot.routes.is_empty(),
+        View::Net => {
+            !snapshot.interfaces.is_empty()
+                || !snapshot.routes.is_empty()
+                || !snapshot.cellular_modems.is_empty()
+        }
         View::Health => !snapshot.findings.is_empty(),
     }
 }
@@ -948,7 +1107,7 @@ fn preserve_specialist_selection(
                     .position(|candidate| candidate.id == current.id)
             })
             .unwrap_or_else(|| selected.min(next.findings.len().saturating_sub(1))),
-        _ => 0,
+        _ => selected.min(specialist_item_count(view, next).saturating_sub(1)),
     }
 }
 
@@ -1043,7 +1202,12 @@ fn render_specialist(
             "\n  {}",
             ink("Running system checks…", Ink::Muted, colour)
         )?,
+        View::Services => {
+            render_service_specialist(snapshot, selected, inspecting, rows, width, stdout)?
+        }
         View::Logs => render_log_specialist(snapshot, selected, inspecting, rows, width, stdout)?,
+        View::Disk => render_disk_specialist(snapshot, selected, inspecting, rows, width, stdout)?,
+        View::Net => render_net_specialist(snapshot, selected, inspecting, rows, width, stdout)?,
         View::Health => {
             render_health_specialist(snapshot, selected, inspecting, rows, width, stdout)?
         }
@@ -1064,7 +1228,7 @@ fn render_specialist(
         "\n{}",
         ink(&format!("├{rule}┤"), Ink::Border, colour)
     )?;
-    if matches!(view, View::Logs | View::Health) && specialist_item_count(view, snapshot) > 0 {
+    if view != View::Processes && specialist_item_count(view, snapshot) > 0 {
         if inspecting {
             writeln!(
                 stdout,
@@ -1079,11 +1243,13 @@ fn render_specialist(
         } else {
             writeln!(
                 stdout,
-                "  {} {}   {} {}   {} {}   {} {}",
+                "  {} {}   {} {}   {} {}   {} {}   {} {}",
                 keycap("↑↓", colour),
                 ink("move", Ink::Muted, colour),
                 keycap("↵", colour),
                 ink("inspect", Ink::Muted, colour),
+                keycap("/", colour),
+                ink("search", Ink::Muted, colour),
                 keycap("r", colour),
                 ink("refresh", Ink::Muted, colour),
                 keycap("q", colour),
@@ -1217,6 +1383,425 @@ fn render_log_specialist(
     Ok(())
 }
 
+fn render_service_specialist(
+    snapshot: &SystemSnapshot,
+    selected: usize,
+    inspecting: bool,
+    rows: u16,
+    width: usize,
+    out: &mut impl Write,
+) -> Result<()> {
+    let colour = terminal_colour_enabled();
+    if snapshot.services.is_empty() {
+        writeln!(
+            out,
+            "\n  {}",
+            ink("No matching services.", Ink::Muted, colour)
+        )?;
+        return Ok(());
+    }
+    let service = &snapshot.services[selected.min(snapshot.services.len() - 1)];
+    if inspecting {
+        writeln!(out, "\n  {}", ink("SERVICE", Ink::Label, colour))?;
+        writeln!(out, "  {}", ink(&service.name, Ink::Bright, colour))?;
+        writeln!(
+            out,
+            "  {} {:<12}  {} {}",
+            ink("STATE", Ink::Label, colour),
+            service.active,
+            ink("DETAIL", Ink::Label, colour),
+            service.sub
+        )?;
+        writeln!(
+            out,
+            "  {} {}",
+            ink("LOAD", Ink::Label, colour),
+            service.load
+        )?;
+        if let Some(restarts) = service.restart_count {
+            writeln!(
+                out,
+                "  {} {}",
+                ink("RESTARTS", Ink::Label, colour),
+                restarts
+            )?;
+        }
+        writeln!(out, "\n  {}", ink("DESCRIPTION", Ink::Label, colour))?;
+        writeln!(
+            out,
+            "  {}",
+            truncate_text(&service.description, width.saturating_sub(4))
+        )?;
+        return Ok(());
+    }
+    writeln!(
+        out,
+        "  {:<34} {:<12} {:<14} {}",
+        ink("SERVICE", Ink::Label, colour),
+        ink("ACTIVE", Ink::Label, colour),
+        ink("STATE", Ink::Label, colour),
+        ink("DESCRIPTION", Ink::Label, colour)
+    )?;
+    let capacity = usize::from(rows.saturating_sub(9)).max(1);
+    let start = viewport_start(selected, snapshot.services.len(), capacity);
+    for (index, service) in snapshot
+        .services
+        .iter()
+        .enumerate()
+        .skip(start)
+        .take(capacity)
+    {
+        let row = format!(
+            "  {:<34} {:<12} {:<14} {}",
+            truncate_text(&service.name, 34),
+            service.active,
+            service.sub,
+            truncate_text(&service.description, width.saturating_sub(66).max(12))
+        );
+        if index == selected {
+            writeln!(out, "{}", selected_row(&row, colour))?;
+        } else {
+            writeln!(
+                out,
+                "{}",
+                ink(
+                    &row,
+                    if service.active == "failed" {
+                        Ink::Critical
+                    } else if service.active == "active" {
+                        Ink::Bright
+                    } else {
+                        Ink::Muted
+                    },
+                    colour
+                )
+            )?;
+        }
+    }
+    Ok(())
+}
+
+fn render_disk_specialist(
+    snapshot: &SystemSnapshot,
+    selected: usize,
+    inspecting: bool,
+    rows: u16,
+    width: usize,
+    out: &mut impl Write,
+) -> Result<()> {
+    let colour = terminal_colour_enabled();
+    let count = snapshot.mounts.len() + snapshot.block_devices.len();
+    if count == 0 {
+        writeln!(
+            out,
+            "\n  {}",
+            ink("No storage data is available.", Ink::Muted, colour)
+        )?;
+        return Ok(());
+    }
+    if inspecting {
+        if let Some(mount) = snapshot.mounts.get(selected) {
+            writeln!(out, "\n  {}", ink("MOUNT", Ink::Label, colour))?;
+            writeln!(out, "  {}", ink(&mount.target, Ink::Bright, colour))?;
+            writeln!(
+                out,
+                "  {} {}",
+                ink("SOURCE", Ink::Label, colour),
+                mount.source
+            )?;
+            writeln!(
+                out,
+                "  {} {}",
+                ink("FILESYSTEM", Ink::Label, colour),
+                mount.filesystem
+            )?;
+            writeln!(
+                out,
+                "  {} {:.1}%  ({} used, {} available)",
+                ink("CAPACITY", Ink::Label, colour),
+                mount.used_percent,
+                human_bytes(mount.used_bytes),
+                human_bytes(mount.available_bytes)
+            )?;
+            if let (Some(used), Some(total)) = (mount.inode_used, mount.inode_total) {
+                writeln!(
+                    out,
+                    "  {} {used} of {total}",
+                    ink("INODES", Ink::Label, colour)
+                )?;
+            }
+        } else {
+            let device = &snapshot.block_devices[selected - snapshot.mounts.len()];
+            writeln!(out, "\n  {}", ink("BLOCK DEVICE", Ink::Label, colour))?;
+            writeln!(out, "  {}", ink(&device.name, Ink::Bright, colour))?;
+            writeln!(out, "  {} {}", ink("TYPE", Ink::Label, colour), device.kind)?;
+            writeln!(
+                out,
+                "  {} {}",
+                ink("SIZE", Ink::Label, colour),
+                human_bytes(device.size_bytes)
+            )?;
+            writeln!(
+                out,
+                "  {} {}",
+                ink("MOUNTS", Ink::Label, colour),
+                if device.mountpoints.is_empty() {
+                    "-".into()
+                } else {
+                    device.mountpoints.join(", ")
+                }
+            )?;
+        }
+        return Ok(());
+    }
+    writeln!(
+        out,
+        "  {:<9} {:<34} {:>9}  {}",
+        ink("TYPE", Ink::Label, colour),
+        ink("TARGET", Ink::Label, colour),
+        ink("USE", Ink::Label, colour),
+        ink("SOURCE", Ink::Label, colour)
+    )?;
+    let capacity = usize::from(rows.saturating_sub(9)).max(1);
+    let start = viewport_start(selected, count, capacity);
+    for index in start..(start + capacity).min(count) {
+        let row = if let Some(mount) = snapshot.mounts.get(index) {
+            format!(
+                "  {:<9} {:<34} {:>8.1}%  {}",
+                "mount",
+                truncate_text(&mount.target, 34),
+                mount.used_percent,
+                truncate_text(&mount.source, width.saturating_sub(60).max(12))
+            )
+        } else {
+            let device = &snapshot.block_devices[index - snapshot.mounts.len()];
+            format!(
+                "  {:<9} {:<34} {:>9}  {}",
+                "device",
+                truncate_text(&device.name, 34),
+                human_bytes(device.size_bytes),
+                device.kind
+            )
+        };
+        if index == selected {
+            writeln!(out, "{}", selected_row(&row, colour))?;
+        } else {
+            writeln!(out, "{}", ink(&row, Ink::Muted, colour))?;
+        }
+    }
+    Ok(())
+}
+
+fn render_net_specialist(
+    snapshot: &SystemSnapshot,
+    selected: usize,
+    inspecting: bool,
+    rows: u16,
+    width: usize,
+    out: &mut impl Write,
+) -> Result<()> {
+    let colour = terminal_colour_enabled();
+    let interface_end = snapshot.interfaces.len();
+    let route_end = interface_end + snapshot.routes.len();
+    let socket_end = route_end + snapshot.sockets.len();
+    let count = socket_end + snapshot.cellular_modems.len();
+    if count == 0 {
+        writeln!(
+            out,
+            "\n  {}",
+            ink("No network data is available.", Ink::Muted, colour)
+        )?;
+        return Ok(());
+    }
+    if inspecting {
+        if let Some(interface) = snapshot.interfaces.get(selected) {
+            writeln!(out, "\n  {}", ink("INTERFACE", Ink::Label, colour))?;
+            writeln!(
+                out,
+                "  {}  {}",
+                ink(&interface.name, Ink::Bright, colour),
+                badge(
+                    &format!(" {} ", interface.state),
+                    if interface.state.eq_ignore_ascii_case("up") {
+                        Ink::Success
+                    } else {
+                        Ink::Muted
+                    },
+                    colour
+                )
+            )?;
+            writeln!(
+                out,
+                "  {} {}",
+                ink("ADDRESSES", Ink::Label, colour),
+                if interface.addresses.is_empty() {
+                    "-".into()
+                } else {
+                    interface.addresses.join(", ")
+                }
+            )?;
+        } else if selected < route_end {
+            let route = &snapshot.routes[selected - interface_end];
+            writeln!(out, "\n  {}", ink("ROUTE", Ink::Label, colour))?;
+            writeln!(out, "  {}", ink(&route.raw, Ink::Bright, colour))?;
+            writeln!(
+                out,
+                "  {} {}",
+                ink("DESTINATION", Ink::Label, colour),
+                route.destination
+            )?;
+            writeln!(
+                out,
+                "  {} {}",
+                ink("GATEWAY", Ink::Label, colour),
+                route.gateway.as_deref().unwrap_or("-")
+            )?;
+            writeln!(
+                out,
+                "  {} {}",
+                ink("INTERFACE", Ink::Label, colour),
+                route.interface.as_deref().unwrap_or("-")
+            )?;
+        } else if selected < socket_end {
+            let socket = &snapshot.sockets[selected - route_end];
+            writeln!(out, "\n  {}", ink("LISTENER", Ink::Label, colour))?;
+            writeln!(out, "  {}", ink(&socket.local, Ink::Bright, colour))?;
+            writeln!(
+                out,
+                "  {} {}",
+                ink("PROTOCOL", Ink::Label, colour),
+                socket.protocol
+            )?;
+            writeln!(
+                out,
+                "  {} {}",
+                ink("STATE", Ink::Label, colour),
+                socket.state
+            )?;
+            writeln!(
+                out,
+                "  {} {}",
+                ink("OWNER", Ink::Label, colour),
+                socket.owner.as_deref().unwrap_or("unavailable")
+            )?;
+        } else {
+            let modem = &snapshot.cellular_modems[selected - socket_end];
+            writeln!(out, "\n  {}", ink("CELLULAR MODEM", Ink::Label, colour))?;
+            writeln!(
+                out,
+                "  {}",
+                ink(
+                    modem.model.as_deref().unwrap_or(&modem.path),
+                    Ink::Bright,
+                    colour
+                )
+            )?;
+            writeln!(
+                out,
+                "  {} {}",
+                ink("STATE", Ink::Label, colour),
+                modem.state
+            )?;
+            writeln!(
+                out,
+                "  {} {}",
+                ink("NETWORK", Ink::Label, colour),
+                modem.operator_name.as_deref().unwrap_or("unavailable")
+            )?;
+            writeln!(
+                out,
+                "  {} {}",
+                ink("RADIO", Ink::Label, colour),
+                if modem.access_technologies.is_empty() {
+                    "unavailable".into()
+                } else {
+                    modem.access_technologies.join(", ")
+                }
+            )?;
+            if let Some(signal) = modem.signal_quality_percent {
+                writeln!(out, "  {} {signal}%", ink("SIGNAL", Ink::Label, colour))?;
+            }
+            if let Some(sim) = &modem.sim {
+                writeln!(out, "  {} {}", ink("SIM", Ink::Label, colour), sim.path)?;
+                if let Some(iccid) = &sim.iccid {
+                    writeln!(out, "  {} {iccid}", ink("ICCID", Ink::Label, colour))?;
+                }
+            }
+        }
+        return Ok(());
+    }
+    writeln!(
+        out,
+        "  {:<11} {:<18} {:<12} {}",
+        ink("TYPE", Ink::Label, colour),
+        ink("NAME", Ink::Label, colour),
+        ink("STATE", Ink::Label, colour),
+        ink("DETAIL", Ink::Label, colour)
+    )?;
+    let capacity = usize::from(rows.saturating_sub(9)).max(1);
+    let start = viewport_start(selected, count, capacity);
+    for index in start..(start + capacity).min(count) {
+        let row = if let Some(interface) = snapshot.interfaces.get(index) {
+            format!(
+                "  {:<11} {:<18} {:<12} {}",
+                "interface",
+                truncate_text(&interface.name, 18),
+                interface.state,
+                truncate_text(
+                    &interface.addresses.join(" "),
+                    width.saturating_sub(47).max(12)
+                )
+            )
+        } else if index < route_end {
+            let route = &snapshot.routes[index - interface_end];
+            format!(
+                "  {:<11} {:<18} {:<12} {}",
+                "route",
+                truncate_text(&route.destination, 18),
+                route.interface.as_deref().unwrap_or("-"),
+                truncate_text(&route.raw, width.saturating_sub(47).max(12))
+            )
+        } else if index < socket_end {
+            let socket = &snapshot.sockets[index - route_end];
+            format!(
+                "  {:<11} {:<18} {:<12} {}",
+                "listener",
+                truncate_text(&socket.local, 18),
+                socket.state,
+                truncate_text(
+                    socket.owner.as_deref().unwrap_or("unavailable"),
+                    width.saturating_sub(47).max(12)
+                )
+            )
+        } else {
+            let modem = &snapshot.cellular_modems[index - socket_end];
+            format!(
+                "  {:<11} {:<18} {:<12} {}",
+                "cellular",
+                truncate_text(modem.model.as_deref().unwrap_or(&modem.path), 18),
+                modem.state,
+                truncate_text(
+                    &format!(
+                        "{} {}{}",
+                        modem.access_technologies.join(","),
+                        modem.operator_name.as_deref().unwrap_or(""),
+                        modem
+                            .signal_quality_percent
+                            .map_or_else(String::new, |signal| format!(" {signal}%"))
+                    ),
+                    width.saturating_sub(47).max(12)
+                )
+            )
+        };
+        if index == selected {
+            writeln!(out, "{}", selected_row(&row, colour))?;
+        } else {
+            writeln!(out, "{}", ink(&row, Ink::Muted, colour))?;
+        }
+    }
+    Ok(())
+}
+
 fn render_health_specialist(
     snapshot: &SystemSnapshot,
     selected: usize,
@@ -1309,8 +1894,9 @@ fn render_health_specialist(
 }
 
 fn specialist_loop(view: View, args: &ViewArgs, stdout: &mut impl Write) -> Result<()> {
+    let mut active_args = args.clone();
     let mut snapshot = SystemSnapshot::empty(hostname());
-    let mut receiver = spawn_specialist_collection(view, args.clone());
+    let mut receiver = spawn_specialist_collection(view, active_args.clone());
     let mut loading = true;
     let mut status = format!("Loading {} data…", view.title().to_ascii_lowercase());
     let mut selected = 0usize;
@@ -1369,9 +1955,23 @@ fn specialist_loop(view: View, args: &ViewArgs, stdout: &mut impl Write) -> Resu
                     inspecting = true;
                     redraw = true;
                 }
+                KeyCode::Char('/') if !inspecting && view != View::Processes => {
+                    if let Some(query) = prompt_search(stdout)? {
+                        active_args.filter = Some(query.clone());
+                        snapshot = SystemSnapshot::empty(hostname());
+                        receiver = spawn_specialist_collection(view, active_args.clone());
+                        loading = true;
+                        status = format!(
+                            "Searching {} for {query:?}…",
+                            view.title().to_ascii_lowercase()
+                        );
+                        selected = 0;
+                    }
+                    redraw = true;
+                }
                 KeyCode::Char('r') => {
                     snapshot = SystemSnapshot::empty(hostname());
-                    receiver = spawn_specialist_collection(view, args.clone());
+                    receiver = spawn_specialist_collection(view, active_args.clone());
                     loading = true;
                     status = format!("Loading {} data…", view.title().to_ascii_lowercase());
                     selected = 0;
@@ -1492,31 +2092,117 @@ fn collect_base_snapshot() -> SystemSnapshot {
     snapshot
 }
 
+fn domain_base_snapshot(view: View) -> SystemSnapshot {
+    if matches!(view, View::Processes | View::Services) {
+        collect_base_snapshot()
+    } else {
+        let mut snapshot = SystemSnapshot::empty(hostname());
+        snapshot.schema_version = SchemaVersion(SCHEMA_VERSION.to_owned());
+        snapshot
+    }
+}
+
+fn collect_view(
+    view: View,
+    since: Option<&str>,
+    log_files: &[PathBuf],
+    limit: usize,
+) -> SystemSnapshot {
+    let mut snapshot = domain_base_snapshot(view);
+    match view {
+        View::Processes => {}
+        View::Services => {
+            snapshot.services = collect_services(&mut snapshot.collection_warnings);
+        }
+        View::Logs => {
+            snapshot.logs = collect_logs(&mut snapshot.collection_warnings, since, limit);
+            let file_sources = collect_file_logs(
+                log_files,
+                &mut snapshot.logs,
+                &mut snapshot.collection_warnings,
+                limit,
+            );
+            snapshot.log_sources = vec![platform_log_source()];
+            snapshot.log_sources.extend(file_sources);
+        }
+        View::Disk => {
+            let mut mounts = collect_mounts(&mut snapshot.collection_warnings);
+            apply_inode_usage(&mut mounts, &mut snapshot.collection_warnings);
+            snapshot.filesystems = filesystems(&mounts);
+            snapshot.mounts = mounts;
+            snapshot.deleted_open_files =
+                collect_deleted_open_files(&mut snapshot.collection_warnings);
+            snapshot.block_devices = collect_block_devices(&mut snapshot.collection_warnings);
+        }
+        View::Net => {
+            snapshot.interfaces = collect_interfaces(&mut snapshot.collection_warnings);
+            snapshot.routes = collect_routes(&mut snapshot.collection_warnings);
+            snapshot.sockets = collect_sockets(&mut snapshot.collection_warnings);
+            snapshot.cellular_modems = collect_cellular(&mut snapshot.collection_warnings);
+        }
+        View::Health => return enrich_snapshot(snapshot, since, log_files),
+    }
+    snapshot.relationships = domain_relationships(&snapshot);
+    snapshot
+}
+
 fn enrich_snapshot(
     mut snapshot: SystemSnapshot,
     since: Option<&str>,
     log_files: &[PathBuf],
 ) -> SystemSnapshot {
-    let warnings = &mut snapshot.collection_warnings;
-    let services = collect_services(warnings);
-    let mut logs = collect_logs(warnings, since);
-    let file_sources = collect_file_logs(log_files, &mut logs, warnings);
-    let mut mounts = collect_mounts(warnings);
-    apply_inode_usage(&mut mounts, warnings);
-    let interfaces = collect_interfaces(warnings);
-    let routes = collect_routes(warnings);
-    let sockets = collect_sockets(warnings);
+    let (service_result, log_result, disk_result, net_result) = thread::scope(|scope| {
+        let services = scope.spawn(|| {
+            let mut warnings = Vec::new();
+            let values = collect_services(&mut warnings);
+            (values, warnings)
+        });
+        let logs = scope.spawn(|| {
+            let mut warnings = Vec::new();
+            let mut values = collect_logs(&mut warnings, since, 1000);
+            let sources = collect_file_logs(log_files, &mut values, &mut warnings, 1000);
+            (values, sources, warnings)
+        });
+        let disk = scope.spawn(|| {
+            let mut warnings = Vec::new();
+            let mut mounts = collect_mounts(&mut warnings);
+            apply_inode_usage(&mut mounts, &mut warnings);
+            let deleted = collect_deleted_open_files(&mut warnings);
+            let devices = collect_block_devices(&mut warnings);
+            (mounts, deleted, devices, warnings)
+        });
+        let net = scope.spawn(|| {
+            let mut warnings = Vec::new();
+            let interfaces = collect_interfaces(&mut warnings);
+            let routes = collect_routes(&mut warnings);
+            let sockets = collect_sockets(&mut warnings);
+            let cellular = collect_cellular(&mut warnings);
+            (interfaces, routes, sockets, cellular, warnings)
+        });
+        (services.join(), logs.join(), disk.join(), net.join())
+    });
+    let (services, service_warnings) = service_result.unwrap_or_default();
+    let (logs, file_sources, log_warnings) = log_result.unwrap_or_default();
+    let (mounts, deleted_open_files, block_devices, disk_warnings) =
+        disk_result.unwrap_or_default();
+    let (interfaces, routes, sockets, cellular_modems, net_warnings) =
+        net_result.unwrap_or_default();
+    snapshot.collection_warnings.extend(service_warnings);
+    snapshot.collection_warnings.extend(log_warnings);
+    snapshot.collection_warnings.extend(disk_warnings);
+    snapshot.collection_warnings.extend(net_warnings);
     snapshot.services = services;
     snapshot.log_sources = vec![platform_log_source()];
     snapshot.log_sources.extend(file_sources);
     snapshot.logs = logs;
     snapshot.filesystems = filesystems(&mounts);
-    snapshot.deleted_open_files = collect_deleted_open_files(warnings);
-    snapshot.block_devices = collect_block_devices(warnings);
+    snapshot.deleted_open_files = deleted_open_files;
+    snapshot.block_devices = block_devices;
     snapshot.mounts = mounts;
     snapshot.interfaces = interfaces;
     snapshot.routes = routes;
     snapshot.sockets = sockets;
+    snapshot.cellular_modems = cellular_modems;
     snapshot.findings = diagnose(&snapshot);
     snapshot
         .relationships
@@ -1538,23 +2224,79 @@ fn platform_log_source() -> LogSource {
 }
 
 fn command(program: &str, args: &[&str], warnings: &mut Vec<String>) -> Option<String> {
-    match Command::new(program)
+    let timeout = env::var("LENS_COLLECTOR_TIMEOUT_MS")
+        .ok()
+        .and_then(|value| value.parse::<u64>().ok())
+        .map_or(Duration::from_secs(8), Duration::from_millis);
+    command_with_timeout(program, args, warnings, timeout)
+}
+
+fn command_with_timeout(
+    program: &str,
+    args: &[&str],
+    warnings: &mut Vec<String>,
+    timeout: Duration,
+) -> Option<String> {
+    let mut child = match Command::new(program)
         .args(args)
         .stdin(Stdio::null())
-        .output()
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
     {
-        Ok(output) if output.status.success() => {
-            Some(String::from_utf8_lossy(&output.stdout).into_owned())
-        }
-        Ok(output) => {
-            let detail = String::from_utf8_lossy(&output.stderr).trim().to_owned();
-            warnings.push(format!("{program} unavailable: {detail}"));
-            None
-        }
+        Ok(child) => child,
         Err(error) => {
             warnings.push(format!("{program} unavailable: {error}"));
-            None
+            return None;
         }
+    };
+    let stdout = child.stdout.take().map(|mut stream| {
+        thread::spawn(move || {
+            let mut bytes = Vec::new();
+            let _ = stream.read_to_end(&mut bytes);
+            bytes
+        })
+    });
+    let stderr = child.stderr.take().map(|mut stream| {
+        thread::spawn(move || {
+            let mut bytes = Vec::new();
+            let _ = stream.read_to_end(&mut bytes);
+            bytes
+        })
+    });
+    let started = Instant::now();
+    let status = loop {
+        match child.try_wait() {
+            Ok(Some(status)) => break Some(status),
+            Ok(None) if started.elapsed() < timeout => thread::sleep(Duration::from_millis(10)),
+            Ok(None) => {
+                let _ = child.kill();
+                let _ = child.wait();
+                warnings.push(format!(
+                    "{program} timed out after {:.1}s",
+                    timeout.as_secs_f64()
+                ));
+                break None;
+            }
+            Err(error) => {
+                warnings.push(format!("{program} unavailable: {error}"));
+                break None;
+            }
+        }
+    };
+    let status = status?;
+    let stdout = stdout
+        .and_then(|reader| reader.join().ok())
+        .unwrap_or_default();
+    let stderr = stderr
+        .and_then(|reader| reader.join().ok())
+        .unwrap_or_default();
+    if status.success() {
+        Some(String::from_utf8_lossy(&stdout).into_owned())
+    } else {
+        let detail = String::from_utf8_lossy(&stderr).trim().to_owned();
+        warnings.push(format!("{program} unavailable: {detail}"));
+        None
     }
 }
 
@@ -1670,8 +2412,12 @@ fn parse_service_restart_counts(text: &str) -> Vec<(String, u64)> {
 }
 
 #[cfg(target_os = "linux")]
-fn collect_logs(warnings: &mut Vec<String>, since: Option<&str>) -> Vec<LogEntry> {
-    let mut args = vec!["--no-pager", "--output=short-iso", "-n", "200"];
+fn collect_logs(warnings: &mut Vec<String>, since: Option<&str>, limit: usize) -> Vec<LogEntry> {
+    let limit = limit.to_string();
+    let mut args = vec!["--no-pager", "--output=short-iso"];
+    if limit != "0" {
+        args.extend(["-n", limit.as_str()]);
+    }
     if let Some(since) = since {
         args.extend(["--since", since]);
     }
@@ -1690,7 +2436,7 @@ fn collect_logs(warnings: &mut Vec<String>, since: Option<&str>) -> Vec<LogEntry
 }
 
 #[cfg(target_os = "macos")]
-fn collect_logs(warnings: &mut Vec<String>, since: Option<&str>) -> Vec<LogEntry> {
+fn collect_logs(warnings: &mut Vec<String>, since: Option<&str>, limit: usize) -> Vec<LogEntry> {
     let period = since.unwrap_or("1h");
     let text = command(
         "/usr/bin/log",
@@ -1702,7 +2448,12 @@ fn collect_logs(warnings: &mut Vec<String>, since: Option<&str>) -> Vec<LogEntry
     .unwrap_or_default();
     let mut entries = Vec::<LogEntry>::new();
     let lines: Vec<_> = text.lines().skip(1).collect();
-    for line in lines.iter().rev().take(200).rev() {
+    let start = if limit == 0 {
+        0
+    } else {
+        lines.len().saturating_sub(limit)
+    };
+    for line in &lines[start..] {
         let entry = parse_macos_log_entry(line);
         if let Some(previous) = entries
             .last_mut()
@@ -1772,10 +2523,11 @@ fn collect_file_logs(
     paths: &[PathBuf],
     entries: &mut Vec<LogEntry>,
     warnings: &mut Vec<String>,
+    limit: usize,
 ) -> Vec<LogSource> {
     let mut sources = Vec::new();
     for path in paths {
-        match std::fs::read_to_string(path) {
+        match read_log_file(path, limit) {
             Ok(text) => {
                 let id = path.display().to_string();
                 sources.push(LogSource {
@@ -1783,7 +2535,11 @@ fn collect_file_logs(
                     kind: "file".into(),
                 });
                 let lines: Vec<_> = text.lines().collect();
-                let start = lines.len().saturating_sub(200);
+                let start = if limit == 0 {
+                    0
+                } else {
+                    lines.len().saturating_sub(limit)
+                };
                 entries.extend(lines[start..].iter().map(|line| LogEntry {
                     timestamp: String::new(),
                     source: id.clone(),
@@ -1799,6 +2555,32 @@ fn collect_file_logs(
         }
     }
     sources
+}
+
+fn read_log_file(path: &Path, limit: usize) -> io::Result<String> {
+    let mut file = std::fs::File::open(path)?;
+    if limit == 0 {
+        let mut bytes = Vec::new();
+        file.read_to_end(&mut bytes)?;
+        return Ok(String::from_utf8_lossy(&bytes).into_owned());
+    }
+    let mut position = file.metadata()?.len();
+    let mut chunks = Vec::new();
+    let mut newlines = 0usize;
+    while position > 0 && newlines <= limit {
+        let chunk_size = position.min(64 * 1024) as usize;
+        position -= chunk_size as u64;
+        file.seek(SeekFrom::Start(position))?;
+        let mut chunk = vec![0; chunk_size];
+        file.read_exact(&mut chunk)?;
+        newlines += chunk.iter().filter(|byte| **byte == b'\n').count();
+        chunks.push(chunk);
+    }
+    chunks.reverse();
+    let bytes: Vec<u8> = chunks.into_iter().flatten().collect();
+    let text = String::from_utf8_lossy(&bytes);
+    let lines: Vec<_> = text.lines().collect();
+    Ok(lines[lines.len().saturating_sub(limit)..].join("\n"))
 }
 
 fn log_priority(message: &str) -> Option<String> {
@@ -2183,6 +2965,93 @@ fn parse_socket_pid(owner: &str) -> Option<ProcessId> {
     digits.parse::<u32>().ok().map(ProcessId)
 }
 
+#[cfg(target_os = "linux")]
+fn clean_key_value(value: &str) -> Option<String> {
+    let value = value.trim();
+    (!value.is_empty() && value != "--").then(|| value.to_owned())
+}
+
+#[cfg(any(target_os = "linux", test))]
+fn key_value<'a>(text: &'a str, key: &str) -> Option<&'a str> {
+    text.lines().find_map(|line| {
+        let (candidate, value) = line.split_once(':')?;
+        (candidate.trim() == key).then_some(value.trim())
+    })
+}
+
+#[cfg(any(target_os = "linux", test))]
+fn key_values(text: &str, prefix: &str) -> Vec<String> {
+    text.lines()
+        .filter_map(|line| {
+            let (key, value) = line.split_once(':')?;
+            key.trim()
+                .starts_with(prefix)
+                .then(|| value.trim().to_owned())
+                .filter(|value| !value.is_empty() && value != "--")
+        })
+        .collect()
+}
+
+#[cfg(target_os = "linux")]
+fn collect_cellular(warnings: &mut Vec<String>) -> Vec<CellularModem> {
+    let installed = env::var_os("PATH")
+        .is_some_and(|paths| env::split_paths(&paths).any(|path| path.join("mmcli").is_file()));
+    if !installed {
+        return Vec::new();
+    }
+    let warning_count = warnings.len();
+    let Some(list) = command("mmcli", &["-L", "-K"], warnings) else {
+        if warnings[warning_count..].iter().any(|warning| {
+            warning
+                .to_ascii_lowercase()
+                .contains("no modems were found")
+        }) {
+            warnings.truncate(warning_count);
+        }
+        return Vec::new();
+    };
+    key_values(&list, "modem-list.value[")
+        .into_iter()
+        .filter_map(|path| collect_cellular_modem(&path, warnings))
+        .collect()
+}
+
+#[cfg(target_os = "linux")]
+fn collect_cellular_modem(path: &str, warnings: &mut Vec<String>) -> Option<CellularModem> {
+    let text = command("mmcli", &["-m", path, "-K"], warnings)?;
+    let sim_path = key_value(&text, "modem.generic.sim").and_then(clean_key_value);
+    let sim = sim_path.and_then(|path| {
+        command("mmcli", &["-i", &path, "-K"], warnings).map(|sim| CellularSim {
+            path,
+            active: true,
+            iccid: key_value(&sim, "sim.properties.iccid").and_then(clean_key_value),
+            operator_code: key_value(&sim, "sim.properties.operator-code")
+                .and_then(clean_key_value),
+            operator_name: key_value(&sim, "sim.properties.operator-name")
+                .and_then(clean_key_value),
+        })
+    });
+    Some(CellularModem {
+        path: path.to_owned(),
+        manufacturer: key_value(&text, "modem.generic.manufacturer").and_then(clean_key_value),
+        model: key_value(&text, "modem.generic.model").and_then(clean_key_value),
+        state: key_value(&text, "modem.generic.state")
+            .and_then(clean_key_value)
+            .unwrap_or_else(|| "unknown".into()),
+        access_technologies: key_values(&text, "modem.generic.access-technologies.value["),
+        signal_quality_percent: key_value(&text, "modem.generic.signal-quality.value")
+            .and_then(|value| value.parse().ok()),
+        operator_code: key_value(&text, "modem.3gpp.operator-code").and_then(clean_key_value),
+        operator_name: key_value(&text, "modem.3gpp.operator-name").and_then(clean_key_value),
+        sim,
+    })
+}
+
+#[cfg(target_os = "macos")]
+fn collect_cellular(_warnings: &mut Vec<String>) -> Vec<CellularModem> {
+    Vec::new()
+}
+
 fn filesystems(mounts: &[Mount]) -> Vec<Filesystem> {
     let mut values: Vec<_> = mounts
         .iter()
@@ -2327,6 +3196,26 @@ fn endpoint_host(endpoint: &str) -> &str {
     }
 }
 
+fn actionable_mount(mount: &Mount) -> bool {
+    !matches!(
+        mount.filesystem.as_str(),
+        "devfs" | "devtmpfs" | "proc" | "sysfs" | "cgroup" | "cgroup2" | "debugfs"
+    ) && !mount
+        .target
+        .starts_with("/Library/Developer/CoreSimulator/")
+        && !mount.target.starts_with("/System/Volumes/")
+}
+
+fn actionable_down_interface(interface: &Interface) -> bool {
+    !matches!(interface.name.as_str(), "lo" | "lo0")
+        && !interface.addresses.is_empty()
+        && !interface.name.starts_with("gif")
+        && !interface.name.starts_with("stf")
+        && !interface.name.starts_with("awdl")
+        && !interface.name.starts_with("llw")
+        && !interface.name.starts_with("utun")
+}
+
 fn diagnose(snapshot: &SystemSnapshot) -> Vec<SystemFinding> {
     let mut findings = Vec::new();
     let failed: Vec<_> = snapshot
@@ -2394,7 +3283,7 @@ fn diagnose(snapshot: &SystemSnapshot) -> Vec<SystemFinding> {
     for mount in snapshot
         .mounts
         .iter()
-        .filter(|mount| mount.used_percent >= 90.0)
+        .filter(|mount| actionable_mount(mount) && mount.used_percent >= 90.0)
     {
         findings.push(SystemFinding {
             id: format!("disk.{}", mount.target),
@@ -2420,10 +3309,11 @@ fn diagnose(snapshot: &SystemSnapshot) -> Vec<SystemFinding> {
             ],
         });
     }
-    if snapshot
-        .routes
-        .iter()
-        .all(|route| route.destination != "default")
+    if (!snapshot.interfaces.is_empty() || !snapshot.routes.is_empty())
+        && snapshot
+            .routes
+            .iter()
+            .all(|route| route.destination != "default")
     {
         findings.push(SystemFinding {
             id: "net.no-default-route".into(),
@@ -2448,11 +3338,9 @@ fn diagnose(snapshot: &SystemSnapshot) -> Vec<SystemFinding> {
             suggested_actions: vec!["Open lens-net and inspect interfaces and routes.".into()],
         });
     }
-    for interface in snapshot
-        .interfaces
-        .iter()
-        .filter(|interface| interface.name != "lo" && interface.state.eq_ignore_ascii_case("down"))
-    {
+    for interface in snapshot.interfaces.iter().filter(|interface| {
+        actionable_down_interface(interface) && interface.state.eq_ignore_ascii_case("down")
+    }) {
         findings.push(SystemFinding {
             id: format!("net.interface-down.{}", interface.name),
             severity: Severity::Attention,
@@ -2480,10 +3368,10 @@ fn diagnose(snapshot: &SystemSnapshot) -> Vec<SystemFinding> {
     if !exposed.is_empty() {
         findings.push(SystemFinding {
             id: "net.unexpected-listeners".into(),
-            severity: Severity::Attention,
-            title: "Services listening on all interfaces".into(),
+            severity: Severity::Information,
+            title: "Wildcard listeners".into(),
             summary: format!(
-                "{} listeners are exposed on wildcard addresses.",
+                "{} listeners accept connections on any local address.",
                 exposed.len()
             ),
             evidence: exposed
@@ -2500,7 +3388,8 @@ fn diagnose(snapshot: &SystemSnapshot) -> Vec<SystemFinding> {
                 .map(|socket| EntityId::Socket(socket.id.clone()))
                 .collect(),
             suggested_actions: vec![
-                "Confirm each wildcard listener is intended and protected by host policy.".into(),
+                "Review the listener owners in lens-net if this host should not accept inbound connections."
+                    .into(),
             ],
         });
     }
@@ -2651,18 +3540,33 @@ fn filter_snapshot(
     snapshot
         .sockets
         .retain(|item| matches(&format!("{} {} {:?}", item.local, item.peer, item.owner)));
+    snapshot.cellular_modems.retain(|item| {
+        matches(&format!(
+            "{} {} {} {} {} {}",
+            item.path,
+            item.manufacturer.as_deref().unwrap_or(""),
+            item.model.as_deref().unwrap_or(""),
+            item.state,
+            item.access_technologies.join(" "),
+            item.operator_name.as_deref().unwrap_or("")
+        ))
+    });
     snapshot
         .findings
         .retain(|item| matches(&format!("{} {} {}", item.id, item.title, item.summary)));
-    snapshot.services.truncate(limit);
-    snapshot.logs.truncate(limit);
-    snapshot.mounts.truncate(limit);
-    snapshot.block_devices.truncate(limit);
-    snapshot.deleted_open_files.truncate(limit);
-    snapshot.interfaces.truncate(limit);
-    snapshot.routes.truncate(limit);
-    snapshot.sockets.truncate(limit);
-    snapshot.findings.truncate(limit);
+    if limit > 0 {
+        snapshot.processes.truncate(limit);
+        snapshot.services.truncate(limit);
+        snapshot.logs.truncate(limit);
+        snapshot.mounts.truncate(limit);
+        snapshot.block_devices.truncate(limit);
+        snapshot.deleted_open_files.truncate(limit);
+        snapshot.interfaces.truncate(limit);
+        snapshot.routes.truncate(limit);
+        snapshot.sockets.truncate(limit);
+        snapshot.cellular_modems.truncate(limit);
+        snapshot.findings.truncate(limit);
+    }
     snapshot
 }
 
@@ -2800,6 +3704,31 @@ fn render_plain(view: View, snapshot: &SystemSnapshot, out: &mut dyn Write) -> R
                     item.local,
                     item.owner.as_deref().unwrap_or("")
                 )?;
+            }
+            if !snapshot.cellular_modems.is_empty() {
+                writeln!(out, "\nCELLULAR")?;
+                for item in &snapshot.cellular_modems {
+                    writeln!(
+                        out,
+                        "{:<24} {:<12} {:<10} {:>4}  {}",
+                        item.model.as_deref().unwrap_or(&item.path),
+                        item.state,
+                        item.access_technologies.join(","),
+                        item.signal_quality_percent
+                            .map_or_else(|| "-".into(), |signal| format!("{signal}%")),
+                        item.operator_name.as_deref().unwrap_or("")
+                    )?;
+                    if let Some(sim) = &item.sim {
+                        writeln!(
+                            out,
+                            "  SIM {}{}",
+                            sim.iccid.as_deref().unwrap_or(&sim.path),
+                            sim.operator_name
+                                .as_deref()
+                                .map_or_else(String::new, |name| format!(" · {name}"))
+                        )?;
+                    }
+                }
             }
         }
         View::Health => render_findings(snapshot, out)?,
@@ -3026,6 +3955,23 @@ pub fn demo_snapshot() -> SystemSnapshot {
         owner: Some("mosquitto".into()),
         process_id: Some(ProcessId(4242)),
     }];
+    snapshot.cellular_modems = vec![CellularModem {
+        path: "/org/freedesktop/ModemManager1/Modem/0".into(),
+        manufacturer: Some("Quectel".into()),
+        model: Some("EG25-G".into()),
+        state: "connected".into(),
+        access_technologies: vec!["lte".into()],
+        signal_quality_percent: Some(78),
+        operator_code: Some("50501".into()),
+        operator_name: Some("Example Mobile".into()),
+        sim: Some(CellularSim {
+            path: "/org/freedesktop/ModemManager1/SIM/0".into(),
+            active: true,
+            iccid: Some("8944500000000000000".into()),
+            operator_code: Some("50501".into()),
+            operator_name: Some("Example Mobile".into()),
+        }),
+    }];
     snapshot.findings = diagnose(&snapshot);
     snapshot.relationships = domain_relationships(&snapshot);
     snapshot
@@ -3085,6 +4031,22 @@ mod tests {
                 .expect("route"),
         );
         assert_eq!(route.interface.as_deref(), Some("eth0"));
+    }
+
+    #[test]
+    fn parses_modemmanager_key_value_output() {
+        let list =
+            "modem-list.length : 1\nmodem-list.value[1] : /org/freedesktop/ModemManager1/Modem/0\n";
+        assert_eq!(
+            key_values(list, "modem-list.value["),
+            ["/org/freedesktop/ModemManager1/Modem/0"]
+        );
+        let modem = "modem.generic.model : EG25-G\nmodem.generic.signal-quality.value : 78\nmodem.generic.access-technologies.value[1] : lte\n";
+        assert_eq!(key_value(modem, "modem.generic.model"), Some("EG25-G"));
+        assert_eq!(
+            key_values(modem, "modem.generic.access-technologies.value["),
+            ["lte"]
+        );
     }
 
     #[test]
@@ -3317,6 +4279,98 @@ mod tests {
     }
 
     #[test]
+    fn zero_limit_means_unbounded() {
+        let mut snapshot = demo_snapshot();
+        snapshot.logs.extend(snapshot.logs.clone());
+        let count = snapshot.logs.len();
+        let filtered = filter_snapshot(snapshot, None, None, None, None, 0);
+        assert_eq!(filtered.logs.len(), count);
+    }
+
+    #[test]
+    fn log_files_read_the_requested_tail_and_tolerate_non_utf8() {
+        let path = env::temp_dir().join(format!("lens-log-tail-{}", std::process::id()));
+        std::fs::write(&path, b"first\nsecond\nthird\xff\n").expect("write fixture");
+        let tail = read_log_file(&path, 2).expect("read tail");
+        assert!(!tail.contains("first"));
+        assert!(tail.contains("second"));
+        assert!(tail.contains("third"));
+        assert!(tail.contains('\u{fffd}'));
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn collector_timeout_is_reported_and_bounded() {
+        let mut warnings = Vec::new();
+        let started = Instant::now();
+        let output = command_with_timeout(
+            "sh",
+            &["-c", "sleep 2 & wait"],
+            &mut warnings,
+            Duration::from_millis(30),
+        );
+        assert!(output.is_none());
+        assert!(started.elapsed() < Duration::from_secs(1));
+        assert!(warnings.iter().any(|warning| warning.contains("timed out")));
+    }
+
+    #[test]
+    fn health_ignores_pseudo_storage_and_unused_virtual_interfaces() {
+        let mut snapshot = SystemSnapshot::empty("test-host");
+        snapshot.mounts.push(Mount {
+            source: "devfs".into(),
+            target: "/dev".into(),
+            filesystem: "devfs".into(),
+            total_bytes: 1,
+            used_bytes: 1,
+            available_bytes: 0,
+            used_percent: 100.0,
+            inode_total: None,
+            inode_used: None,
+        });
+        snapshot.interfaces.push(Interface {
+            name: "gif0".into(),
+            state: "DOWN".into(),
+            addresses: Vec::new(),
+        });
+        let findings = diagnose(&snapshot);
+        assert!(
+            !findings
+                .iter()
+                .any(|finding| finding.id.starts_with("disk."))
+        );
+        assert!(
+            !findings
+                .iter()
+                .any(|finding| finding.id.starts_with("net.interface-down"))
+        );
+    }
+
+    #[test]
+    fn every_specialist_domain_has_list_and_detail_rendering() {
+        let snapshot = demo_snapshot();
+        for renderer in [View::Services, View::Disk, View::Net] {
+            let mut list = Vec::new();
+            render_specialist(renderer, &snapshot, 0, false, false, "Ready", 30, &mut list)
+                .expect("list");
+            let mut detail = Vec::new();
+            render_specialist(
+                renderer,
+                &snapshot,
+                0,
+                true,
+                false,
+                "Ready",
+                30,
+                &mut detail,
+            )
+            .expect("detail");
+            assert!(!list.is_empty());
+            assert!(!detail.is_empty());
+        }
+    }
+
+    #[test]
     fn demo_contract_has_every_specialist_domain() {
         let snapshot = demo_snapshot();
         assert!(!snapshot.services.is_empty());
@@ -3325,6 +4379,7 @@ mod tests {
         assert!(!snapshot.interfaces.is_empty());
         assert!(!snapshot.routes.is_empty());
         assert!(!snapshot.sockets.is_empty());
+        assert!(!snapshot.cellular_modems.is_empty());
         assert!(!snapshot.findings.is_empty());
     }
 }

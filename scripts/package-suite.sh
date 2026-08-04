@@ -2,7 +2,7 @@
 set -euo pipefail
 
 : "${TARGET:?TARGET is required}"
-version="${VERSION:-0.2.0}"
+version="${VERSION:-0.3.0}"
 native_packages="${PACKAGE_NATIVE:-true}"
 out="${OUTPUT_DIR:-dist/${TARGET}}"
 stage="${STAGE_DIR:-stage/${TARGET}}"

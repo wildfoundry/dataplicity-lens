@@ -61,14 +61,14 @@ downloading a package:
 dpkg --print-architecture
 ```
 
-- `arm64`: use the `aarch64-unknown-linux-gnu` archive or `dataplicity-lens_0.2.0_arm64.deb`.
-- `armhf`: use the `arm-unknown-linux-gnueabihf` archive or `dataplicity-lens_0.2.0_armhf.deb`.
+- `arm64`: use the `aarch64-unknown-linux-gnu` archive or `dataplicity-lens_0.3.0_arm64.deb`.
+- `armhf`: use the `arm-unknown-linux-gnueabihf` archive or `dataplicity-lens_0.3.0_armhf.deb`.
 
 The `armhf` release targets ARMv6 with the hard-float ABI so it also runs on newer Raspberry Pi models
 using the 32-bit operating system. Install the Debian package, then check both sample and native data:
 
 ```sh
-sudo apt install ./dataplicity-lens_0.2.0_armhf.deb
+sudo apt install ./dataplicity-lens_0.3.0_armhf.deb
 lens --demo --plain
 lens-top --once
 ```

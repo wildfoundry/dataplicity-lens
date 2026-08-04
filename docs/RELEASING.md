@@ -15,12 +15,12 @@ To reproduce package assembly after building both targets and generating the `le
 completions:
 
 ```sh
-VERSION=0.2.0 TARGET=x86_64-unknown-linux-gnu DEB_ARCH=amd64 RPM_ARCH=x86_64 scripts/package-suite.sh
-VERSION=0.2.0 TARGET=x86_64-unknown-linux-musl PACKAGE_NATIVE=false scripts/package-suite.sh
+VERSION=0.3.0 TARGET=x86_64-unknown-linux-gnu DEB_ARCH=amd64 RPM_ARCH=x86_64 scripts/package-suite.sh
+VERSION=0.3.0 TARGET=x86_64-unknown-linux-musl PACKAGE_NATIVE=false scripts/package-suite.sh
 scripts/smoke-suite.sh target/x86_64-unknown-linux-gnu/release
 # Raspberry Pi OS 32-bit builds use cross:
 cross build --release --locked --target arm-unknown-linux-gnueabihf --workspace
-VERSION=0.2.0 TARGET=arm-unknown-linux-gnueabihf DEB_ARCH=armhf RPM_ARCH=armv6hl scripts/package-suite.sh
+VERSION=0.3.0 TARGET=arm-unknown-linux-gnueabihf DEB_ARCH=armhf RPM_ARCH=armv6hl scripts/package-suite.sh
 scripts/verify-release.sh dist/release
 ```
 
