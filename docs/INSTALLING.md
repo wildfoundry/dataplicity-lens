@@ -1,12 +1,11 @@
 # Installing Dataplicity Lens
 
-Lens supports Linux and macOS. It is local, read-only, requires no account or daemon, and should be
-run as your normal user.
+Lens supports Linux and macOS. Run it as your normal user.
 
 ## macOS with Homebrew
 
 The repository contains a Homebrew formula and a test installer that builds all seven applications,
-installs their man pages and shell completions, then runs deterministic and native macOS checks.
+installs their man pages and shell completions, then checks sample output and native macOS collection.
 
 Prerequisites:
 
@@ -27,7 +26,7 @@ Homebrew installs Rust as a build-only dependency. The first build can take seve
 script refuses to replace an existing `dataplicity-lens` formula or an existing
 `local/dataplicity-lens-test` tap.
 
-Verify deterministic output first, then the local machine:
+Try the sample data first, then check the local machine:
 
 ```sh
 lens --demo

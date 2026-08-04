@@ -57,9 +57,8 @@ No persistence is included in v0.2.0.
 
 ## Findings
 
-Findings are deterministic structures with identifiers, severity, evidence, related entities and
-suggested actions. They use cautious wording when evidence is suggestive. The diagnostics engine does
-not make network calls or use an AI model.
+Findings contain identifiers, severity, the data that triggered them, related entities and suggested
+actions. They are calculated from the collected system snapshot.
 
 ## Terminal safety
 
