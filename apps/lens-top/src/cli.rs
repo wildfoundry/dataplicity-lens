@@ -2,6 +2,7 @@ use std::path::PathBuf;
 
 use clap::{Parser, ValueEnum};
 use lens_core::{GroupMode, SortKey};
+use serde::Serialize;
 
 #[derive(Debug, Clone, Copy, ValueEnum)]
 pub enum SortArg {
@@ -56,6 +57,30 @@ pub enum CompletionShell {
     Bash,
     Zsh,
     Fish,
+}
+
+#[derive(Debug, Clone, Copy, ValueEnum, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SignalArg {
+    Term,
+    Kill,
+    Hup,
+    Int,
+    Stop,
+    Cont,
+}
+
+impl SignalArg {
+    pub const fn name(self) -> &'static str {
+        match self {
+            Self::Term => "TERM",
+            Self::Kill => "KILL",
+            Self::Hup => "HUP",
+            Self::Int => "INT",
+            Self::Stop => "STOP",
+            Self::Cont => "CONT",
+        }
+    }
 }
 
 #[derive(Debug, Parser)]
@@ -121,6 +146,22 @@ pub struct Args {
     /// Maximum number of displayed processes.
     #[arg(long, value_name = "COUNT")]
     pub limit: Option<usize>,
+
+    /// Send a named signal to one process.
+    #[arg(long, value_enum, requires = "pid")]
+    pub signal: Option<SignalArg>,
+
+    /// Exact process ID targeted by --signal.
+    #[arg(long, requires = "signal")]
+    pub pid: Option<u32>,
+
+    /// Confirm a requested process signal for non-interactive use.
+    #[arg(long, requires = "signal")]
+    pub yes: bool,
+
+    /// Print the planned process signal without sending it.
+    #[arg(long, requires = "signal")]
+    pub dry_run: bool,
 
     /// Disable colour even when the terminal supports it.
     #[arg(long)]

@@ -10,5 +10,5 @@ repository.workspace = true
 workspace = true
 
 [dependencies]
-lens-history = { version = "=0.2.0", path = "../history" }
-lens-model = { version = "=0.2.0", path = "../model" }
+lens-history = { version = "=0.3.0", path = "../history" }
+lens-model = { version = "=0.3.0", path = "../model" }

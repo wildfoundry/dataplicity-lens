@@ -91,3 +91,29 @@ fn no_color_plain_output_has_no_escape_sequences() {
     assert!(output.status.success());
     assert!(!output.stdout.windows(2).any(|pair| pair == b"\x1b["));
 }
+
+#[test]
+fn process_actions_require_confirmation_and_support_dry_run() {
+    let rejected = Command::new(binary())
+        .args(["--demo", "--signal", "term", "--pid", "8421"])
+        .output()
+        .expect("run unconfirmed action");
+    assert!(!rejected.status.success());
+
+    let planned = Command::new(binary())
+        .args([
+            "--demo",
+            "--signal",
+            "term",
+            "--pid",
+            "8421",
+            "--dry-run",
+            "--json",
+        ])
+        .output()
+        .expect("run dry-run action");
+    assert!(planned.status.success());
+    let value: serde_json::Value = serde_json::from_slice(&planned.stdout).expect("JSON outcome");
+    assert_eq!(value["status"], "planned");
+    assert_eq!(value["process"], "image-worker");
+}

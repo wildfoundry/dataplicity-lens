@@ -24,3 +24,9 @@
 Possible additions include service dependency and startup timing, log-rate baselines, directory growth,
 DNS checks and connection probes. We will prioritize work that proves useful in day-to-day support and
 operations.
+
+## Path to 1.0
+
+The concrete compatibility, interaction, action and release gates are in
+[`V1_CONTRACT.md`](V1_CONTRACT.md). Current implementation does not bypass the required security,
+real-hardware, beta and release-candidate qualification.

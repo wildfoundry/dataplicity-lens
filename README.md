@@ -102,20 +102,20 @@ ARMv6 hard-float build runs across the Raspberry Pi models supported by 32-bit R
 
 ```sh
 # Archive example
-curl -LO <release-asset-url>/dataplicity-lens-v0.2.0-x86_64-unknown-linux-gnu.tar.gz
+curl -LO <release-asset-url>/dataplicity-lens-v0.3.0-x86_64-unknown-linux-gnu.tar.gz
 curl -LO <release-asset-url>/SHA256SUMS
 sha256sum --check SHA256SUMS --ignore-missing
-tar -xzf dataplicity-lens-v0.2.0-x86_64-unknown-linux-gnu.tar.gz
-sudo install -m 0755 dataplicity-lens-v0.2.0-x86_64-unknown-linux-gnu/bin/* /usr/local/bin/
+tar -xzf dataplicity-lens-v0.3.0-x86_64-unknown-linux-gnu.tar.gz
+sudo install -m 0755 dataplicity-lens-v0.3.0-x86_64-unknown-linux-gnu/bin/* /usr/local/bin/
 
 # Debian package example
-sudo apt install ./dataplicity-lens_0.2.0_amd64.deb
+sudo apt install ./dataplicity-lens_0.3.0_amd64.deb
 
 # Raspberry Pi OS 32-bit example
-sudo apt install ./dataplicity-lens_0.2.0_armhf.deb
+sudo apt install ./dataplicity-lens_0.3.0_armhf.deb
 
 # RPM package example
-sudo rpm -U ./dataplicity-lens-0.2.0-1.x86_64.rpm
+sudo rpm -U ./dataplicity-lens-0.3.0-1.x86_64.rpm
 ```
 
 Until the first release is published, build from source with the pinned toolchain:
@@ -129,11 +129,13 @@ cargo build --release --locked --workspace
 
 Start with `lens` for a cockpit, or run a specialist directly. Each specialist supports `--plain`,
 `--json`, `--demo`, `--filter` and `--limit`; logs additionally support `--service`, `--severity` and
-`--since`.
+`--since`. The default limit is 1,000 rows. Pass `--limit 0` when you explicitly want every row in
+the selected time range or file.
 
 The interactive cockpit draws the host and process summary first. Services, recent logs, storage and
 network details then load once in the background, so a slow platform command does not hold up the
-opening screen or normal navigation. Plain and JSON output still wait for a complete snapshot.
+opening screen or normal navigation. Each specialist collects only the system data it displays, and
+individual operating-system commands time out instead of holding the whole tool open indefinitely.
 
 ```sh
 lens
@@ -186,7 +188,23 @@ lens-top --demo
 | `?` | Help |
 | `q` or `Ctrl+C` | Quit |
 
-The current release reports system state. It does not kill, renice, restart, delete or reconfigure.
+Process signals are available as explicit one-shot commands. Lens resolves the process before acting,
+checks its PID/start-time identity again immediately before execution, requires `--yes`, and reports
+the observed result. Use `--dry-run` first:
+
+```sh
+lens-top --signal term --pid 4242 --dry-run
+lens-top --signal term --pid 4242 --yes
+```
+
+On systemd Linux, services can be started, stopped, restarted, enabled or disabled with the same
+plan/confirm/result pattern. Lens does not run itself as root; system policy decides whether the
+invoking account may perform the action.
+
+```sh
+lens-services --action restart --target nginx.service --dry-run
+lens-services --action restart --target nginx.service --yes
+```
 
 ## Plain and structured output
 
@@ -258,13 +276,15 @@ SBOMs, checksums and package smoke tests. See [`SECURITY.md`](SECURITY.md) and
 
 ## Shipped suite
 
-- `lens-services` — service state, restart loops and related processes
+- `lens-services` — navigable service state, restart loops and related processes
 - `lens-logs` — a navigable recent-message view, repeated-message folding and service/severity/time filters
-- `lens-disk` — block devices, filesystems, mounts, inodes and deleted-open files
-- `lens-net` — interfaces, routes and listener ownership
+- `lens-disk` — navigable block devices, filesystems, mounts, inodes and deleted-open files
+- `lens-net` — navigable interfaces, routes and listener ownership
 - `lens-health` — selectable findings with the evidence and suggested checks behind each warning
 
-See [`docs/ROADMAP.md`](docs/ROADMAP.md) for shipped and future scope.
+See [`docs/ROADMAP.md`](docs/ROADMAP.md) for shipped and future scope, and
+[`docs/V1_CONTRACT.md`](docs/V1_CONTRACT.md) for the compatibility, action and release gates that
+must be met before the project is labelled 1.0.
 
 ## Contribute
 

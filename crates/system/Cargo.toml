@@ -12,16 +12,16 @@ clap.workspace = true
 clap_complete.workspace = true
 clap_mangen.workspace = true
 crossterm.workspace = true
-lens-model = { path = "../model", version = "=0.2.0" }
+lens-model = { path = "../model", version = "=0.3.0" }
 serde.workspace = true
 serde_json.workspace = true
 time.workspace = true
 
 [target.'cfg(target_os = "linux")'.dependencies]
-lens-platform-linux = { path = "../platform-linux", version = "=0.2.0" }
+lens-platform-linux = { path = "../platform-linux", version = "=0.3.0" }
 
 [target.'cfg(target_os = "macos")'.dependencies]
-lens-platform-macos = { path = "../platform-macos", version = "=0.2.0" }
+lens-platform-macos = { path = "../platform-macos", version = "=0.3.0" }
 
 [lints]
 workspace = true

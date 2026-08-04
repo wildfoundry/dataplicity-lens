@@ -14,7 +14,7 @@ use std::{
 
 use anyhow::{Context, Result, bail};
 use clap::{CommandFactory, Parser};
-use cli::{Args, CompletionShell};
+use cli::{Args, CompletionShell, SignalArg};
 use config::EffectiveConfig;
 use demo::DemoSource;
 use lens_core::{GroupMode, ProcessFilter, SortDirection, SortKey, parse_state, select_processes};
@@ -27,6 +27,7 @@ use lens_platform_linux::LinuxCollector;
 #[cfg(target_os = "macos")]
 use lens_platform_macos::MacOsCollector;
 use lens_ui::{ColorMode, UiOptions, run_tui};
+use serde::Serialize;
 use tracing_subscriber::EnvFilter;
 
 fn main() {
@@ -71,6 +72,9 @@ fn run() -> Result<()> {
         effective.history_length,
         build,
     );
+    if args.signal.is_some() {
+        return run_process_action(&args, &mut sampler);
+    }
 
     let output_format = if args.json {
         Some(OutputFormat::Json)
@@ -136,6 +140,103 @@ fn run() -> Result<()> {
         Err(error) if error.kind() == io::ErrorKind::BrokenPipe => Ok(()),
         Err(error) => Err(error).context("write output"),
     }
+}
+
+#[derive(Debug, Serialize)]
+struct ProcessActionOutcome {
+    signal: SignalArg,
+    pid: u32,
+    process: String,
+    status: &'static str,
+    verified: String,
+}
+
+fn run_process_action(args: &Args, sampler: &mut Sampler) -> Result<()> {
+    let signal = args.signal.context("missing --signal")?;
+    let pid = args.pid.context("missing --pid")?;
+    if matches!(pid, 0 | 1) || pid == std::process::id() {
+        bail!("refusing to signal PID {pid}");
+    }
+    if !args.dry_run && !args.yes {
+        bail!("process signals require --yes; use --dry-run to inspect the plan safely");
+    }
+    if args.demo && !args.dry_run {
+        bail!("--demo only supports --dry-run process actions");
+    }
+    let snapshot = sampler.collect()?;
+    let target = snapshot
+        .processes
+        .iter()
+        .find(|process| process.pid.0 == pid)
+        .with_context(|| format!("PID {pid} is not running or is not visible"))?;
+    let identity = target.identity();
+    let process = target.name.clone();
+    if args.dry_run {
+        return write_process_action(
+            args,
+            &ProcessActionOutcome {
+                signal,
+                pid,
+                process,
+                status: "planned",
+                verified: "not executed".into(),
+            },
+        );
+    }
+    let current = sampler.collect()?;
+    if !current
+        .processes
+        .iter()
+        .any(|candidate| candidate.identity() == identity)
+    {
+        bail!("PID {pid} changed or exited before confirmation; no signal was sent");
+    }
+    let status = std::process::Command::new("/bin/kill")
+        .args([format!("-{}", signal.name()), pid.to_string()])
+        .status()
+        .context("send process signal")?;
+    if !status.success() {
+        bail!(
+            "the operating system rejected {} for PID {pid}",
+            signal.name()
+        );
+    }
+    thread::sleep(Duration::from_millis(50));
+    let refreshed = sampler.collect()?;
+    let verified = refreshed
+        .processes
+        .iter()
+        .find(|candidate| candidate.pid.0 == pid && candidate.start_time_ticks == identity.1);
+    write_process_action(
+        args,
+        &ProcessActionOutcome {
+            signal,
+            pid,
+            process,
+            status: "completed",
+            verified: verified.map_or_else(
+                || "process exited".into(),
+                |process| format!("process remains {}", process.state.label()),
+            ),
+        },
+    )
+}
+
+fn write_process_action(args: &Args, outcome: &ProcessActionOutcome) -> Result<()> {
+    if args.json {
+        serde_json::to_writer_pretty(io::stdout().lock(), outcome)?;
+        println!();
+    } else {
+        println!(
+            "{} PID {} ({}): {}",
+            outcome.signal.name(),
+            outcome.pid,
+            outcome.process,
+            outcome.status
+        );
+        println!("Verification: {}", outcome.verified);
+    }
+    Ok(())
 }
 
 #[derive(Debug)]
