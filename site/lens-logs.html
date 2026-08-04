@@ -1,7 +1,149 @@
-<!doctype html><html lang="en" data-theme="dark"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><meta name="description" content="Inspect recent Linux and macOS logs with lens-logs."><meta name="theme-color" content="#07100e"><title>lens-logs — Dataplicity Lens</title><link rel="icon" href="assets/favicon.svg" type="image/svg+xml"><link rel="stylesheet" href="styles-1.css"><link rel="stylesheet" href="styles-2.css"><link rel="stylesheet" href="styles-3.css"><link rel="stylesheet" href="styles-4.css"><script>try{document.documentElement.dataset.theme=localStorage.getItem('lens-theme')||matchMedia('(prefers-color-scheme: light)').matches?'light':'dark'}catch{}</script></head><body>
-<a class="skip-link" href="#main">Skip to content</a><header class="site-header"><div class="header-inner"><a class="brand" href="https://docs.dataplicity.com/" aria-label="Dataplicity documentation"><img src="assets/lens-mark.svg" alt=""><span class="brand-title">Dataplicity Lens<small>Linux + macOS</small></span></a><nav class="site-nav" data-nav aria-label="Primary navigation"><a href="index.html">Overview</a><a href="install.html">Install</a><a href="lens-suite.html" aria-current="page">Suite</a><a href="architecture.html">Architecture</a><a href="roadmap.html">Roadmap</a></nav><div class="header-actions"><a class="button button-quiet" href="https://github.com/wildfoundry/dataplicity-lens"><span class="github-label">GitHub</span></a><button class="icon-button" type="button" data-theme-toggle></button><button class="icon-button menu-button" type="button" data-menu-toggle aria-expanded="false" aria-label="Open navigation"><svg viewBox="0 0 24 24"><path d="M5 7h14M5 12h14M5 17h14" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg></button></div></div></header>
-<main id="main"><section class="page-hero"><div class="container"><div class="breadcrumbs"><a href="lens-suite.html">Suite</a> / lens-logs</div><span class="eyebrow">Local logs</span><h1>Recent messages, connected to context.</h1><p>Read local logs, infer severity and service context, and fold adjacent repeats without hiding their count.</p></div></section><div class="container content-layout"><aside class="toc" aria-label="On this page"><strong>On this page</strong><a href="#use">Use</a><a href="#sources">Sources</a><a href="#permissions">Permissions</a></aside><article class="prose"><section id="use"><h2>Use</h2><div class="code-block"><div class="code-head">shell <button class="copy-button" data-copy type="button">Copy</button></div><pre><code><span class="token-command">lens-logs</span> <span class="token-flag">--since</span> <span class="token-value">"1 hour ago"</span>
-<span class="token-command">lens-logs</span> <span class="token-flag">--service</span> <span class="token-value">ssh</span> <span class="token-flag">--severity</span> <span class="token-value">error</span>
-<span class="token-command">lens-logs</span> <span class="token-flag">--log-file</span> <span class="token-value">/var/log/my-app.log</span>
-<span class="token-command">lens-logs</span> <span class="token-flag">--demo --json</span></code></pre></div></section><section id="sources"><h2>Native sources</h2><p>Lens reads the systemd journal on Linux and the unified log on macOS. It can also inspect an explicitly selected local log file.</p></section><section id="permissions"><h2>Your permissions stay intact</h2><p>Log access follows the invoking user's permissions. Missing access is reported as unavailable data; Lens does not request elevation.</p></section></article></div></main>
-<footer class="site-footer"><div class="container footer-grid"><div class="footer-copy"><strong>Dataplicity Lens</strong>Copyright 2026 WildFoundry Ltd. Apache License 2.0.</div><div class="footer-links"><a href="lens-suite.html">Suite</a><a href="install.html">Install</a><a href="architecture.html">Architecture</a><a href="https://github.com/wildfoundry/dataplicity-lens">GitHub</a></div></div></footer><script src="app.js"></script></body></html>
+<!doctype html>
+<html lang="en" data-theme="dark">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="description" content="Use lens-logs to inspect, filter and export recent Linux journal, macOS unified log and local file messages.">
+  <meta name="theme-color" content="#07100e">
+  <title>lens-logs — Dataplicity Lens</title>
+  <link rel="icon" href="assets/favicon.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="styles-1.css">
+  <link rel="stylesheet" href="styles-2.css">
+  <link rel="stylesheet" href="styles-3.css">
+  <link rel="stylesheet" href="styles-4.css">
+  <script>try{document.documentElement.dataset.theme=localStorage.getItem('lens-theme')||matchMedia('(prefers-color-scheme: light)').matches?'light':'dark'}catch{}</script>
+</head>
+<body>
+<a class="skip-link" href="#main">Skip to content</a>
+<header class="site-header"><div class="header-inner"><a class="brand" href="https://docs.dataplicity.com/" aria-label="Dataplicity documentation"><img src="assets/lens-mark.svg" alt=""><span class="brand-title">Dataplicity Lens<small>Linux + macOS</small></span></a><nav class="site-nav" data-nav aria-label="Primary navigation"><a href="index.html">Overview</a><a href="install.html">Install</a><a href="lens-suite.html" aria-current="page">Suite</a><a href="architecture.html">Architecture</a><a href="roadmap.html">Roadmap</a></nav><div class="header-actions"><a class="button button-quiet" href="https://github.com/wildfoundry/dataplicity-lens"><span class="github-label">GitHub</span></a><button class="icon-button" type="button" data-theme-toggle></button><button class="icon-button menu-button" type="button" data-menu-toggle aria-expanded="false" aria-label="Open navigation"><svg viewBox="0 0 24 24"><path d="M5 7h14M5 12h14M5 17h14" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg></button></div></div></header>
+
+<main id="main">
+  <section class="page-hero"><div class="container"><div class="breadcrumbs"><a href="lens-suite.html">Suite</a> / lens-logs</div><span class="eyebrow">Logs · Linux + macOS</span><h1>Find the messages around a failure.</h1><p><code>lens-logs</code> reads recent local logs once, lets you narrow them by time, service, process, severity or text, and emits plain text for people or schema-versioned JSON for scripts.</p><div class="hero-actions"><a class="button button-primary" href="#quick-start">Start with a failure</a><a class="button" href="install.html">Install Lens</a></div></div></section>
+
+  <div class="container content-layout">
+    <aside class="toc" aria-label="On this page"><strong>On this page</strong><a href="#quick-start">Quick start</a><a href="#workflows">Common investigations</a><a href="#reading-output">Read the output</a><a href="#filters">Filters and options</a><a href="#sources">Sources and limits</a><a href="#json">JSON contract</a><a href="#permissions">Missing data</a></aside>
+    <article class="prose">
+      <section id="quick-start">
+        <h2>Quick start</h2>
+        <p>First prove the command and output format with deterministic sample data. Then run the platform-specific live command as your normal user.</p>
+        <div class="code-block"><div class="code-head">shell <button class="copy-button" data-copy type="button">Copy</button></div><pre><code><span class="token-comment"># Works on every supported platform; does not read your machine</span>
+<span class="token-command">lens-logs</span> <span class="token-flag">--demo --plain</span>
+
+<span class="token-comment"># Linux: journalctl time expressions are accepted</span>
+<span class="token-command">lens-logs</span> <span class="token-flag">--since</span> <span class="token-value">"1 hour ago"</span>
+
+<span class="token-comment"># macOS: use a `log show --last` duration</span>
+<span class="token-command">lens-logs</span> <span class="token-flag">--since</span> <span class="token-value">1h</span></code></pre></div>
+        <p>When stdout is a terminal, the command opens an interactive view. Redirect it or pass <code>--plain</code> or <code>--json</code> to take a single snapshot and exit.</p>
+        <div class="callout"><strong><code>lens-logs</code> is local and read-only.</strong><p>It does not send logs anywhere, follow a stream, change retention, request elevation or modify the service that produced a message.</p></div>
+      </section>
+
+      <section id="workflows">
+        <h2>Common investigations</h2>
+        <h3>A Linux service failed</h3>
+        <p>Show recent error-like messages attributed to a systemd unit. Service matching is case-insensitive and accepts a partial unit name, so <code>ssh</code> can match <code>sshd.service</code>.</p>
+        <div class="code-block"><div class="code-head">shell <button class="copy-button" data-copy type="button">Copy</button></div><pre><code><span class="token-command">lens-services</span> <span class="token-flag">--service</span> <span class="token-value">mosquitto</span>
+<span class="token-command">lens-logs</span> <span class="token-flag">--since</span> <span class="token-value">"30 minutes ago"</span> <span class="token-flag">--service</span> <span class="token-value">mosquitto</span> <span class="token-flag">--severity</span> <span class="token-value">error</span></code></pre></div>
+
+        <h3>A process name or PID appears in messages</h3>
+        <p><code>--process</code> searches the message text. It does not resolve a PID to a process after that process has exited.</p>
+        <div class="code-block"><div class="code-head">shell <button class="copy-button" data-copy type="button">Copy</button></div><pre><code><span class="token-command">lens-logs</span> <span class="token-flag">--process</span> <span class="token-value">nginx</span>
+<span class="token-command">lens-logs</span> <span class="token-flag">--process</span> <span class="token-value">4242</span> <span class="token-flag">--limit</span> <span class="token-value">25</span></code></pre></div>
+
+        <h3>An application writes its own log file</h3>
+        <p>Add one or more UTF-8 text files. Lens reads up to the last 200 lines of each file and combines them with the native platform log before filtering.</p>
+        <div class="code-block"><div class="code-head">shell <button class="copy-button" data-copy type="button">Copy</button></div><pre><code><span class="token-command">lens-logs</span> <span class="token-flag">--log-file</span> <span class="token-value">/var/log/my-app.log</span> <span class="token-flag">--filter</span> <span class="token-value">timeout</span>
+<span class="token-command">lens-logs</span> <span class="token-flag">--log-file</span> <span class="token-value">./api.log</span> <span class="token-flag">--log-file</span> <span class="token-value">./worker.log</span> <span class="token-flag">--json</span></code></pre></div>
+      </section>
+
+      <section id="reading-output">
+        <h2>Read the plain-text output</h2>
+        <div class="code-block"><div class="code-head">plain text</div><pre><code>2026-08-03T00:00:01Z  write failed: No space left on device  ×12
+2026-08-03T00:00:02Z  mosquitto.service entered failed state  ×3</code></pre></div>
+        <ul>
+          <li>The first field is the source timestamp. Explicit file inputs may have no timestamp because Lens does not assume a file-specific format.</li>
+          <li><code>×12</code> means 12 adjacent records had exactly the same message. Only adjacent duplicates are folded; their count is preserved.</li>
+          <li>No output can mean that the filters matched nothing. Check <code>--json</code> and inspect <code>collection_warnings</code> to distinguish that from an unavailable source.</li>
+        </ul>
+      </section>
+
+      <section id="filters">
+        <h2>Filters and options</h2>
+        <div class="key-grid">
+          <div class="key-row"><span><code>--since VALUE</code></span><span>Limit the native platform log by time. Use journalctl syntax on Linux and durations such as <code>1h</code> or <code>30m</code> on macOS.</span></div>
+          <div class="key-row"><span><code>--service NAME</code></span><span>Keep logs attributed to a matching systemd unit. Linux only in v0.2.</span></div>
+          <div class="key-row"><span><code>--process TEXT</code></span><span>Case-insensitive substring match against the complete message, useful for a process name or PID.</span></div>
+          <div class="key-row"><span><code>--severity VALUE</code></span><span>Keep the inferred label <code>error</code> or <code>warning</code>. Messages without either label are excluded.</span></div>
+          <div class="key-row"><span><code>--filter TEXT</code></span><span>Case-insensitive substring match against the message after the other filters.</span></div>
+          <div class="key-row"><span><code>--log-file PATH</code></span><span>Add a local text file. Repeat the option to add more than one file.</span></div>
+          <div class="key-row"><span><code>--limit NUMBER</code></span><span>Return at most this many log rows after filtering. Default: <code>100</code>.</span></div>
+          <div class="key-row"><span><code>--plain</code></span><span>Print one human-readable snapshot and exit.</span></div>
+          <div class="key-row"><span><code>--json</code></span><span>Print one complete schema-v2 <code>SystemSnapshot</code> and exit.</span></div>
+          <div class="key-row"><span><code>--demo</code></span><span>Use fixed sample data instead of reading the machine. Safe for trying filters and parsers.</span></div>
+        </div>
+        <p>Run <code>lens-logs --help</code> for the authoritative option list installed with your version.</p>
+      </section>
+
+      <section id="sources">
+        <h2>Sources and current limits</h2>
+        <h3>Linux</h3>
+        <ul>
+          <li>Runs <code>journalctl --no-pager --output=short-iso -n 200</code> and passes <code>--since</code> through to journalctl.</li>
+          <li>Infers a unit from the journal's short text representation; <code>--service</code> depends on that inferred value.</li>
+          <li>Journal visibility is exactly what the invoking user can read.</li>
+        </ul>
+        <h3>macOS</h3>
+        <ul>
+          <li>Runs <code>/usr/bin/log show --style syslog --last VALUE --info --debug</code>. The default time window is <code>1h</code>.</li>
+          <li>Keeps the newest 200 returned messages.</li>
+          <li>Unified-log entries do not carry a normalized service unit in v0.2, so use <code>--process</code> or <code>--filter</code> instead of <code>--service</code>.</li>
+        </ul>
+        <h3>Severity and repeat detection</h3>
+        <p>In v0.2, severity is a text heuristic: messages containing <code>error</code> or <code>failed</code> become <code>error</code>; messages containing <code>warn</code> become <code>warning</code>. It is not the native journal priority or macOS log level. Repeat folding compares adjacent message text exactly.</p>
+        <div class="callout warm"><strong>This is a recent snapshot, not a search of all retained history.</strong><p>The native collectors cap input at 200 records, and <code>lens-logs</code> does not follow new messages. Use <code>journalctl</code> or <code>log stream</code> when you need full-history or live-stream behaviour.</p></div>
+      </section>
+
+      <section id="json">
+        <h2>JSON for scripts</h2>
+        <p><code>--json</code> returns the shared system snapshot, not a bare array of log lines. That lets a consumer connect a log to services, processes, findings and other system entities. Read <code>schema_version</code> before consuming fields.</p>
+        <div class="code-block"><div class="code-head">json</div><pre><code>{
+  <span class="t-blue">"schema_version"</span>: <span class="t-warm">"2"</span>,
+  <span class="t-blue">"generated_at"</span>: <span class="t-warm">"2026-08-03T00:00:00Z"</span>,
+  <span class="t-blue">"log_sources"</span>: [
+    { <span class="t-blue">"id"</span>: <span class="t-warm">"systemd-journal"</span>, <span class="t-blue">"kind"</span>: <span class="t-warm">"journal"</span> }
+  ],
+  <span class="t-blue">"logs"</span>: [{
+    <span class="t-blue">"timestamp"</span>: <span class="t-warm">"2026-08-03T00:00:01Z"</span>,
+    <span class="t-blue">"source"</span>: <span class="t-warm">"systemd-journal"</span>,
+    <span class="t-blue">"unit"</span>: <span class="t-warm">"mosquitto.service"</span>,
+    <span class="t-blue">"priority"</span>: <span class="t-warm">"error"</span>,
+    <span class="t-blue">"message"</span>: <span class="t-warm">"write failed: No space left on device"</span>,
+    <span class="t-blue">"repeated"</span>: <span class="t-warm">12</span>
+  }],
+  <span class="t-blue">"relationships"</span>: [ ... ],
+  <span class="t-blue">"collection_warnings"</span>: []
+}</code></pre></div>
+        <p>For example, extract only the log array with <code>lens-logs --json | jq '.logs'</code>, or fail a check when a source was unavailable with <code>jq -e '.collection_warnings | length == 0'</code>.</p>
+      </section>
+
+      <section id="permissions">
+        <h2>When data is missing</h2>
+        <p>Lens does not elevate privileges. A missing command, inaccessible journal, unreadable file or platform privacy restriction becomes an entry in <code>collection_warnings</code>; collection continues for other sources.</p>
+        <div class="code-block"><div class="code-head">shell <button class="copy-button" data-copy type="button">Copy</button></div><pre><code><span class="token-command">lens-logs</span> <span class="token-flag">--json</span> | <span class="token-command">jq</span> <span class="token-value">'{logs: (.logs | length), warnings: .collection_warnings}'</span></code></pre></div>
+        <h3>If you expected messages but got none</h3>
+        <ol>
+          <li>Remove <code>--service</code>, <code>--process</code>, <code>--severity</code> and <code>--filter</code> to check the unfiltered snapshot.</li>
+          <li>Use the correct <code>--since</code> syntax for the operating system.</li>
+          <li>Inspect <code>collection_warnings</code> with the command above.</li>
+          <li>On Linux, compare with <code>journalctl -n 20</code> as the same user. On macOS, compare with <code>log show --last 10m</code>.</li>
+          <li>For a file, confirm that the same user can read it and that it is UTF-8 text.</li>
+        </ol>
+      </section>
+    </article>
+  </div>
+</main>
+
+<footer class="site-footer"><div class="container footer-grid"><div class="footer-copy"><strong>Dataplicity Lens</strong>Copyright 2026 WildFoundry Ltd. Apache License 2.0.</div><div class="footer-links"><a href="lens-suite.html">Suite</a><a href="install.html">Install</a><a href="architecture.html">Architecture</a><a href="https://github.com/wildfoundry/dataplicity-lens">GitHub</a></div></div></footer>
+<script src="app.js"></script>
+</body>
+</html>
