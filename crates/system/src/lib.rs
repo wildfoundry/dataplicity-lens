@@ -416,32 +416,87 @@ fn render_cockpit(
         terminal::Clear(ClearType::All)
     )?;
     let host = &snapshot.host;
-    writeln!(stdout, "DATAPLICITY LENS  ·  {}", host.hostname)?;
+    let width = terminal::size()
+        .map(|(width, _)| usize::from(width).clamp(58, 110))
+        .unwrap_or(88);
+    let colour = terminal_colour_enabled();
+    let rule = "─".repeat(width.saturating_sub(2));
+    writeln!(stdout, "{}", ink(&format!("╭{rule}╮"), Ink::Border, colour))?;
     writeln!(
         stdout,
-        "{} · kernel {} · up {}",
-        host.os_name
-            .as_deref()
-            .unwrap_or("Operating system unknown"),
-        host.kernel,
-        human_duration(host.uptime_seconds)
+        "  {}{}{}  {}  {}  {}",
+        ink("DATAPLICITY", Ink::Brand, colour),
+        ink(" / ", Ink::Muted, colour),
+        ink("LENS", Ink::Bright, colour),
+        ink("◆", Ink::Border, colour),
+        ink(&host.hostname, Ink::Info, colour),
+        if loading {
+            badge(" CHECKING ", Ink::Attention, colour)
+        } else {
+            badge(" LIVE ", Ink::Success, colour)
+        },
     )?;
     writeln!(
         stdout,
-        "CPU {:>5.1}%  Memory {:>5.1}%  Load {:.2} {:.2} {:.2}",
-        host.cpu_percent,
-        host.memory.used_percent(),
-        host.load.one,
-        host.load.five,
-        host.load.fifteen
+        "  {}",
+        ink(
+            &format!(
+                "{}  •  kernel {}  •  up {}",
+                host.os_name
+                    .as_deref()
+                    .unwrap_or("Operating system unknown"),
+                host.kernel,
+                human_duration(host.uptime_seconds)
+            ),
+            Ink::Muted,
+            colour,
+        )
+    )?;
+    writeln!(stdout, "{}", ink(&format!("├{rule}┤"), Ink::Border, colour))?;
+    writeln!(
+        stdout,
+        "  {} {}    {} {}    {} {}",
+        ink("CPU", Ink::Label, colour),
+        ink(&format!("{:>5.1}%", host.cpu_percent), Ink::Info, colour),
+        ink("Memory", Ink::Label, colour),
+        ink(
+            &format!("{:>5.1}%", host.memory.used_percent()),
+            Ink::Attention,
+            colour,
+        ),
+        ink("LOAD", Ink::Label, colour),
+        ink(
+            &format!(
+                "{:.2}  {:.2}  {:.2}",
+                host.load.one, host.load.five, host.load.fifteen
+            ),
+            Ink::Info,
+            colour,
+        ),
     )?;
     writeln!(
         stdout,
-        "Processes {} total · {} running · {} sleeping · {} zombies",
-        host.process_counts.total,
-        host.process_counts.running,
-        host.process_counts.sleeping,
-        host.process_counts.zombie
+        "  {} {}   {} {}   {} {}   {} {}",
+        ink("TASKS", Ink::Label, colour),
+        ink(&host.process_counts.total.to_string(), Ink::Bright, colour),
+        ink("RUNNING", Ink::Label, colour),
+        ink(
+            &host.process_counts.running.to_string(),
+            Ink::Success,
+            colour
+        ),
+        ink("SLEEPING", Ink::Label, colour),
+        ink(
+            &host.process_counts.sleeping.to_string(),
+            Ink::Muted,
+            colour
+        ),
+        ink("ZOMBIES", Ink::Label, colour),
+        ink(
+            &host.process_counts.zombie.to_string(),
+            Ink::Critical,
+            colour
+        ),
     )?;
 
     if rows >= 22 {
@@ -458,12 +513,25 @@ fn render_cockpit(
                         .unwrap_or(Ordering::Equal)
                 })
         });
-        writeln!(stdout, "\nBUSIEST PROCESSES")?;
+        writeln!(
+            stdout,
+            "\n  {}",
+            ink("BUSIEST PROCESSES", Ink::Label, colour)
+        )?;
         for process in processes.into_iter().take(3) {
             writeln!(
                 stdout,
-                "  {:>6}  {:<22} CPU {:>5.1}%  MEM {:>5.1}%",
-                process.pid, process.name, process.cpu_percent, process.memory_percent
+                "  {}  {}  {} {}  {} {}",
+                ink(&format!("{:>6}", process.pid), Ink::Muted, colour),
+                ink(&format!("{:<22}", process.name), Ink::Bright, colour),
+                ink("CPU", Ink::Label, colour),
+                ink(&format!("{:>5.1}%", process.cpu_percent), Ink::Info, colour),
+                ink("MEM", Ink::Label, colour),
+                ink(
+                    &format!("{:>5.1}%", process.memory_percent),
+                    Ink::Attention,
+                    colour
+                ),
             )?;
         }
     }
@@ -478,37 +546,81 @@ fn render_cockpit(
         .iter()
         .filter(|finding| finding.severity == Severity::Attention)
         .count();
-    writeln!(stdout, "\nSTATUS")?;
+    writeln!(stdout, "\n  {}", ink("HEALTH", Ink::Label, colour))?;
     if loading {
         writeln!(
             stdout,
-            "  Checking services, logs, storage and network in the background…"
+            "  {}",
+            ink(
+                "Checking services, logs, storage and network in the background…",
+                Ink::Muted,
+                colour,
+            )
         )?;
     } else if snapshot.findings.is_empty() {
-        writeln!(stdout, "  No current findings from the available checks.")?;
+        writeln!(stdout, "  {}", badge(" ALL CLEAR ", Ink::Success, colour))?;
     } else {
-        writeln!(stdout, "  {critical} critical · {attention} attention")?;
+        writeln!(
+            stdout,
+            "  {}  {}  {}",
+            badge(&format!(" {critical} CRITICAL "), Ink::Critical, colour),
+            badge(&format!(" {attention} ATTENTION "), Ink::Attention, colour),
+            ink(
+                &format!("{critical} critical · {attention} attention"),
+                Ink::Muted,
+                colour,
+            ),
+        )?;
         if rows >= 28 {
             for finding in snapshot.findings.iter().take(2) {
-                writeln!(stdout, "  · {:?}: {}", finding.severity, finding.title)?;
+                writeln!(
+                    stdout,
+                    "  {} {}",
+                    ink("•", Ink::Critical, colour),
+                    ink(&finding.title, Ink::Muted, colour)
+                )?;
             }
         }
     }
 
-    writeln!(stdout, "\nOPEN DETAIL")?;
+    writeln!(stdout, "\n  {}", ink("EXPLORE", Ink::Label, colour))?;
     for (index, view) in View::ALL.iter().enumerate() {
         let marker = if index == selected { "▶" } else { " " };
-        writeln!(
-            stdout,
+        let row = format!(
             "{marker} {:<12} {}",
             view.title(),
-            cockpit_view_summary(*view, snapshot, loading)
-        )?;
+            cockpit_view_summary(*view, snapshot, loading),
+        );
+        if index == selected {
+            writeln!(stdout, "{}", selected_row(&row, colour))?;
+        } else {
+            writeln!(stdout, "{}", ink(&row, Ink::Muted, colour))?;
+        }
     }
     writeln!(
         stdout,
-        "\n↑/↓ move   Enter open   / search   ? help   r refresh   q quit"
+        "\n{}",
+        ink(&format!("├{rule}┤"), Ink::Border, colour)
     )?;
+    writeln!(
+        stdout,
+        "  {} {}   {} {}   {} {}   {} {}   {} {}   {} {}",
+        keycap("↑↓", colour),
+        ink("move", Ink::Muted, colour),
+        keycap("↵", colour),
+        ink("open", Ink::Muted, colour),
+        keycap("/", colour),
+        ink("search", Ink::Muted, colour),
+        keycap("?", colour),
+        ink("help", Ink::Muted, colour),
+        keycap("r", colour),
+        ink("refresh", Ink::Muted, colour),
+        keycap("q", colour),
+        ink("quit", Ink::Muted, colour),
+    )?;
+    if rows >= 22 {
+        writeln!(stdout, "{}", ink(&format!("╰{rule}╯"), Ink::Border, colour))?;
+    }
     stdout.flush()?;
     Ok(())
 }
@@ -535,6 +647,77 @@ fn cockpit_view_summary(view: View, snapshot: &SystemSnapshot, loading: bool) ->
             snapshot.sockets.len()
         ),
         View::Health => format!("{} findings", snapshot.findings.len()),
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+enum Ink {
+    Bright,
+    Brand,
+    Info,
+    Success,
+    Attention,
+    Critical,
+    Label,
+    Muted,
+    Border,
+}
+
+impl Ink {
+    const fn foreground(self) -> &'static str {
+        match self {
+            Self::Bright => "1;38;2;238;243;252",
+            Self::Brand => "1;38;2;190;125;255",
+            Self::Info => "1;38;2;91;215;255",
+            Self::Success => "1;38;2;88;224;166",
+            Self::Attention => "1;38;2;255;190;92",
+            Self::Critical => "1;38;2;255;105;125",
+            Self::Label => "1;38;2;139;155;180",
+            Self::Muted => "38;2;125;140;165",
+            Self::Border => "38;2;48;62;84",
+        }
+    }
+
+    const fn badge_colours(self) -> &'static str {
+        match self {
+            Self::Success => "1;38;2;112;239;188;48;2;17;62;50",
+            Self::Attention => "1;38;2;255;201;112;48;2;81;52;20",
+            Self::Critical => "1;38;2;255;166;178;48;2;92;32;45",
+            Self::Brand => "1;38;2;222;193;255;48;2;70;49;104",
+            _ => "1;38;2;207;216;230;48;2;31;42;61",
+        }
+    }
+}
+
+fn terminal_colour_enabled() -> bool {
+    env::var_os("NO_COLOR").is_none() && env::var("TERM").is_ok_and(|term| term != "dumb")
+}
+
+fn ink(text: &str, colour: Ink, enabled: bool) -> String {
+    if enabled {
+        format!("\x1b[{}m{text}\x1b[0m", colour.foreground())
+    } else {
+        text.to_owned()
+    }
+}
+
+fn badge(text: &str, colour: Ink, enabled: bool) -> String {
+    if enabled {
+        format!("\x1b[{}m{text}\x1b[0m", colour.badge_colours())
+    } else {
+        format!("[{text}]")
+    }
+}
+
+fn keycap(key: &str, enabled: bool) -> String {
+    badge(&format!(" {key} "), Ink::Brand, enabled)
+}
+
+fn selected_row(text: &str, enabled: bool) -> String {
+    if enabled {
+        format!("\x1b[1;38;2;242;235;255;48;2;70;49;104m{text}\x1b[0m")
+    } else {
+        format!(">{text}")
     }
 }
 
