@@ -34,7 +34,7 @@
 
 <span class="token-comment"># macOS: use a `log show --last` duration</span>
 <span class="token-command">lens-logs</span> <span class="token-flag">--since</span> <span class="token-value">1h</span></code></pre></div>
-        <p>When stdout is a terminal, the command opens an interactive view. Redirect it or pass <code>--plain</code> or <code>--json</code> to take a single snapshot and exit.</p>
+        <p>When stdout is a terminal, the command opens a navigable message list. Use the arrow keys and press Enter to inspect a message. On macOS, the latest minute appears first while the previous hour loads in the background. Redirect it or pass <code>--plain</code> or <code>--json</code> to take a single snapshot and exit.</p>
         <div class="callout"><strong><code>lens-logs</code> is local and read-only.</strong><p>It does not send logs anywhere, follow a stream, change retention, request elevation or modify the service that produced a message.</p></div>
       </section>
 

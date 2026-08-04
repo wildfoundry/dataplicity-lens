@@ -259,10 +259,10 @@ SBOMs, checksums and package smoke tests. See [`SECURITY.md`](SECURITY.md) and
 ## Shipped suite
 
 - `lens-services` — service state, restart loops and related processes
-- `lens-logs` — recent journal logs, repeated-message folding and service/severity/time filters
+- `lens-logs` — a navigable recent-message view, repeated-message folding and service/severity/time filters
 - `lens-disk` — block devices, filesystems, mounts, inodes and deleted-open files
 - `lens-net` — interfaces, routes and listener ownership
-- `lens-health` — composed findings from the same shared probes, without duplicate collectors
+- `lens-health` — selectable findings with the evidence and suggested checks behind each warning
 
 See [`docs/ROADMAP.md`](docs/ROADMAP.md) for shipped and future scope.
 

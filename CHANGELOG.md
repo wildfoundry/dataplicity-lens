@@ -21,6 +21,12 @@ versioning once the first public release is tagged.
   storage and network checks continue in the background.
 - Interactive specialist screens now open immediately with a loading state and collect only the
   selected domain; opening Storage no longer waits for unrelated log, service and network scans.
+- Logs now opens as a navigable list with message details. On macOS it shows the latest minute
+  first, then loads the previous hour in the background without moving the selected message.
+- Health findings can now be selected and opened to review their evidence and suggested checks;
+  common service and storage findings appear while the remaining checks continue.
+- Storage and Network publish their primary data before slower device, open-file and listener
+  probes finish.
 - Documentation navigation groups the specialist commands under the suite instead of promoting one
   command on its own.
 
