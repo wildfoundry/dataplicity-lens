@@ -2284,9 +2284,7 @@ fn command_with_timeout(
             }
         }
     };
-    let Some(status) = status else {
-        return None;
-    };
+    let status = status?;
     let stdout = stdout
         .and_then(|reader| reader.join().ok())
         .unwrap_or_default();
