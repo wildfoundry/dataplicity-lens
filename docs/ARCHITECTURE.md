@@ -47,6 +47,10 @@ utilities; macOS uses `sysctl`, `vm_stat`, `ps`, `launchctl`, the unified log, `
 Required host-level files produce a clear top-level error. Optional process fields are represented as
 unavailable and collection continues. Environment variables are deliberately not read.
 
+The interactive `lens` cockpit collects host and process data for its first screen, then enriches that
+snapshot with services, logs, storage and network data on a background thread. Non-interactive plain
+text and JSON retain the complete, synchronous snapshot contract.
+
 ## History and rates
 
 History is session-local and bounded. CPU usage is calculated from process tick deltas relative to

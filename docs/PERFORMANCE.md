@@ -2,7 +2,8 @@
 
 The v0.2 design targets:
 
-- startup below 100 ms on an ordinary modern Linux or macOS host
+- draw the interactive host/process overview without waiting for supplemental system commands
+- keep navigation responsive while services, logs, storage and networking load in the background
 - smooth one-second refresh with at least 10,000 processes
 - low idle overhead
 - no unbounded history or cache growth

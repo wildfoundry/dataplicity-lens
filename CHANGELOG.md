@@ -13,6 +13,14 @@ versioning once the first public release is tagged.
 - The `lens` cockpit plus service, log, disk, network and health specialist binaries.
 - Schema-version-2 system entities and cross-domain relationships.
 - Complete-suite GNU/musl archives, Debian/RPM packaging and Pages documentation.
+- Raspberry Pi OS packages for 64-bit and 32-bit Raspberry Pi systems.
+
+### Changed
+
+- The `lens` cockpit now opens with useful host and process status while slower service, log,
+  storage and network checks continue in the background.
+- Documentation navigation groups the specialist commands under the suite instead of promoting one
+  command on its own.
 
 ## [0.2.0] - unreleased
 
