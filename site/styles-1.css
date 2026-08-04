@@ -112,7 +112,8 @@ button, input { font: inherit; }
   letter-spacing: -0.02em;
   text-decoration: none;
 }
-.brand img { width: 34px; height: 34px; }
+.brand img { width: 110px; height: auto; flex: none; }
+html[data-theme="light"] .brand img { filter: invert(1); }
 .brand small {
   display: block;
   color: var(--subtle);
@@ -122,7 +123,15 @@ button, input { font: inherit; }
   line-height: 1;
   text-transform: uppercase;
 }
-.brand-title { display: grid; gap: 3px; line-height: 1; }
+.brand-title {
+  display: grid;
+  gap: 3px;
+  padding-left: 11px;
+  border-left: 1px solid var(--line-strong);
+  font-size: 0;
+  line-height: 1;
+}
+.brand-title::before { content: "Lens"; font-size: 16px; }
 
 .site-nav {
   display: flex;
