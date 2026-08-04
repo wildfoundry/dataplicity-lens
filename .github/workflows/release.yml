@@ -160,7 +160,7 @@ jobs:
           find "target/${{ matrix.musl_target }}/release" -maxdepth 1 -type f -perm -111 -exec strip {} \; || true
       - name: Generate man page and completions
         run: |
-          cargo build --release --locked -p lens-top
+          cargo build --release --locked --workspace
           scripts/generate-assets.sh target/release/lens-top dist/generated
       - name: Build GNU archive, Debian and RPM packages
         env:
