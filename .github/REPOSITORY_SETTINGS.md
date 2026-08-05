@@ -1,16 +1,19 @@
 # Repository settings
 
-This file records the GitHub settings expected for `wildfoundry/dataplicity-lens`. It does not change
-repository visibility. Visibility remains an explicit WildFoundry decision.
+This file records the GitHub settings expected for `wildfoundry/dataplicity-lens`. It documents the
+intended configuration; changing visibility or other settings still requires a repository
+administrator action in GitHub.
 
 ## Repository
 
+- Visibility: **public** (open-source Apache-2.0 project; documentation at `https://lens.dataplicity.com/`)
 - Description: `A fast terminal toolkit for understanding Linux and macOS systems.`
 - Homepage: `https://lens.dataplicity.com/`
 - Issues enabled; Discussions and wiki disabled
 - Squash merge only, automatic head-branch deletion, auto-merge and branch updates enabled
 - Default workflow token permission: read-only
 - Dependabot alerts, security updates and automated fixes enabled
+- GitHub Pages: workflow-built from `site/`, custom domain `lens.dataplicity.com` (public with the repo)
 
 ## Main branch
 
