@@ -7,7 +7,7 @@
 <span class="token-command">cd</span> dataplicity-lens
 <span class="token-command">scripts/test-homebrew-local.sh</span> <span class="token-flag">--keep</span>
 <span class="token-command">lens-top</span> <span class="token-flag">--once</span></code></pre></div><p>Release automation builds Linux and macOS archives for Intel and ARM64, plus Debian and RPM packages, checksums and SBOMs.</p></section>
-<section id="use"><h2>Use</h2><p>Run with no flags on a terminal to open the TUI. Redirect stdout and the command emits one plain snapshot automatically.</p><div class="code-block"><div class="code-head">shell <button class="copy-button" data-copy type="button">Copy</button></div><pre><code><span class="token-command">lens-top</span>
+<section id="use"><h2>Use</h2><p>Run with no flags on a terminal to open the TUI. Resize the window at any time: wider and taller terminals show more process detail, while compact terminals keep the main values and controls. Redirect stdout and the command emits one plain snapshot automatically.</p><div class="code-block"><div class="code-head">shell <button class="copy-button" data-copy type="button">Copy</button></div><pre><code><span class="token-command">lens-top</span>
 <span class="token-command">lens-top</span> <span class="token-flag">--plain --sort</span> <span class="token-value">memory</span> <span class="token-flag">--limit</span> <span class="token-value">10</span>
 <span class="token-command">lens-top</span> <span class="token-flag">--json --filter-user</span> <span class="token-value">postgres</span>
 <span class="token-command">lens-top</span> <span class="token-flag">--jsonl --min-cpu</span> <span class="token-value">5</span>

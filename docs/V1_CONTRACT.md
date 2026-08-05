@@ -31,6 +31,8 @@ the 1.0 project. Other Unix-like systems are best effort until they are added to
 - External operating-system commands have individual deadlines.
 - Services, logs, storage, networking and health use the same move, inspect, search, refresh and quit
   keys.
+- Interactive views redraw on terminal resize, use additional rows and columns when available, and
+  remove secondary detail when space is limited without hiding navigation or primary values.
 - Plain text is for people. JSON is schema-versioned for scripts. Diagnostics go to stderr or
   `collection_warnings`, not into structured stdout.
 - `--limit` defaults to 1,000 for suite specialists. `--limit 0` explicitly requests every available

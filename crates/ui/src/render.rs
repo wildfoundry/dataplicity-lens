@@ -19,24 +19,34 @@ use crate::{
 
 pub fn draw(frame: &mut Frame<'_>, app: &mut App) {
     let area = frame.area();
-    if area.width < 58 || area.height < 16 {
+    if area.width < 36 || area.height < 10 {
         draw_too_small(frame, area);
         return;
     }
 
     frame.render_widget(Block::default().style(canvas_style(app.capabilities)), area);
 
+    let show_summary = area.height >= 17;
+    let summary_height = if !show_summary {
+        0
+    } else if area.width < 78 {
+        4
+    } else {
+        5
+    };
     let rows = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
             Constraint::Length(3),
-            Constraint::Length(5),
+            Constraint::Length(summary_height),
             Constraint::Min(4),
             Constraint::Length(if app.error.is_some() { 3 } else { 2 }),
         ])
         .split(area);
     draw_header(frame, rows[0], app);
-    draw_summary(frame, rows[1], app);
+    if show_summary {
+        draw_summary(frame, rows[1], app);
+    }
     match app.view {
         View::List => draw_processes(frame, rows[2], app),
         View::Detail => draw_detail(frame, rows[2], app),
@@ -69,38 +79,64 @@ fn draw_header(frame: &mut Frame<'_>, area: Rect, app: &App) {
     } else {
         success_badge(app.capabilities)
     };
-    let title = Line::from(vec![
-        Span::raw("  "),
-        Span::styled("DATAPLICITY", brand_style(app.capabilities)),
-        Span::styled(" / LENS", title_style(app.capabilities)),
-        Span::styled(diamond, muted_style(app.capabilities)),
-        Span::styled(&app.snapshot.host.hostname, info_style(app.capabilities)),
-        Span::raw("  "),
-        Span::styled(status, status_style),
-    ]);
+    let title = if area.width < 64 {
+        Line::from(vec![
+            Span::raw(" "),
+            Span::styled("LENS", brand_style(app.capabilities)),
+            Span::raw("  "),
+            Span::styled(
+                truncate(
+                    &app.snapshot.host.hostname,
+                    area.width.saturating_sub(20) as usize,
+                ),
+                info_style(app.capabilities),
+            ),
+            Span::raw(" "),
+            Span::styled(status, status_style),
+        ])
+    } else {
+        Line::from(vec![
+            Span::raw("  "),
+            Span::styled("DATAPLICITY", brand_style(app.capabilities)),
+            Span::styled(" / LENS", title_style(app.capabilities)),
+            Span::styled(diamond, muted_style(app.capabilities)),
+            Span::styled(&app.snapshot.host.hostname, info_style(app.capabilities)),
+            Span::raw("  "),
+            Span::styled(status, status_style),
+        ])
+    };
     let refresh = if app.collecting() {
         format!("refresh {:.1}s · updating", app.interval().as_secs_f64())
     } else {
         format!("refresh {:.1}s", app.interval().as_secs_f64())
     };
-    let meta = Line::from(vec![
+    let mut meta = vec![
         Span::raw("  "),
         Span::styled(refresh, muted_style(app.capabilities)),
-        Span::styled(separator, faint_style(app.capabilities)),
-        Span::styled(
-            format!("group {}", app.group.label()),
-            muted_style(app.capabilities),
-        ),
-        Span::styled(separator, faint_style(app.capabilities)),
-        Span::styled(
-            format!(
-                "sort {} {}",
-                app.sort_key.label(),
-                direction_symbol(app.sort_direction, app.capabilities)
+    ];
+    if area.width >= 64 {
+        meta.extend([
+            Span::styled(separator, faint_style(app.capabilities)),
+            Span::styled(
+                format!(
+                    "sort {} {}",
+                    app.sort_key.label(),
+                    direction_symbol(app.sort_direction, app.capabilities)
+                ),
+                muted_style(app.capabilities),
             ),
-            muted_style(app.capabilities),
-        ),
-    ]);
+        ]);
+    }
+    if area.width >= 88 {
+        meta.extend([
+            Span::styled(separator, faint_style(app.capabilities)),
+            Span::styled(
+                format!("group {}", app.group.label()),
+                muted_style(app.capabilities),
+            ),
+        ]);
+    }
+    let meta = Line::from(meta);
     frame.render_widget(
         Paragraph::new(vec![title, meta]).block(
             Block::default()
@@ -112,6 +148,45 @@ fn draw_header(frame: &mut Frame<'_>, area: Rect, app: &App) {
 }
 
 fn draw_summary(frame: &mut Frame<'_>, area: Rect, app: &App) {
+    if area.width < 78 {
+        let counts = app.snapshot.host.process_counts;
+        let compact = vec![
+            Line::from(vec![
+                Span::styled(" CPU ", label_style(app.capabilities)),
+                Span::styled(
+                    format!("{:.1}%", app.snapshot.host.cpu_percent),
+                    metric_style(app.capabilities),
+                ),
+                Span::styled("   MEM ", label_style(app.capabilities)),
+                Span::styled(
+                    format!("{:.1}%", app.snapshot.host.memory.used_percent()),
+                    attention_style(app.capabilities),
+                ),
+                Span::styled("   LOAD ", label_style(app.capabilities)),
+                Span::styled(
+                    format!("{:.2}", app.snapshot.host.load.one),
+                    metric_style(app.capabilities),
+                ),
+            ]),
+            Line::from(vec![
+                Span::styled(" TASKS ", label_style(app.capabilities)),
+                Span::styled(counts.total.to_string(), title_style(app.capabilities)),
+                Span::styled(
+                    format!("   {} running", counts.running),
+                    success_style(app.capabilities),
+                ),
+                Span::styled(
+                    format!("   {} alerts", app.snapshot.findings.len()),
+                    attention_style(app.capabilities),
+                ),
+            ]),
+        ];
+        frame.render_widget(
+            Paragraph::new(compact).block(panel(" SYSTEM ", app.capabilities)),
+            area,
+        );
+        return;
+    }
     let columns = Layout::default()
         .direction(Direction::Horizontal)
         .constraints([
@@ -215,6 +290,8 @@ fn draw_summary(frame: &mut Frame<'_>, area: Rect, app: &App) {
 
 fn draw_processes(frame: &mut Frame<'_>, area: Rect, app: &App) {
     let visible = app.visible();
+    let compact = area.width < 58;
+    let narrow = area.width < 78;
     let wide = area.width >= 115;
     let medium = area.width >= 88;
     let mut rows = Vec::with_capacity(visible.len());
@@ -234,16 +311,33 @@ fn draw_processes(frame: &mut Frame<'_>, area: Rect, app: &App) {
         let name = format!("{group}{prefix}{}", process.name);
         let mut cells = vec![
             Cell::from(process.pid.0.to_string()).style(muted_style(app.capabilities)),
-            Cell::from(truncate(&name, 30)).style(title_style(app.capabilities)),
-            Cell::from(truncate(&process.user.display_name(), 14))
-                .style(muted_style(app.capabilities)),
+            Cell::from(truncate(&name, area.width.saturating_sub(24) as usize))
+                .style(title_style(app.capabilities)),
+        ];
+        if !compact && !narrow {
+            cells.push(
+                Cell::from(truncate(&process.user.display_name(), 14))
+                    .style(muted_style(app.capabilities)),
+            );
+        }
+        cells.push(
             Cell::from(format!("{:.1}", process.cpu_percent))
                 .style(cpu_style(process.cpu_percent, app.capabilities)),
-            Cell::from(format!("{:.1}", process.memory_percent))
-                .style(memory_style(process.memory_percent, app.capabilities)),
-            Cell::from(format_bytes(process.rss_bytes)).style(metric_style(app.capabilities)),
+        );
+        if !compact {
+            cells.push(
+                Cell::from(format!("{:.1}", process.memory_percent))
+                    .style(memory_style(process.memory_percent, app.capabilities)),
+            );
+        }
+        if !compact && !narrow {
+            cells.push(
+                Cell::from(format_bytes(process.rss_bytes)).style(metric_style(app.capabilities)),
+            );
+        }
+        cells.push(
             Cell::from(process.state.short()).style(state_style(process.state, app.capabilities)),
-        ];
+        );
         if medium {
             cells
                 .push(Cell::from(process.threads.to_string()).style(muted_style(app.capabilities)));
@@ -275,16 +369,24 @@ fn draw_processes(frame: &mut Frame<'_>, area: Rect, app: &App) {
         rows.push(Row::new(cells).style(row_style));
     }
 
-    let mut header = vec!["PID", "PROCESS", "USER", "CPU%", "MEM%", "RSS", "ST"];
-    let mut widths = vec![
-        Constraint::Length(7),
-        Constraint::Min(20),
-        Constraint::Length(14),
-        Constraint::Length(6),
-        Constraint::Length(6),
-        Constraint::Length(9),
-        Constraint::Length(2),
-    ];
+    let mut header = vec!["PID", "PROCESS"];
+    let mut widths = vec![Constraint::Length(7), Constraint::Min(12)];
+    if !compact && !narrow {
+        header.push("USER");
+        widths.push(Constraint::Length(14));
+    }
+    header.push("CPU%");
+    widths.push(Constraint::Length(6));
+    if !compact {
+        header.push("MEM%");
+        widths.push(Constraint::Length(6));
+    }
+    if !compact && !narrow {
+        header.push("RSS");
+        widths.push(Constraint::Length(9));
+    }
+    header.push("ST");
+    widths.push(Constraint::Length(2));
     if medium {
         header.extend(["THR", "RUNTIME"]);
         widths.extend([Constraint::Length(4), Constraint::Length(8)]);
@@ -343,11 +445,13 @@ fn draw_detail(frame: &mut Frame<'_>, area: Rect, app: &App) {
         );
         return;
     };
+    let show_charts = area.height >= 16;
+    let identity_height = if area.width < 72 { 6 } else { 7 };
     let sections = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
-            Constraint::Length(7),
-            Constraint::Length(5),
+            Constraint::Length(identity_height),
+            Constraint::Length(if show_charts { 5 } else { 0 }),
             Constraint::Min(6),
         ])
         .split(area);
@@ -431,41 +535,43 @@ fn draw_detail(frame: &mut Frame<'_>, area: Rect, app: &App) {
         sections[0],
     );
 
-    let charts = Layout::default()
-        .direction(Direction::Horizontal)
-        .constraints([Constraint::Percentage(50), Constraint::Percentage(50)])
-        .split(sections[1]);
-    let cpu_data = app.selected_cpu_history();
-    frame.render_widget(
-        Sparkline::default()
-            .block(
-                Block::default()
-                    .borders(Borders::ALL)
-                    .border_type(BorderType::Rounded)
-                    .border_style(border_style(app.capabilities))
-                    .title(Span::styled(" CPU HISTORY ", label_style(app.capabilities))),
-            )
-            .data(&cpu_data)
-            .style(info_style(app.capabilities)),
-        charts[0],
-    );
-    let memory_data = app.selected_memory_history();
-    frame.render_widget(
-        Sparkline::default()
-            .block(
-                Block::default()
-                    .borders(Borders::ALL)
-                    .border_type(BorderType::Rounded)
-                    .border_style(border_style(app.capabilities))
-                    .title(Span::styled(
-                        " RSS HISTORY  KiB ",
-                        label_style(app.capabilities),
-                    )),
-            )
-            .data(&memory_data)
-            .style(attention_style(app.capabilities)),
-        charts[1],
-    );
+    if show_charts {
+        let charts = Layout::default()
+            .direction(Direction::Horizontal)
+            .constraints([Constraint::Percentage(50), Constraint::Percentage(50)])
+            .split(sections[1]);
+        let cpu_data = app.selected_cpu_history();
+        frame.render_widget(
+            Sparkline::default()
+                .block(
+                    Block::default()
+                        .borders(Borders::ALL)
+                        .border_type(BorderType::Rounded)
+                        .border_style(border_style(app.capabilities))
+                        .title(Span::styled(" CPU HISTORY ", label_style(app.capabilities))),
+                )
+                .data(&cpu_data)
+                .style(info_style(app.capabilities)),
+            charts[0],
+        );
+        let memory_data = app.selected_memory_history();
+        frame.render_widget(
+            Sparkline::default()
+                .block(
+                    Block::default()
+                        .borders(Borders::ALL)
+                        .border_type(BorderType::Rounded)
+                        .border_style(border_style(app.capabilities))
+                        .title(Span::styled(
+                            " RSS HISTORY  KiB ",
+                            label_style(app.capabilities),
+                        )),
+                )
+                .data(&memory_data)
+                .style(attention_style(app.capabilities)),
+            charts[1],
+        );
+    }
 
     let command = process.command_line.as_deref().unwrap_or("unavailable");
     let service = process
@@ -557,7 +663,7 @@ fn draw_footer(frame: &mut Frame<'_>, area: Rect, app: &App) {
             rows[0],
         );
         frame.render_widget(
-            Paragraph::new(footer_text(app)).block(
+            Paragraph::new(footer_text(app, area.width)).block(
                 Block::default()
                     .borders(Borders::TOP)
                     .border_style(border_style(app.capabilities)),
@@ -566,7 +672,7 @@ fn draw_footer(frame: &mut Frame<'_>, area: Rect, app: &App) {
         );
     } else {
         frame.render_widget(
-            Paragraph::new(footer_text(app)).block(
+            Paragraph::new(footer_text(app, area.width)).block(
                 Block::default()
                     .borders(Borders::TOP)
                     .border_style(border_style(app.capabilities)),
@@ -576,19 +682,18 @@ fn draw_footer(frame: &mut Frame<'_>, area: Rect, app: &App) {
     }
 }
 
-fn footer_text(app: &App) -> Line<'static> {
+fn footer_text(app: &App, width: u16) -> Line<'static> {
     let mut spans = vec![Span::raw(" ")];
-    for (key, action) in [
-        ("/", "search"),
-        ("f", "filter"),
-        ("s", "sort"),
-        ("g", "group"),
-        ("↵", "inspect"),
-        ("space", if app.paused { "resume" } else { "pause" }),
-        ("r", "refresh"),
-        ("?", "help"),
-        ("q", "quit"),
-    ] {
+    let mut actions = vec![("↵", "inspect"), ("r", "refresh"), ("q", "quit")];
+    if width >= 58 {
+        actions.splice(0..0, [("/", "search"), ("f", "filter")]);
+    }
+    if width >= 88 {
+        actions.splice(2..2, [("s", "sort"), ("g", "group")]);
+        actions.push(("space", if app.paused { "resume" } else { "pause" }));
+        actions.push(("?", "help"));
+    }
+    for (key, action) in actions {
         spans.push(Span::styled(
             format!(" {key} "),
             key_style(app.capabilities),
@@ -712,7 +817,7 @@ fn draw_too_small(frame: &mut Frame<'_>, area: Rect) {
             )),
             Line::from("Terminal is too small."),
             Line::from(format!(
-                "Current: {}x{}  Required: 58x16",
+                "Current: {}x{}  Required: 36x10",
                 area.width, area.height
             )),
             Line::from("Resize the terminal or press q to quit."),
@@ -1056,9 +1161,45 @@ mod tests {
     use super::*;
     use crate::{ColorMode, TerminalCapabilities, UiOptions, app::App};
 
+    fn rendered_text(terminal: &Terminal<TestBackend>) -> String {
+        terminal
+            .backend()
+            .buffer()
+            .content()
+            .iter()
+            .map(|cell| cell.symbol())
+            .collect()
+    }
+
     #[test]
     fn narrow_screen_renders_without_panic() {
-        let backend = TestBackend::new(60, 14);
+        let backend = TestBackend::new(36, 10);
+        let mut terminal = Terminal::new(backend).expect("test terminal");
+        let options = UiOptions {
+            interval: std::time::Duration::from_secs(1),
+            sort_key: SortKey::Cpu,
+            sort_direction: SortDirection::Descending,
+            group: GroupMode::None,
+            filter: ProcessFilter::default(),
+            limit: None,
+            history_length: 10,
+            color_mode: ColorMode::Never,
+            ascii: true,
+        };
+        let capabilities = TerminalCapabilities::detect(ColorMode::Never, true);
+        let mut app = App::new(Snapshot::empty("fixture"), options, capabilities);
+        terminal
+            .draw(|frame| draw(frame, &mut app))
+            .expect("render");
+        let rendered = rendered_text(&terminal);
+        assert!(rendered.contains("PROCESS"));
+        assert!(!rendered.contains("USER"));
+        assert!(!rendered.contains("MEMORY"));
+    }
+
+    #[test]
+    fn medium_screen_reflows_without_panic() {
+        let backend = TestBackend::new(76, 18);
         let mut terminal = Terminal::new(backend).expect("test terminal");
         let options = UiOptions {
             interval: std::time::Duration::from_secs(1),
@@ -1080,7 +1221,7 @@ mod tests {
 
     #[test]
     fn full_colour_dashboard_renders_without_panic() {
-        let backend = TestBackend::new(140, 32);
+        let backend = TestBackend::new(180, 50);
         let mut terminal = Terminal::new(backend).expect("test terminal");
         let options = UiOptions {
             interval: std::time::Duration::from_secs(1),
@@ -1106,5 +1247,8 @@ mod tests {
         terminal
             .draw(|frame| draw(frame, &mut app))
             .expect("render full-colour dashboard");
+        let rendered = rendered_text(&terminal);
+        assert!(rendered.contains("SERVICE/CGROUP"));
+        assert!(rendered.contains("MEMORY"));
     }
 }
