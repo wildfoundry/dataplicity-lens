@@ -6,6 +6,7 @@ version="${VERSION:-0.3.0}"
 native_packages="${PACKAGE_NATIVE:-true}"
 out="${OUTPUT_DIR:-dist/${TARGET}}"
 stage="${STAGE_DIR:-stage/${TARGET}}"
+native_out="${NATIVE_OUTPUT_DIR:-$out}"
 binaries=(lens lens-top lens-services lens-logs lens-disk lens-net lens-hardware lens-system lens-health)
 
 rm -rf "$stage" "$out"
@@ -40,5 +41,6 @@ if [[ "$native_packages" != true ]]; then
 fi
 : "${DEB_ARCH:?DEB_ARCH is required when PACKAGE_NATIVE=true}"
 : "${RPM_ARCH:?RPM_ARCH is required when PACKAGE_NATIVE=true}"
-fpm --input-type dir --output-type deb --name dataplicity-lens --version "$version" --architecture "$DEB_ARCH" --license Apache-2.0 --url https://github.com/wildfoundry/dataplicity-lens --description "Dataplicity Lens Linux operations suite" --maintainer "WildFoundry Ltd" --chdir "$stage" --package "$out/dataplicity-lens_${version}_${DEB_ARCH}.deb" .
-fpm --input-type dir --output-type rpm --name dataplicity-lens --version "$version" --iteration 1 --architecture "$RPM_ARCH" --license Apache-2.0 --url https://github.com/wildfoundry/dataplicity-lens --description "Dataplicity Lens Linux operations suite" --maintainer "WildFoundry Ltd" --chdir "$stage" --package "$out/dataplicity-lens-${version}-1.${RPM_ARCH}.rpm" .
+mkdir -p "$native_out"
+fpm --input-type dir --output-type deb --name dataplicity-lens --version "$version" --architecture "$DEB_ARCH" --license Apache-2.0 --url https://github.com/wildfoundry/dataplicity-lens --description "Dataplicity Lens Linux operations suite" --maintainer "WildFoundry Ltd" --chdir "$stage" --package "$native_out/dataplicity-lens_${version}_${DEB_ARCH}.deb" .
+fpm --input-type dir --output-type rpm --name dataplicity-lens --version "$version" --iteration 1 --architecture "$RPM_ARCH" --license Apache-2.0 --url https://github.com/wildfoundry/dataplicity-lens --description "Dataplicity Lens Linux operations suite" --maintainer "WildFoundry Ltd" --chdir "$stage" --package "$native_out/dataplicity-lens-${version}-1.${RPM_ARCH}.rpm" .

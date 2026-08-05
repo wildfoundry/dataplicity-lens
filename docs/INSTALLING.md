@@ -44,8 +44,9 @@ Remove it with `sudo apt remove dataplicity-lens`.
 
 ## Other Linux systems
 
-Releases include GNU and statically linked musl archives for x86-64, ARM64 and ARM hard-float, plus
-RPM packages for supported Fedora/RHEL-family targets. Verify the selected artifact with
+Debian and RPM packages use statically linked binaries so they also work on systems with an older
+glibc, including current Raspberry Pi OS and Debian releases. Releases additionally include GNU and
+statically linked musl archives for x86-64, ARM64 and ARM hard-float. Verify the selected artifact with
 `SHA256SUMS`, unpack it, and install the binaries in `/usr/local/bin`.
 
 ## macOS with Homebrew
