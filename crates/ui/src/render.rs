@@ -78,12 +78,14 @@ fn draw_header(frame: &mut Frame<'_>, area: Rect, app: &App) {
         Span::raw("  "),
         Span::styled(status, status_style),
     ]);
+    let refresh = if app.collecting() {
+        format!("refresh {:.1}s · updating", app.interval().as_secs_f64())
+    } else {
+        format!("refresh {:.1}s", app.interval().as_secs_f64())
+    };
     let meta = Line::from(vec![
         Span::raw("  "),
-        Span::styled(
-            format!("refresh {:.1}s", app.interval().as_secs_f64()),
-            muted_style(app.capabilities),
-        ),
+        Span::styled(refresh, muted_style(app.capabilities)),
         Span::styled(separator, faint_style(app.capabilities)),
         Span::styled(
             format!("group {}", app.group.label()),
