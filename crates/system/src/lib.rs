@@ -948,15 +948,24 @@ fn render_cockpit(
     rows: u16,
     stdout: &mut impl Write,
 ) -> Result<()> {
-    execute!(stdout, cursor::MoveTo(0, 0))?;
+    let mut frame = Vec::new();
+    render_cockpit_content(snapshot, selected, loading, rows, &mut frame)?;
+    present_frame(stdout, &frame)
+}
+
+fn render_cockpit_content(
+    snapshot: &SystemSnapshot,
+    selected: usize,
+    loading: bool,
+    rows: u16,
+    stdout: &mut impl Write,
+) -> Result<()> {
     let host = &snapshot.host;
     let columns = terminal::size().map_or(88, |(width, _)| width);
     if columns < 36 || rows < 10 {
         writeln!(stdout, "LENS")?;
         writeln!(stdout, "Terminal too small ({columns}x{rows}).")?;
         writeln!(stdout, "Resize to at least 36x10 or press q to quit.")?;
-        execute!(stdout, terminal::Clear(ClearType::FromCursorDown))?;
-        stdout.flush()?;
         return Ok(());
     }
     let width = usize::from(columns);
@@ -1275,7 +1284,21 @@ fn render_cockpit(
     if rows >= 22 {
         write!(stdout, "{}", ink(&format!("╰{rule}╯"), Ink::Border, colour))?;
     }
-    execute!(stdout, terminal::Clear(ClearType::FromCursorDown))?;
+    Ok(())
+}
+
+fn present_frame(stdout: &mut impl Write, frame: &[u8]) -> Result<()> {
+    let mut update = Vec::with_capacity(frame.len().saturating_add(256));
+    execute!(update, cursor::MoveTo(0, 0))?;
+    execute!(update, terminal::Clear(ClearType::CurrentLine))?;
+    for byte in frame {
+        update.push(*byte);
+        if *byte == b'\n' {
+            execute!(update, terminal::Clear(ClearType::CurrentLine))?;
+        }
+    }
+    execute!(update, terminal::Clear(ClearType::FromCursorDown))?;
+    stdout.write_all(&update)?;
     stdout.flush()?;
     Ok(())
 }
@@ -1582,14 +1605,38 @@ fn render_specialist(
     rows: u16,
     stdout: &mut impl Write,
 ) -> Result<()> {
-    execute!(stdout, cursor::MoveTo(0, 0))?;
+    let mut frame = Vec::new();
+    render_specialist_content(
+        view,
+        snapshot,
+        network_activity,
+        selected,
+        inspecting,
+        loading,
+        status,
+        rows,
+        &mut frame,
+    )?;
+    present_frame(stdout, &frame)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn render_specialist_content(
+    view: View,
+    snapshot: &SystemSnapshot,
+    network_activity: &NetworkActivity,
+    selected: usize,
+    inspecting: bool,
+    loading: bool,
+    status: &str,
+    rows: u16,
+    stdout: &mut impl Write,
+) -> Result<()> {
     let columns = terminal::size().map_or(100, |(width, _)| width);
     if columns < 36 || rows < 10 {
         writeln!(stdout, "LENS / {}", view.title().to_ascii_uppercase())?;
         writeln!(stdout, "Terminal too small ({columns}x{rows}).")?;
         writeln!(stdout, "Resize to at least 36x10 or press q to quit.")?;
-        execute!(stdout, terminal::Clear(ClearType::FromCursorDown))?;
-        stdout.flush()?;
         return Ok(());
     }
     let width = usize::from(columns);
@@ -1762,8 +1809,6 @@ fn render_specialist(
         )?;
     }
     write!(stdout, "{}", ink(&format!("╰{rule}╯"), Ink::Border, colour))?;
-    execute!(stdout, terminal::Clear(ClearType::FromCursorDown))?;
-    stdout.flush()?;
     Ok(())
 }
 
@@ -6769,6 +6814,7 @@ mod tests {
         let output = String::from_utf8(output).expect("UTF-8");
         assert!(!output.contains("\u{1b}[2J"));
         assert!(output.contains("\u{1b}[J"));
+        assert!(output.matches("\u{1b}[2K").count() > 4);
     }
 
     #[test]
