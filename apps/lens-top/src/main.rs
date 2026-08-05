@@ -103,6 +103,7 @@ fn run() -> Result<()> {
             } else {
                 ColorMode::Auto
             },
+            theme_mode: effective.theme,
             ascii: effective.ascii,
         };
         run_tui(initial, move || sampler.collect(), options)?;

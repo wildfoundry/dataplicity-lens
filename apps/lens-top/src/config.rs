@@ -8,7 +8,8 @@ use anyhow::{Context, Result, bail};
 use lens_core::{GroupMode, SortKey};
 use serde::{Deserialize, Serialize};
 
-use crate::cli::Args;
+use crate::cli::{Args, ThemeArg};
+use lens_ui::ThemeMode;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
@@ -42,7 +43,7 @@ impl Default for ConfigFile {
                 "runtime".to_owned(),
                 "service".to_owned(),
             ],
-            theme: "default".to_owned(),
+            theme: "auto".to_owned(),
             colour_mode: "auto".to_owned(),
             history_length: 60,
             limit: None,
@@ -58,6 +59,7 @@ pub struct EffectiveConfig {
     pub history_length: usize,
     pub limit: Option<usize>,
     pub no_color: bool,
+    pub theme: ThemeMode,
     pub ascii: bool,
 }
 
@@ -83,8 +85,29 @@ impl EffectiveConfig {
             no_color: args.no_color
                 || env_bool("LENS_TOP_NO_COLOR")?.unwrap_or(false)
                 || file.colour_mode.eq_ignore_ascii_case("never"),
+            theme: resolve_theme(args.theme, &file.theme)?,
             ascii: args.ascii || env_bool("LENS_TOP_ASCII")?.unwrap_or(false),
         })
+    }
+}
+
+fn resolve_theme(argument: Option<ThemeArg>, configured: &str) -> Result<ThemeMode> {
+    let value = env::var("LENS_TOP_THEME")
+        .or_else(|_| env::var("LENS_THEME"))
+        .ok();
+    let configured = value.as_deref().unwrap_or(configured);
+    match argument {
+        Some(ThemeArg::Auto) => Ok(ThemeMode::Auto),
+        Some(ThemeArg::Dark) => Ok(ThemeMode::Dark),
+        Some(ThemeArg::Light) => Ok(ThemeMode::Light),
+        None if configured.eq_ignore_ascii_case("auto")
+            || configured.eq_ignore_ascii_case("default") =>
+        {
+            Ok(ThemeMode::Auto)
+        }
+        None if configured.eq_ignore_ascii_case("dark") => Ok(ThemeMode::Dark),
+        None if configured.eq_ignore_ascii_case("light") => Ok(ThemeMode::Light),
+        None => bail!("theme must be auto, dark or light"),
     }
 }
 

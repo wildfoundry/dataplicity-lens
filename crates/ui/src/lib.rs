@@ -19,7 +19,7 @@ use lens_core::{GroupMode, ProcessFilter, SortDirection, SortKey};
 use lens_model::Snapshot;
 use thiserror::Error;
 
-pub use terminal::{ColorMode, TerminalCapabilities};
+pub use terminal::{ColorMode, TerminalCapabilities, ThemeMode};
 
 #[derive(Debug, Clone)]
 pub struct UiOptions {
@@ -31,6 +31,7 @@ pub struct UiOptions {
     pub limit: Option<usize>,
     pub history_length: usize,
     pub color_mode: ColorMode,
+    pub theme_mode: ThemeMode,
     pub ascii: bool,
 }
 
@@ -68,7 +69,11 @@ where
     E: Display + 'static,
 {
     let mut terminal = terminal::TerminalSession::enter()?;
-    let capabilities = TerminalCapabilities::detect(options.color_mode, options.ascii);
+    let capabilities = TerminalCapabilities::detect_with_theme(
+        options.color_mode,
+        options.ascii,
+        options.theme_mode,
+    );
     let mut app = App::new(initial, options, capabilities);
     let (request_tx, result_rx) = spawn_collection_worker(collect);
     let (diagnostic_tx, diagnostic_rx) = mpsc::channel();

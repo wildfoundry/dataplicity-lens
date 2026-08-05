@@ -654,6 +654,7 @@ mod tests {
             limit: None,
             history_length: 10,
             color_mode: ColorMode::Never,
+            theme_mode: crate::ThemeMode::Auto,
             ascii: true,
         }
     }

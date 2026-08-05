@@ -1,4 +1,6 @@
-use criterion::{Criterion, black_box, criterion_group, criterion_main};
+use std::hint::black_box;
+
+use criterion::{Criterion, criterion_group, criterion_main};
 use lens_core::{GroupMode, ProcessFilter, SortDirection, SortKey, select_processes};
 use lens_model::{IoCounters, Process, ProcessId, ProcessState, User};
 

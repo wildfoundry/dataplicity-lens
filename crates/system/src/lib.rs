@@ -6,7 +6,10 @@ use std::{
     io::{self, IsTerminal, Read, Seek, SeekFrom, Write},
     path::{Path, PathBuf},
     process::{Command, Stdio},
-    sync::mpsc::{self, Receiver, TryRecvError},
+    sync::{
+        atomic::{AtomicU8, Ordering as AtomicOrdering},
+        mpsc::{self, Receiver, TryRecvError},
+    },
     thread,
     time::{Duration, Instant},
 };
@@ -91,6 +94,13 @@ pub enum CompletionShell {
     Fish,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+pub enum ThemeMode {
+    Auto,
+    Dark,
+    Light,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ServiceAction {
@@ -140,6 +150,9 @@ pub struct ViewArgs {
     /// Emit stable plain text explicitly (the default outside an interactive terminal).
     #[arg(long, conflicts_with = "json")]
     pub plain: bool,
+    /// Choose colours for an auto-detected, dark or light terminal background.
+    #[arg(long, value_enum, default_value_t = ThemeMode::Auto)]
+    pub theme: ThemeMode,
     /// Use deterministic committed sample data.
     #[arg(long)]
     pub demo: bool,
@@ -204,6 +217,7 @@ pub fn is_broken_pipe(error: &anyhow::Error) -> bool {
 
 pub fn run_view(view: View) -> Result<()> {
     let args = ViewArgs::parse();
+    set_terminal_theme(args.theme);
     if generate_assets(view.binary(), &args)? {
         return Ok(());
     }
@@ -239,6 +253,7 @@ pub fn run_view(view: View) -> Result<()> {
 
 pub fn run_cockpit() -> Result<()> {
     let args = ViewArgs::parse();
+    set_terminal_theme(args.theme);
     if generate_assets("lens", &args)? {
         return Ok(());
     }
@@ -1223,18 +1238,61 @@ enum Ink {
     Border,
 }
 
+static TERMINAL_THEME: AtomicU8 = AtomicU8::new(0);
+
+fn set_terminal_theme(theme: ThemeMode) {
+    let value = match theme {
+        ThemeMode::Auto => 0,
+        ThemeMode::Dark => 1,
+        ThemeMode::Light => 2,
+    };
+    TERMINAL_THEME.store(value, AtomicOrdering::Relaxed);
+}
+
+fn terminal_has_light_background() -> bool {
+    match TERMINAL_THEME.load(AtomicOrdering::Relaxed) {
+        1 => false,
+        2 => true,
+        _ => {
+            match env::var("LENS_THEME")
+                .ok()
+                .as_deref()
+                .map(str::to_ascii_lowercase)
+                .as_deref()
+            {
+                Some("light") => return true,
+                Some("dark") => return false,
+                _ => {}
+            }
+            env::var("COLORFGBG")
+                .ok()
+                .and_then(|value| value.rsplit([';', ':']).next()?.parse::<u8>().ok())
+                .is_some_and(|background| background == 7 || background >= 9)
+        }
+    }
+}
+
 impl Ink {
-    const fn foreground(self) -> &'static str {
-        match self {
-            Self::Bright => "1;38;2;238;243;252",
-            Self::Brand => "1;38;2;190;125;255",
-            Self::Info => "1;38;2;91;215;255",
-            Self::Success => "1;38;2;88;224;166",
-            Self::Attention => "1;38;2;255;190;92",
-            Self::Critical => "1;38;2;255;105;125",
-            Self::Label => "1;38;2;139;155;180",
-            Self::Muted => "38;2;125;140;165",
-            Self::Border => "38;2;48;62;84",
+    const fn foreground(self, light: bool) -> &'static str {
+        match (self, light) {
+            (Self::Bright, true) => "1;38;2;16;31;35",
+            (Self::Brand, true) => "1;38;2;105;40;160",
+            (Self::Info, true) => "1;38;2;0;103;148",
+            (Self::Success, true) => "1;38;2;0;110;79",
+            (Self::Attention, true) => "1;38;2;145;79;0",
+            (Self::Critical, true) => "1;38;2;185;30;55",
+            (Self::Label, true) => "1;38;2;70;85;105",
+            (Self::Muted, true) => "38;2;78;94;112",
+            (Self::Border, true) => "38;2;148;160;174",
+            (Self::Bright, false) => "1;38;2;238;243;252",
+            (Self::Brand, false) => "1;38;2;190;125;255",
+            (Self::Info, false) => "1;38;2;91;215;255",
+            (Self::Success, false) => "1;38;2;88;224;166",
+            (Self::Attention, false) => "1;38;2;255;190;92",
+            (Self::Critical, false) => "1;38;2;255;105;125",
+            (Self::Label, false) => "1;38;2;139;155;180",
+            (Self::Muted, false) => "38;2;125;140;165",
+            (Self::Border, false) => "38;2;48;62;84",
         }
     }
 
@@ -1255,7 +1313,10 @@ fn terminal_colour_enabled() -> bool {
 
 fn ink(text: &str, colour: Ink, enabled: bool) -> String {
     if enabled {
-        format!("\x1b[{}m{text}\x1b[0m", colour.foreground())
+        format!(
+            "\x1b[{}m{text}\x1b[0m",
+            colour.foreground(terminal_has_light_background())
+        )
     } else {
         text.to_owned()
     }
