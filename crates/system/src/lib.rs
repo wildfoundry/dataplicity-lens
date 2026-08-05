@@ -4100,11 +4100,10 @@ fn collect_certificates(warnings: &mut Vec<String>) -> Vec<CertificateInfo> {
         if !openssl_available && !paths.is_empty() {
             warnings.push("openssl unavailable: certificate metadata was not inspected".into());
         }
-        let values = paths
+        paths
             .into_iter()
             .map(|path| certificate_info(&path, openssl_available, warnings))
-            .collect();
-        values
+            .collect()
     }
 }
 
