@@ -28,8 +28,9 @@ Every archive and native package contains `lens`, `lens-top`, `lens-services`, `
 `lens-disk`, `lens-net` and `lens-health`. Archive verification also checks the generated man page,
 completions, licences, checksums and CycloneDX output.
 
-`workflow_dispatch` and pull requests run the same machinery in dry-run mode without publishing a
-GitHub Release. No locally compiled artifact may be uploaded as a release asset.
+`workflow_dispatch` runs the complete machinery in dry-run mode without publishing a GitHub Release.
+Pull requests run the parallel CI target matrix but do not assemble the same release bundle a second
+time. No locally compiled artifact may be uploaded as a release asset.
 
 Release jobs receive only `contents: write`, `id-token: write` and `attestations: write`. Pull-request
 jobs remain read-only. Third-party actions are pinned to immutable commit SHAs.

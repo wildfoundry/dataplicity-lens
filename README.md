@@ -23,34 +23,6 @@ is the whole idea.
 
 > **Making Linux make sense.**
 
-## Demo
-
-Every command supports `--demo`, which loads sample data so you can try the output without depending on
-the state of the current machine.
-
-```text
-  DATAPLICITY / LENS  ◆  production-gateway-04   LIVE
-  refresh 1.0s   •   group none   •   sort CPU ↓
-╭─ CPU   18.2% ───────────╮╭─ MEMORY   43.8% ────────╮╭─ SYSTEM PULSE ───────╮
-│ ▁▂▂▃▄▃▂▂▃▃▄▅▄▃          ││ ▂▂▃▃▄▄▄▅▅▄▄▃▃▂        ││ LOAD    0.41  0.38  0.31  │
-│                            ││                            ││ TASKS   5  1 running     │
-╰───────────────────────────╯╰───────────────────────────╯╰──────────────────────────╯
-╭─ PROCESSES  5 visible ──────────────────────────────────────────────────╮
-│ PID     PROCESS              USER          CPU%  MEM%      RSS ST │
-│ 8421    image-worker         service       38.2  12.4    848MB R  │
-│ 1027    postgres             postgres       7.8  18.1   1.15GB S  │
-│ 2214    mqtt-bridge          mqtt           3.1   1.8    118MB S  │
-│ 9462    image-helper         service        0.0   0.0       0B Z  │
-╰──────────────────────────────────────────────────────────────────╯
-  /  search    f  filter    s  sort    g  group    ↵  inspect    ?  help    q  quit
-```
-
-Generate a repeatable text capture with:
-
-```sh
-scripts/capture-demo.sh
-```
-
 ## Install
 
 ### macOS with Homebrew
@@ -69,11 +41,11 @@ the sample output and native macOS process collection. `--keep` leaves the
 formula installed so you can run `lens`, `lens-top --once`, or any specialist command. Omit it for a
 clean verification run that uninstalls its temporary tap and package automatically.
 
-Run Lens as your normal account; it does not need `sudo`. Start with the sample data and then
-check native macOS collection:
+Run Lens as your normal account; it does not need `sudo`. Start with the overview, then open the
+specialist view you need:
 
 ```sh
-lens --demo
+lens
 lens-top --once
 lens-services
 lens-logs --since "1 hour ago"
@@ -122,13 +94,13 @@ Until the first release is published, build from source with the pinned toolchai
 
 ```sh
 cargo build --release --locked --workspace
-./target/release/lens --demo --plain
+./target/release/lens
 ```
 
 ## Use
 
 Start with `lens` for a cockpit, or run a specialist directly. Each specialist supports `--plain`,
-`--json`, `--demo`, `--filter` and `--limit`; logs additionally support `--service`, `--severity` and
+`--json`, `--filter` and `--limit`; logs additionally support `--service`, `--severity` and
 `--since`. The default limit is 1,000 rows. Pass `--limit 0` when you explicitly want every row in
 the selected time range or file.
 
@@ -137,7 +109,9 @@ network details then load once in the background, so a slow platform command doe
 opening screen or normal navigation. Each specialist collects only the system data it displays, and
 individual operating-system commands time out instead of holding the whole tool open indefinitely.
 Interactive views follow the terminal as it is resized: larger windows show more rows and useful
-columns, while smaller windows hide secondary detail before navigation or primary values.
+columns, while smaller windows hide secondary detail before navigation or primary values. Headers
+show the local clock, while host summaries retain system uptime. Press `!` to run a one-shot local
+diagnostic command in a responsive panel without leaving the live view.
 
 ```sh
 lens
@@ -170,7 +144,6 @@ lens-top --min-cpu 5
 lens-top --min-memory 1
 lens-top --limit 20
 lens-top --no-color
-lens-top --demo
 ```
 
 ### Interactive keys
@@ -187,6 +160,7 @@ lens-top --demo
 | `Tab` / `Shift+Tab` | Next or previous item |
 | `Space` | Pause or resume sampling |
 | `r` | Refresh immediately |
+| `!` | Open the responsive diagnostic shell |
 | `?` | Help |
 | `q` or `Ctrl+C` | Quit |
 

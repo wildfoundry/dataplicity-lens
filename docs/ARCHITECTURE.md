@@ -22,7 +22,7 @@ same model. The application composes those parts and owns CLI/configuration poli
 
 The schema-version-2 `Snapshot` is the shared system contract. It contains host, process, service,
 log source, mount, filesystem, interface, route, socket and finding entities plus typed relationships.
-`lens-system` composes the read-only Linux or macOS collectors, and every specialist binary consumes that
+`lens-system` composes the Linux or macOS collectors, and every specialist binary consumes that
 composition rather than invoking or parsing system interfaces itself.
 
 No presentation crate reads `/proc`, and no collector emits terminal strings.
@@ -35,7 +35,7 @@ Broken parent references and tree cycles are bounded and rendered safely.
 
 ## Collection policy
 
-Platform collectors read only local, read-only interfaces. Linux uses procfs and standard system
+Platform collectors inspect local operating-system interfaces. Linux uses procfs and standard system
 utilities; macOS uses `sysctl`, `vm_stat`, `ps`, `launchctl`, the unified log, `df`, `ifconfig`,
 `netstat`, `lsof`, and `diskutil`:
 

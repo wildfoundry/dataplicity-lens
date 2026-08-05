@@ -26,11 +26,10 @@ Homebrew installs Rust as a build-only dependency. The first build can take seve
 script refuses to replace an existing `dataplicity-lens` formula or an existing
 `local/dataplicity-lens-test` tap.
 
-Try the sample data first, then check the local machine:
+Open the overview, then check the local machine:
 
 ```sh
-lens --demo
-lens-top --demo
+lens
 lens-top --once
 lens-health --json
 ```
@@ -69,7 +68,7 @@ using the 32-bit operating system. Install the Debian package, then check both s
 
 ```sh
 sudo apt install ./dataplicity-lens_0.3.0_armhf.deb
-lens --demo --plain
+lens
 lens-top --once
 ```
 
@@ -81,7 +80,7 @@ The workspace pins its Rust toolchain. Build every command with:
 git clone https://github.com/wildfoundry/dataplicity-lens.git
 cd dataplicity-lens
 cargo build --release --locked --workspace
-./target/release/lens --demo --plain
+./target/release/lens
 ```
 
 The executables are written to `target/release/`.

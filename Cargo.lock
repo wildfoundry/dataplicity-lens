@@ -1135,6 +1135,7 @@ dependencies = [
  "lens-output",
  "ratatui",
  "thiserror 2.0.11",
+ "time",
  "unicode-width",
 ]
 

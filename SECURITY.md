@@ -8,8 +8,15 @@ known mitigation.
 
 ## Trust model
 
-Lens is read-only in v0.1.0. It reads local Linux kernel interfaces and does not require root, a
-background daemon, an account or network access. It does not collect or transmit telemetry.
+Lens reads local operating-system interfaces and does not require a background daemon, account or
+network connection. It does not collect or transmit telemetry. Inspection runs with the invoking
+user's permissions.
+
+State-changing process and service operations are explicit, typed actions. They require a precise
+target and confirmation, revalidate identity immediately before execution, and report the result.
+The diagnostic shell is opened deliberately with `!`; commands entered there are passed to the
+user's normal shell with the user's existing permissions. Lens never stores shell input, supplies
+credentials or elevates itself.
 
 Release artifacts are built only by GitHub Actions from a version tag reachable from `main`.
 Dependencies are locked, workflow actions are pinned to immutable commits, licences and advisories

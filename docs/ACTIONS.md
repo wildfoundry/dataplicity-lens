@@ -31,6 +31,17 @@ whether the user is authorised; Lens does not embed credentials or elevate its w
 
 launchd actions are not currently enabled. The command fails before changing state on macOS.
 
+## Diagnostic shell
+
+Press `!` in an interactive view to open a local command panel. On a wide terminal it occupies a
+right-hand card so the live system view remains visible; on a compact terminal it uses nearly the
+whole screen. Commands run asynchronously through the invoking user's normal shell. Lens does not
+save command history, supply credentials or elevate the command. Press `Esc` to close the panel.
+
+The shell is for deliberate, one-shot diagnostics. It is visually separate from typed Lens actions:
+Lens cannot preflight or verify an arbitrary shell command in the way it verifies a process signal or
+service operation.
+
 ## Automation behavior
 
 - `--dry-run` does not require `--yes` and never changes state.
