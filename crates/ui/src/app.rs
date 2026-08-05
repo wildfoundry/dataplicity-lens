@@ -46,6 +46,7 @@ pub struct App {
     pub show_sort: bool,
     pub sort_selection: usize,
     pub paused: bool,
+    pub collecting: bool,
     pub sort_key: SortKey,
     pub sort_direction: SortDirection,
     pub group: GroupMode,
@@ -79,6 +80,7 @@ impl App {
                 .position(|key| *key == options.sort_key)
                 .unwrap_or_default(),
             paused: false,
+            collecting: false,
             sort_key: options.sort_key,
             sort_direction: options.sort_direction,
             group: options.group,
@@ -103,6 +105,14 @@ impl App {
 
     pub const fn paused(&self) -> bool {
         self.paused
+    }
+
+    pub const fn collecting(&self) -> bool {
+        self.collecting
+    }
+
+    pub const fn set_collecting(&mut self, collecting: bool) {
+        self.collecting = collecting;
     }
 
     pub fn replace_snapshot(&mut self, snapshot: Snapshot) {
