@@ -3,6 +3,7 @@ set -euo pipefail
 
 repo="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 formula="$repo/packaging/homebrew/dataplicity-lens.rb"
+commit="$(git -C "$repo" rev-parse HEAD 2>/dev/null || printf 'unknown')"
 version="$(awk '/^\[workspace.package\]$/{p=1;next}/^\[/{p=0}p&&/^version = /{gsub(/[" ]/,"",$3);print $3;exit}' "$repo/Cargo.toml")"
 formula_version="$(awk '/^  version /{gsub(/"/,"",$2);print $2;exit}' "$formula")"
 if [[ -z "$version" || "$formula_version" != "$version" ]]; then
@@ -43,10 +44,15 @@ COPYFILE_DISABLE=1 tar \
   -C "$repo" -czf "$archive" .
 checksum="$(shasum -a 256 "$archive" | awk '{print $1}')"
 
-awk -v archive="file://$archive" -v checksum="$checksum" '
+awk -v archive="file://$archive" -v checksum="$checksum" -v commit="$commit" '
   /^  url / {
     print "  url \"" archive "\""
     print "  sha256 \"" checksum "\""
+    next
+  }
+  /^  def install$/ {
+    print
+    print "    ENV[\"LENS_GIT_SHA\"] = \"" commit "\""
     next
   }
   { print }
@@ -70,7 +76,7 @@ HOMEBREW_NO_AUTO_UPDATE=1 brew link --overwrite dataplicity-lens >/dev/null
 HOMEBREW_NO_AUTO_UPDATE=1 HOMEBREW_NO_INSTALL_FROM_API=1 brew test "$tap/dataplicity-lens"
 
 if [[ "$keep" == true ]]; then
-  echo "Homebrew installation passed and was kept. Try: lens --demo or lens-top --once"
+  echo "Homebrew installation passed and was kept. Try: lens or lens-top --once"
 else
   echo "Homebrew installation and tests passed; the temporary installation was removed."
 fi

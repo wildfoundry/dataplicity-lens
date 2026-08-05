@@ -1,6 +1,10 @@
+# typed: strict
+# frozen_string_literal: true
+
+# Homebrew formula for the complete Dataplicity Lens command suite.
 class DataplicityLens < Formula
   desc "Local system operations toolkit for Linux and macOS"
-  homepage "https://github.com/wildfoundry/dataplicity-lens"
+  homepage "https://lens.dataplicity.com/"
   url "https://github.com/wildfoundry/dataplicity-lens.git", branch: "main"
   version "0.3.0"
   license "Apache-2.0"
