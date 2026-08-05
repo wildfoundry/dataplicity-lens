@@ -7,7 +7,7 @@ make the build 1.0.
 
 Lens is a standalone local operations toolkit built from the system work WildFoundry does every day
 while supporting Dataplicity. It does not require a Dataplicity account or service connection. It is
-not a fleet manager, remote shell, resident daemon or unattended remediation system.
+not a fleet manager, resident daemon, remote access product or unattended remediation system.
 
 ## Tier-1 target
 
@@ -40,7 +40,9 @@ the 1.0 project. Other Unix-like systems are best effort until they are added to
 
 ## Action contract
 
-Lens 1.0 may perform only named, typed actions. It does not accept arbitrary commands.
+Lens 1.0 keeps product actions named and typed. It also provides a deliberately opened local
+diagnostic shell so an operator can run ordinary commands beside live Lens data; those commands are
+not treated as Lens actions and use the invoking user's shell and permissions.
 
 - Process actions: TERM, KILL, HUP, INT, STOP and CONT for one exact PID.
 - Linux service actions: start, stop, restart, enable and disable for one exact systemd unit.
@@ -49,6 +51,8 @@ Lens 1.0 may perform only named, typed actions. It does not accept arbitrary com
 - Process identity is checked with PID and start time immediately before execution.
 - Lens uses the invoking account and does not keep a privileged daemon or require the TUI to run as
   root.
+- The diagnostic shell opens only on `!`, remains visibly distinct from Lens actions, does not retain
+  history, and never supplies credentials or elevation.
 - launchd service actions remain unavailable until Lens can target and verify them as precisely as
   systemd actions.
 

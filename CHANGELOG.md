@@ -14,6 +14,8 @@ versioning once the first public release is tagged.
 - Schema-version-2 system entities and cross-domain relationships.
 - Complete-suite GNU/musl archives, Debian/RPM packaging and Pages documentation.
 - Raspberry Pi OS packages for 64-bit and 32-bit Raspberry Pi systems.
+- Responsive diagnostic shell overlays that keep live system data visible while local commands run.
+- Local clock information throughout the interactive suite.
 
 ### Changed
 
@@ -29,6 +31,13 @@ versioning once the first public release is tagged.
   probes finish.
 - Documentation navigation groups the specialist commands under the suite instead of promoting one
   command on its own.
+- Search now opens as a modal card instead of replacing the specialist screen.
+- Process lists keep the selected row centred when possible, including after reaching the last row.
+- Storage summaries name the root filesystem clearly, and every specialist uses the same host-name
+  discovery path on macOS.
+- User documentation now leads with installation and live collection; deterministic sample data is
+  kept in contributor documentation.
+- Pull requests no longer repeat complete release-bundle assembly after the parallel CI builds.
 
 ## [0.2.0] - unreleased
 

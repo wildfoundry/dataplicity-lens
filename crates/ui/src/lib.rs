@@ -5,7 +5,9 @@ mod render;
 mod terminal;
 
 use std::{
+    env,
     fmt::Display,
+    process::Command,
     sync::mpsc::{self, Receiver, Sender, TryRecvError},
     thread,
     time::{Duration, Instant},
@@ -69,12 +71,18 @@ where
     let capabilities = TerminalCapabilities::detect(options.color_mode, options.ascii);
     let mut app = App::new(initial, options, capabilities);
     let (request_tx, result_rx) = spawn_collection_worker(collect);
+    let (diagnostic_tx, diagnostic_rx) = mpsc::channel();
     let mut next_refresh = Instant::now() + app.interval();
+    let mut next_clock = Instant::now() + Duration::from_secs(1);
     let mut refresh_in_flight = false;
     let mut collector_available = true;
     let mut dirty = true;
 
     loop {
+        if let Ok(output) = diagnostic_rx.try_recv() {
+            app.finish_diagnostic(output);
+            dirty = true;
+        }
         if refresh_in_flight {
             match result_rx.try_recv() {
                 Ok(Ok(snapshot)) => {
@@ -110,7 +118,10 @@ where
 
         let now = Instant::now();
         let until_refresh = next_refresh.saturating_duration_since(now);
-        let timeout = until_refresh.min(Duration::from_millis(100));
+        let until_clock = next_clock.saturating_duration_since(now);
+        let timeout = until_refresh
+            .min(until_clock)
+            .min(Duration::from_millis(100));
         if event::poll(timeout)? {
             let event = event::read()?;
             if matches!(event, Event::Resize(_, _)) {
@@ -137,9 +148,20 @@ where
                     }
                     next_refresh = Instant::now() + app.interval();
                 }
+                Action::RunDiagnostic(command) => {
+                    let sender = diagnostic_tx.clone();
+                    thread::spawn(move || {
+                        let _ = sender.send(run_diagnostic_command(&command));
+                    });
+                }
                 Action::Redraw => {}
                 Action::None => continue,
             }
+            dirty = true;
+        }
+
+        if Instant::now() >= next_clock {
+            next_clock = Instant::now() + Duration::from_secs(1);
             dirty = true;
         }
 
@@ -162,6 +184,36 @@ where
     Ok(())
 }
 
+fn run_diagnostic_command(command: &str) -> String {
+    let shell = env::var("SHELL").unwrap_or_else(|_| "/bin/sh".to_owned());
+    match Command::new(shell).args(["-lc", command]).output() {
+        Ok(output) => {
+            let mut text = String::from_utf8_lossy(&output.stdout).into_owned();
+            text.push_str(&String::from_utf8_lossy(&output.stderr));
+            let text = sanitise_terminal_output(&text);
+            if text.trim().is_empty() {
+                format!("[exit {}]", output.status.code().unwrap_or_default())
+            } else if output.status.success() {
+                text
+            } else {
+                format!(
+                    "{text}\n[exit {}]",
+                    output.status.code().unwrap_or_default()
+                )
+            }
+        }
+        Err(error) => format!("Unable to start shell: {error}"),
+    }
+}
+
+fn sanitise_terminal_output(text: &str) -> String {
+    text.chars()
+        .filter(|character| {
+            matches!(character, '\n' | '\t') || (!character.is_control() && *character != '\u{1b}')
+        })
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -179,5 +231,10 @@ mod tests {
             Err(mpsc::RecvTimeoutError::Timeout)
         ));
         assert!(results.recv_timeout(Duration::from_secs(1)).is_ok());
+    }
+
+    #[test]
+    fn diagnostic_command_captures_shell_output() {
+        assert_eq!(run_diagnostic_command("printf lens"), "lens");
     }
 }

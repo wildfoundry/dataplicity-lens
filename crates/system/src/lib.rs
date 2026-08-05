@@ -32,6 +32,7 @@ use lens_platform_linux::LinuxCollector;
 #[cfg(target_os = "macos")]
 use lens_platform_macos::MacOsCollector;
 use serde::Serialize;
+use time::{OffsetDateTime, macros::format_description};
 
 pub const SCHEMA_VERSION: &str = "2";
 
@@ -442,8 +443,18 @@ fn cockpit_loop(
     let mut snapshot = SystemSnapshot::empty(hostname());
     let mut receiver = spawn_cockpit_collection(since.clone(), log_files.clone());
     let mut loading = true;
+    let mut search_query: Option<String> = None;
+    let mut diagnostic = DiagnosticShell::new();
+    let mut next_clock = Instant::now() + Duration::from_secs(1);
     let mut redraw = true;
     loop {
+        if Instant::now() >= next_clock {
+            next_clock = Instant::now() + Duration::from_secs(1);
+            redraw = true;
+        }
+        if diagnostic.poll() {
+            redraw = true;
+        }
         match receiver.try_recv() {
             Ok(update) => {
                 snapshot = update.snapshot;
@@ -463,6 +474,12 @@ fn cockpit_loop(
         if redraw {
             let rows = terminal::size().map_or(24, |(_, rows)| rows);
             render_cockpit(&snapshot, selected, loading, rows, stdout)?;
+            if let Some(query) = search_query.as_deref() {
+                render_search_overlay(stdout, "Search selected view", query)?;
+            }
+            if diagnostic.open {
+                render_diagnostic_overlay(stdout, &diagnostic)?;
+            }
             redraw = false;
         }
 
@@ -475,6 +492,29 @@ fn cockpit_loop(
             let Event::Key(key) = event else {
                 continue;
             };
+            if diagnostic.open {
+                diagnostic.handle_key(key);
+                redraw = true;
+                continue;
+            }
+            if let Some(query) = search_query.as_mut() {
+                match key.code {
+                    KeyCode::Esc => search_query = None,
+                    KeyCode::Enter if !query.is_empty() => {
+                        let query = search_query.take().unwrap_or_default();
+                        launch_search(View::ALL[selected], &query)?;
+                    }
+                    KeyCode::Backspace => {
+                        query.pop();
+                    }
+                    KeyCode::Char(character) if !key.modifiers.contains(KeyModifiers::CONTROL) => {
+                        query.push(character);
+                    }
+                    _ => {}
+                }
+                redraw = true;
+                continue;
+            }
             match key.code {
                 KeyCode::Char('q') | KeyCode::Esc => return Ok(()),
                 KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => {
@@ -493,9 +533,11 @@ fn cockpit_loop(
                     redraw = true;
                 }
                 KeyCode::Char('/') => {
-                    if let Some(query) = prompt_search(stdout)? {
-                        launch_search(View::ALL[selected], &query)?;
-                    }
+                    search_query = Some(String::new());
+                    redraw = true;
+                }
+                KeyCode::Char('!') => {
+                    diagnostic.open = true;
                     redraw = true;
                 }
                 KeyCode::Char('?') => {
@@ -758,13 +800,16 @@ fn render_cockpit(
     if width >= 64 {
         writeln!(
             stdout,
-            "  {}{}{}  {}  {}  {}",
+            "  {}{}{}  {}  {}  {}{}",
             ink("DATAPLICITY", Ink::Brand, colour),
             ink(" / ", Ink::Muted, colour),
             ink("LENS", Ink::Bright, colour),
             ink("◆", Ink::Border, colour),
             ink(
-                &truncate_text(&host.hostname, width.saturating_sub(42)),
+                &truncate_text(
+                    &host.hostname,
+                    width.saturating_sub(if width >= 88 { 52 } else { 42 }),
+                ),
                 Ink::Info,
                 colour
             ),
@@ -773,6 +818,11 @@ fn render_cockpit(
             } else {
                 badge(" LIVE ", Ink::Success, colour)
             },
+            if width >= 88 {
+                format!("  {}", ink(&local_clock(), Ink::Muted, colour))
+            } else {
+                String::new()
+            }
         )?;
     } else {
         writeln!(
@@ -1076,7 +1126,7 @@ fn cockpit_view_summary(view: View, snapshot: &SystemSnapshot, loading: bool) ->
             .find(|mount| mount.target == "/")
             .map_or_else(
                 || format!("{} mounts", snapshot.mounts.len()),
-                |root| format!("/ {:.0}% used", root.used_percent),
+                |root| format!("root filesystem · {:.0}% used", root.used_percent),
             ),
         View::Net => format!(
             "{} interfaces · {} listeners · {} modems",
@@ -1296,13 +1346,16 @@ fn render_specialist(
     if width >= 64 {
         writeln!(
             stdout,
-            "  {}{}{}  {}  {}  {}",
+            "  {}{}{}  {}  {}  {}{}",
             ink("DATAPLICITY", Ink::Brand, colour),
             ink(" / ", Ink::Muted, colour),
             ink(&view.title().to_ascii_uppercase(), Ink::Bright, colour),
             ink("◆", Ink::Border, colour),
             ink(
-                &truncate_text(&snapshot.host.hostname, width.saturating_sub(42)),
+                &truncate_text(
+                    &snapshot.host.hostname,
+                    width.saturating_sub(if width >= 88 { 52 } else { 42 }),
+                ),
                 Ink::Info,
                 colour
             ),
@@ -1310,6 +1363,11 @@ fn render_specialist(
                 badge(" LOADING ", Ink::Attention, colour)
             } else {
                 badge(" LIVE ", Ink::Success, colour)
+            },
+            if width >= 88 {
+                format!("  {}", ink(&local_clock(), Ink::Muted, colour))
+            } else {
+                String::new()
             }
         )?;
     } else {
@@ -1383,7 +1441,7 @@ fn render_specialist(
             keycap("q", colour),
             ink("quit", Ink::Muted, colour)
         )?;
-    } else if view != View::Processes && specialist_item_count(view, snapshot) > 0 {
+    } else if width >= 80 && view != View::Processes && specialist_item_count(view, snapshot) > 0 {
         if inspecting {
             writeln!(
                 stdout,
@@ -1398,7 +1456,7 @@ fn render_specialist(
         } else {
             writeln!(
                 stdout,
-                "  {} {}   {} {}   {} {}   {} {}   {} {}",
+                "  {} {}   {} {}   {} {}   {} {}   {} {}   {} {}",
                 keycap("↑↓", colour),
                 ink("move", Ink::Muted, colour),
                 keycap("↵", colour),
@@ -1407,6 +1465,8 @@ fn render_specialist(
                 ink("search", Ink::Muted, colour),
                 keycap("r", colour),
                 ink("refresh", Ink::Muted, colour),
+                keycap("!", colour),
+                ink("shell", Ink::Muted, colour),
                 keycap("q", colour),
                 ink("quit", Ink::Muted, colour),
             )?;
@@ -1414,9 +1474,11 @@ fn render_specialist(
     } else {
         writeln!(
             stdout,
-            "  {} {}   {} {}",
+            "  {} {}   {} {}   {} {}",
             keycap("r", colour),
             ink("refresh", Ink::Muted, colour),
+            keycap("!", colour),
+            ink("shell", Ink::Muted, colour),
             keycap("q", colour),
             ink("quit", Ink::Muted, colour),
         )?;
@@ -2182,8 +2244,18 @@ fn specialist_loop(view: View, args: &ViewArgs, stdout: &mut impl Write) -> Resu
     let mut status = format!("Loading {} data…", view.title().to_ascii_lowercase());
     let mut selected = 0usize;
     let mut inspecting = false;
+    let mut search_query: Option<String> = None;
+    let mut diagnostic = DiagnosticShell::new();
+    let mut next_clock = Instant::now() + Duration::from_secs(1);
     let mut redraw = true;
     loop {
+        if Instant::now() >= next_clock {
+            next_clock = Instant::now() + Duration::from_secs(1);
+            redraw = true;
+        }
+        if diagnostic.poll() {
+            redraw = true;
+        }
         match receiver.try_recv() {
             Ok(update) => {
                 selected =
@@ -2208,6 +2280,12 @@ fn specialist_loop(view: View, args: &ViewArgs, stdout: &mut impl Write) -> Resu
             render_specialist(
                 view, &snapshot, selected, inspecting, loading, &status, rows, stdout,
             )?;
+            if let Some(query) = search_query.as_deref() {
+                render_search_overlay(stdout, &format!("Search {}", view.title()), query)?;
+            }
+            if diagnostic.open {
+                render_diagnostic_overlay(stdout, &diagnostic)?;
+            }
             redraw = false;
         }
 
@@ -2220,6 +2298,37 @@ fn specialist_loop(view: View, args: &ViewArgs, stdout: &mut impl Write) -> Resu
             let Event::Key(key) = event else {
                 continue;
             };
+            if diagnostic.open {
+                diagnostic.handle_key(key);
+                redraw = true;
+                continue;
+            }
+            if let Some(query) = search_query.as_mut() {
+                match key.code {
+                    KeyCode::Esc => search_query = None,
+                    KeyCode::Enter if !query.is_empty() => {
+                        let query = search_query.take().unwrap_or_default();
+                        active_args.filter = Some(query.clone());
+                        snapshot = SystemSnapshot::empty(hostname());
+                        receiver = spawn_specialist_collection(view, active_args.clone());
+                        loading = true;
+                        status = format!(
+                            "Searching {} for {query:?}…",
+                            view.title().to_ascii_lowercase()
+                        );
+                        selected = 0;
+                    }
+                    KeyCode::Backspace => {
+                        query.pop();
+                    }
+                    KeyCode::Char(character) if !key.modifiers.contains(KeyModifiers::CONTROL) => {
+                        query.push(character);
+                    }
+                    _ => {}
+                }
+                redraw = true;
+                continue;
+            }
             match key.code {
                 KeyCode::Char('q') => return Ok(()),
                 KeyCode::Esc if inspecting => {
@@ -2243,17 +2352,11 @@ fn specialist_loop(view: View, args: &ViewArgs, stdout: &mut impl Write) -> Resu
                     redraw = true;
                 }
                 KeyCode::Char('/') if !inspecting && view != View::Processes => {
-                    if let Some(query) = prompt_search(stdout)? {
-                        active_args.filter = Some(query.clone());
-                        snapshot = SystemSnapshot::empty(hostname());
-                        receiver = spawn_specialist_collection(view, active_args.clone());
-                        loading = true;
-                        status = format!(
-                            "Searching {} for {query:?}…",
-                            view.title().to_ascii_lowercase()
-                        );
-                        selected = 0;
-                    }
+                    search_query = Some(String::new());
+                    redraw = true;
+                }
+                KeyCode::Char('!') => {
+                    diagnostic.open = true;
                     redraw = true;
                 }
                 KeyCode::Char('r') => {
@@ -2271,32 +2374,183 @@ fn specialist_loop(view: View, args: &ViewArgs, stdout: &mut impl Write) -> Resu
     }
 }
 
-fn prompt_search(stdout: &mut impl Write) -> Result<Option<String>> {
-    let mut query = String::new();
-    loop {
-        execute!(
-            stdout,
-            cursor::MoveTo(0, 0),
-            terminal::Clear(ClearType::All)
-        )?;
-        writeln!(stdout, "Search selected view")?;
-        writeln!(stdout, "> {query}")?;
-        writeln!(stdout, "\nEnter search   Esc cancel")?;
-        stdout.flush()?;
-        if let Event::Key(key) = event::read()? {
-            match key.code {
-                KeyCode::Enter if !query.is_empty() => return Ok(Some(query)),
-                KeyCode::Esc => return Ok(None),
-                KeyCode::Backspace => {
-                    query.pop();
-                }
-                KeyCode::Char(character) if !key.modifiers.contains(KeyModifiers::CONTROL) => {
-                    query.push(character)
-                }
-                _ => {}
-            }
+fn render_search_overlay(stdout: &mut impl Write, title: &str, query: &str) -> Result<()> {
+    let (columns, rows) = terminal::size().unwrap_or((80, 24));
+    let width = columns.saturating_sub(2).clamp(4, 74);
+    let x = columns.saturating_sub(width) / 2;
+    let y = rows.saturating_sub(5) / 2;
+    let inner = usize::from(width.saturating_sub(2));
+    let title = truncate_text(title, inner.saturating_sub(3));
+    let input = truncate_text(&format!("> {query}"), inner);
+    let help = truncate_text("Enter search · Esc cancel", inner);
+    let rule = "─".repeat(inner.saturating_sub(title.chars().count() + 1));
+
+    execute!(stdout, cursor::MoveTo(x, y))?;
+    write!(stdout, "╭─{title}{rule}╮")?;
+    execute!(stdout, cursor::MoveTo(x, y.saturating_add(1)))?;
+    write!(stdout, "│{input:<inner$}│")?;
+    execute!(stdout, cursor::MoveTo(x, y.saturating_add(2)))?;
+    write!(stdout, "│{:<inner$}│", "")?;
+    execute!(stdout, cursor::MoveTo(x, y.saturating_add(3)))?;
+    write!(stdout, "│{help:<inner$}│")?;
+    execute!(stdout, cursor::MoveTo(x, y.saturating_add(4)))?;
+    write!(stdout, "╰{}╯", "─".repeat(inner))?;
+    stdout.flush()?;
+    Ok(())
+}
+
+struct DiagnosticShell {
+    open: bool,
+    input: String,
+    output: Vec<String>,
+    running: bool,
+    receiver: Option<Receiver<String>>,
+}
+
+impl DiagnosticShell {
+    fn new() -> Self {
+        Self {
+            open: false,
+            input: String::new(),
+            output: vec![
+                "Run a local diagnostic command without leaving Lens.".to_owned(),
+                "Commands use your normal shell and current permissions.".to_owned(),
+            ],
+            running: false,
+            receiver: None,
         }
     }
+
+    fn poll(&mut self) -> bool {
+        let Some(receiver) = self.receiver.as_ref() else {
+            return false;
+        };
+        match receiver.try_recv() {
+            Ok(output) => {
+                self.output.extend(output.lines().map(str::to_owned));
+                if self.output.len() > 500 {
+                    self.output.drain(..self.output.len() - 500);
+                }
+                self.running = false;
+                self.receiver = None;
+                true
+            }
+            Err(TryRecvError::Disconnected) => {
+                self.output
+                    .push("Diagnostic command stopped unexpectedly.".to_owned());
+                self.running = false;
+                self.receiver = None;
+                true
+            }
+            Err(TryRecvError::Empty) => false,
+        }
+    }
+
+    fn handle_key(&mut self, key: crossterm::event::KeyEvent) {
+        match key.code {
+            KeyCode::Esc => self.open = false,
+            KeyCode::Enter if !self.running && !self.input.trim().is_empty() => {
+                let command = self.input.trim().to_owned();
+                self.output.push(format!("$ {command}"));
+                self.input.clear();
+                let (sender, receiver) = mpsc::channel();
+                self.receiver = Some(receiver);
+                self.running = true;
+                thread::spawn(move || {
+                    let _ = sender.send(run_shell_command(&command));
+                });
+            }
+            KeyCode::Backspace if !self.running => {
+                self.input.pop();
+            }
+            KeyCode::Char(character) if !self.running => self.input.push(character),
+            _ => {}
+        }
+    }
+}
+
+fn run_shell_command(command: &str) -> String {
+    let shell = env::var("SHELL").unwrap_or_else(|_| "/bin/sh".to_owned());
+    match Command::new(shell).args(["-lc", command]).output() {
+        Ok(output) => {
+            let mut text = String::from_utf8_lossy(&output.stdout).into_owned();
+            text.push_str(&String::from_utf8_lossy(&output.stderr));
+            let text = sanitise_terminal_output(&text);
+            if text.trim().is_empty() {
+                format!("[exit {}]", output.status.code().unwrap_or_default())
+            } else if output.status.success() {
+                text
+            } else {
+                format!(
+                    "{text}\n[exit {}]",
+                    output.status.code().unwrap_or_default()
+                )
+            }
+        }
+        Err(error) => format!("Unable to start shell: {error}"),
+    }
+}
+
+fn sanitise_terminal_output(text: &str) -> String {
+    text.chars()
+        .filter(|character| {
+            matches!(character, '\n' | '\t') || (!character.is_control() && *character != '\u{1b}')
+        })
+        .collect()
+}
+
+fn local_clock() -> String {
+    let now = OffsetDateTime::now_local().unwrap_or_else(|_| OffsetDateTime::now_utc());
+    now.format(format_description!("[hour]:[minute]:[second]"))
+        .unwrap_or_else(|_| "--:--:--".to_owned())
+}
+
+fn render_diagnostic_overlay(stdout: &mut impl Write, shell: &DiagnosticShell) -> Result<()> {
+    let (columns, rows) = terminal::size().unwrap_or((80, 24));
+    let (x, y, width, height) = if columns >= 120 && rows >= 20 {
+        let x = columns * 55 / 100;
+        (x, 2, columns.saturating_sub(x + 1), rows.saturating_sub(4))
+    } else {
+        (1, 1, columns.saturating_sub(2), rows.saturating_sub(2))
+    };
+    if width < 4 || height < 6 {
+        return Ok(());
+    }
+    let inner = usize::from(width - 2);
+    let output_rows = usize::from(height.saturating_sub(5));
+    let start = shell.output.len().saturating_sub(output_rows);
+    execute!(stdout, cursor::MoveTo(x, y))?;
+    write!(
+        stdout,
+        "╭─DIAGNOSTIC SHELL{}╮",
+        "─".repeat(inner.saturating_sub(17))
+    )?;
+    for (row, line) in shell.output[start..].iter().take(output_rows).enumerate() {
+        execute!(stdout, cursor::MoveTo(x, y + 1 + row as u16))?;
+        let line = truncate_text(line, inner);
+        write!(stdout, "│{line:<inner$}│")?;
+    }
+    for row in shell.output[start..].len()..output_rows {
+        execute!(stdout, cursor::MoveTo(x, y + 1 + row as u16))?;
+        write!(stdout, "│{:<inner$}│", "")?;
+    }
+    execute!(stdout, cursor::MoveTo(x, y + height - 4))?;
+    write!(stdout, "├{}┤", "─".repeat(inner))?;
+    execute!(stdout, cursor::MoveTo(x, y + height - 3))?;
+    let prompt = if shell.running {
+        "waiting for command…".to_owned()
+    } else {
+        format!("$ {}", shell.input)
+    };
+    let prompt = truncate_text(&prompt, inner);
+    write!(stdout, "│{prompt:<inner$}│")?;
+    execute!(stdout, cursor::MoveTo(x, y + height - 2))?;
+    let help = truncate_text("Enter run · Esc close", inner);
+    write!(stdout, "│{help:<inner$}│")?;
+    execute!(stdout, cursor::MoveTo(x, y + height - 1))?;
+    write!(stdout, "╰{}╯", "─".repeat(inner))?;
+    stdout.flush()?;
+    Ok(())
 }
 
 fn show_cockpit_help(stdout: &mut impl Write) -> Result<()> {
@@ -2309,6 +2563,7 @@ fn show_cockpit_help(stdout: &mut impl Write) -> Result<()> {
     writeln!(stdout, "↑/↓ or j/k   select a view")?;
     writeln!(stdout, "Enter         open selected view")?;
     writeln!(stdout, "/             search selected view")?;
+    writeln!(stdout, "!             open diagnostic shell")?;
     writeln!(stdout, "r             refresh")?;
     writeln!(stdout, "q or Ctrl+C   quit safely")?;
     writeln!(stdout, "\nPress any key to return")?;
@@ -4077,15 +4332,30 @@ fn render_warnings(snapshot: &SystemSnapshot, out: &mut dyn Write) -> Result<()>
 }
 
 fn hostname() -> String {
-    env::var("HOSTNAME")
-        .ok()
+    #[cfg(target_os = "macos")]
+    let platform_name = command_text("scutil", &["--get", "ComputerName"]);
+    #[cfg(not(target_os = "macos"))]
+    let platform_name: Option<String> = None;
+
+    platform_name
+        .or_else(|| env::var("HOSTNAME").ok())
         .filter(|value| !value.is_empty())
         .or_else(|| {
             std::fs::read_to_string("/etc/hostname")
                 .ok()
                 .map(|value| value.trim().to_owned())
         })
+        .or_else(|| command_text("hostname", &[]))
         .unwrap_or_else(|| "unknown-host".into())
+}
+
+fn command_text(program: &str, arguments: &[&str]) -> Option<String> {
+    let output = Command::new(program).args(arguments).output().ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let value = String::from_utf8_lossy(&output.stdout).trim().to_owned();
+    (!value.is_empty()).then_some(value)
 }
 
 fn human_bytes(value: u64) -> String {
@@ -4470,7 +4740,7 @@ mod tests {
         let complete_output = String::from_utf8(complete_output).expect("UTF-8");
         assert!(complete_output.contains("critical ·"));
         assert!(complete_output.contains("▶ Storage"));
-        assert!(complete_output.contains("/ 97% used"));
+        assert!(complete_output.contains("root filesystem · 97% used"));
     }
 
     #[test]

@@ -21,4 +21,8 @@ Production code must not use `unsafe`, and `unwrap()` or `expect()` require a co
 the invariant is sound.
 
 Please include tests for parser edge cases, output changes and interaction behaviour. Changes to the
-JSON schema must remain additive within schema version `1` or deliberately introduce a new version.
+JSON schema must remain additive within schema version `2` or deliberately introduce a new version.
+
+Deterministic sample data is a contributor tool, not the normal user path. Use `--demo` for UI work,
+snapshot tests and documentation captures; see `docs/DEMO.md`. Installation and usage documentation
+should lead with real collection from the user's machine.

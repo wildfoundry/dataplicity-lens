@@ -62,9 +62,9 @@ jobs:
       - name: Activate pinned toolchain
         run: rustup show active-toolchain
       - name: Install security tools
-        run: |
-          cargo install cargo-deny --version 0.20.2 --locked
-          cargo install cargo-audit --version 0.22.2 --locked
+        uses: taiki-e/install-action@13608cbb45b01feb47ef444ab1a42dc41ad56f1a # v2.79.11
+        with:
+          tool: cargo-deny@0.20.2,cargo-audit@0.22.2
       - run: cargo deny check
       - run: cargo audit
 
@@ -87,7 +87,9 @@ jobs:
       - name: Activate pinned toolchain
         run: rustup show active-toolchain
       - name: Install cross
-        run: cargo install cross --version 0.2.5 --locked
+        uses: taiki-e/install-action@13608cbb45b01feb47ef444ab1a42dc41ad56f1a # v2.79.11
+        with:
+          tool: cross@0.2.5
       - name: Build release target from clean source
         env:
           LENS_GIT_SHA: ${{ github.sha }}

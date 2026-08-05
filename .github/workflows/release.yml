@@ -15,18 +15,6 @@ on:
         required: true
         default: true
         type: boolean
-  pull_request:
-    paths:
-      - "Cargo.toml"
-      - "Cargo.lock"
-      - "apps/**"
-      - "crates/**"
-      - "packaging/**"
-      - "scripts/**"
-      - "LICENSE"
-      - "NOTICE"
-      - ".github/workflows/release.yml"
-
 permissions:
   contents: read
 
@@ -93,9 +81,9 @@ jobs:
           RUSTDOCFLAGS: -D warnings
         run: cargo doc --workspace --all-features --no-deps --locked
       - name: Install security tools
-        run: |
-          cargo install cargo-deny --version 0.20.2 --locked
-          cargo install cargo-audit --version 0.22.2 --locked
+        uses: taiki-e/install-action@13608cbb45b01feb47ef444ab1a42dc41ad56f1a # v2.79.11
+        with:
+          tool: cargo-deny@0.20.2,cargo-audit@0.22.2
       - run: cargo deny check
       - run: cargo audit
 
@@ -139,10 +127,15 @@ jobs:
           sudo apt-get update
           sudo apt-get install --yes musl-tools rpm ruby-dev
           sudo gem install --no-document fpm
-          cargo install cargo-cyclonedx --version 0.5.7 --locked
+      - name: Install SBOM tool
+        uses: taiki-e/install-action@13608cbb45b01feb47ef444ab1a42dc41ad56f1a # v2.79.11
+        with:
+          tool: cargo-cyclonedx@0.5.7
       - name: Install cross for Raspberry Pi builds
         if: matrix.cross
-        run: cargo install cross --version 0.2.5 --locked
+        uses: taiki-e/install-action@13608cbb45b01feb47ef444ab1a42dc41ad56f1a # v2.79.11
+        with:
+          tool: cross@0.2.5
       - name: Build clean release binaries
         env:
           LENS_GIT_SHA: ${{ github.sha }}

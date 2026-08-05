@@ -12,11 +12,12 @@ use lens_model::{Process, ProcessId, Snapshot};
 
 use crate::{TerminalCapabilities, UiOptions};
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Action {
     None,
     Redraw,
     Refresh,
+    RunDiagnostic(String),
     Quit,
 }
 
@@ -44,6 +45,10 @@ pub struct App {
     pub input_buffer: String,
     pub show_help: bool,
     pub show_sort: bool,
+    pub diagnostic_open: bool,
+    pub diagnostic_input: String,
+    pub diagnostic_output: Vec<String>,
+    pub diagnostic_running: bool,
     pub sort_selection: usize,
     pub paused: bool,
     pub collecting: bool,
@@ -75,6 +80,13 @@ impl App {
             input_buffer: String::new(),
             show_help: false,
             show_sort: false,
+            diagnostic_open: false,
+            diagnostic_input: String::new(),
+            diagnostic_output: vec![
+                "Run a local diagnostic command without leaving Lens.".to_owned(),
+                "Commands use your normal shell and your current permissions.".to_owned(),
+            ],
+            diagnostic_running: false,
             sort_selection: SortKey::ALL
                 .iter()
                 .position(|key| *key == options.sort_key)
@@ -201,6 +213,9 @@ impl App {
     }
 
     pub fn handle_key(&mut self, key: KeyEvent) -> Action {
+        if self.diagnostic_open {
+            return self.handle_diagnostic_key(key);
+        }
         if self.input_mode.is_some() {
             return self.handle_input_key(key);
         }
@@ -268,6 +283,10 @@ impl App {
                 Action::Redraw
             }
             KeyCode::Char('r') => Action::Refresh,
+            KeyCode::Char('!') => {
+                self.diagnostic_open = true;
+                Action::Redraw
+            }
             KeyCode::Char('?') => {
                 self.show_help = true;
                 Action::Redraw
@@ -282,6 +301,43 @@ impl App {
             }
             _ => Action::None,
         }
+    }
+
+    fn handle_diagnostic_key(&mut self, key: KeyEvent) -> Action {
+        match key.code {
+            KeyCode::Esc => {
+                self.diagnostic_open = false;
+                Action::Redraw
+            }
+            KeyCode::Enter
+                if !self.diagnostic_running && !self.diagnostic_input.trim().is_empty() =>
+            {
+                let command = self.diagnostic_input.trim().to_owned();
+                self.diagnostic_output.push(format!("$ {command}"));
+                self.diagnostic_input.clear();
+                self.diagnostic_running = true;
+                Action::RunDiagnostic(command)
+            }
+            KeyCode::Backspace if !self.diagnostic_running => {
+                self.diagnostic_input.pop();
+                Action::Redraw
+            }
+            KeyCode::Char(character) if !self.diagnostic_running => {
+                self.diagnostic_input.push(character);
+                Action::Redraw
+            }
+            _ => Action::None,
+        }
+    }
+
+    pub fn finish_diagnostic(&mut self, output: String) {
+        self.diagnostic_output
+            .extend(output.lines().map(str::to_owned));
+        if self.diagnostic_output.len() > 500 {
+            let excess = self.diagnostic_output.len() - 500;
+            self.diagnostic_output.drain(..excess);
+        }
+        self.diagnostic_running = false;
     }
 
     fn handle_input_key(&mut self, key: KeyEvent) -> Action {
@@ -568,5 +624,29 @@ mod tests {
             Some((ProcessId(20), 200))
         );
         assert_eq!(app.selected, 0);
+    }
+
+    #[test]
+    fn diagnostic_shell_is_explicit_and_returns_the_typed_command() {
+        let mut app = App::new(
+            snapshot(Vec::new()),
+            options(),
+            TerminalCapabilities::detect(ColorMode::Never, true),
+        );
+        assert_eq!(app.handle_key(key(KeyCode::Char('!'))), Action::Redraw);
+        for character in "printf lens".chars() {
+            app.handle_key(key(KeyCode::Char(character)));
+        }
+        assert_eq!(
+            app.handle_key(key(KeyCode::Enter)),
+            Action::RunDiagnostic("printf lens".to_owned())
+        );
+        assert!(app.diagnostic_running);
+        app.finish_diagnostic("lens".to_owned());
+        assert!(!app.diagnostic_running);
+        assert_eq!(
+            app.diagnostic_output.last().map(String::as_str),
+            Some("lens")
+        );
     }
 }

@@ -24,8 +24,8 @@ jobs:
       - name: Activate pinned Rust toolchain
         run: rustup show active-toolchain
       - name: Install security tools
-        run: |
-          cargo install cargo-deny --version 0.16.4 --locked
-          cargo install cargo-audit --version 0.21.2 --locked
+        uses: taiki-e/install-action@13608cbb45b01feb47ef444ab1a42dc41ad56f1a # v2.79.11
+        with:
+          tool: cargo-deny@0.20.2,cargo-audit@0.22.2
       - run: cargo deny check
       - run: cargo audit

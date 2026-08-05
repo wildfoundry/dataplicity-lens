@@ -55,7 +55,11 @@ Lens is licensed under Apache License 2.0, forkable and useful independently of 
 Dataplicity Lens is maintained by WildFoundry Ltd, the team behind Dataplicity; that provenance
 should build trust without interrupting use.
 
-### Read-only first
+### Inspect first, act deliberately
 
-The first release observes and explains. It does not kill, renice, restart or mutate production
-systems. Mutation can be considered later only with explicit, auditable interaction design.
+Lens leads with evidence. When an operator chooses to act, the target and effect must be explicit,
+the current identity must be checked again, and the observed result must be reported. Lens does not
+hide privilege prompts, retry state changes, or turn findings into unattended remediation.
+
+The built-in diagnostic shell keeps manual investigation beside live system data. It is a visible,
+user-opened workspace that uses the invoking account; it is not a privileged or remote shell.

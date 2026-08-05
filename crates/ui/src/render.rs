@@ -11,6 +11,7 @@ use ratatui::{
         Sparkline, Table, TableState, Wrap,
     },
 };
+use time::{OffsetDateTime, macros::format_description};
 
 use crate::{
     TerminalCapabilities,
@@ -53,7 +54,9 @@ pub fn draw(frame: &mut Frame<'_>, app: &mut App) {
     }
     draw_footer(frame, rows[3], app);
 
-    if app.show_help {
+    if app.diagnostic_open {
+        draw_diagnostic(frame, area, app);
+    } else if app.show_help {
         draw_help(frame, area, app.capabilities);
     } else if app.show_sort {
         draw_sort(frame, area, app);
@@ -134,6 +137,12 @@ fn draw_header(frame: &mut Frame<'_>, area: Rect, app: &App) {
                 format!("group {}", app.group.label()),
                 muted_style(app.capabilities),
             ),
+        ]);
+    }
+    if area.width >= 72 {
+        meta.extend([
+            Span::styled(separator, faint_style(app.capabilities)),
+            Span::styled(local_clock(), muted_style(app.capabilities)),
         ]);
     }
     let meta = Line::from(meta);
@@ -421,9 +430,22 @@ fn draw_processes(frame: &mut Frame<'_>, area: Rect, app: &App) {
         } else {
             "> "
         });
-    let mut state =
-        TableState::default().with_selected((!visible.is_empty()).then_some(app.selected));
+    let capacity = area.height.saturating_sub(3) as usize;
+    let offset = viewport_start(app.selected, visible.len(), capacity);
+    let mut state = TableState::default()
+        .with_offset(offset)
+        .with_selected((!visible.is_empty()).then_some(app.selected));
     frame.render_stateful_widget(table, area, &mut state);
+}
+
+fn viewport_start(selected: usize, length: usize, capacity: usize) -> usize {
+    if capacity == 0 || length <= capacity {
+        0
+    } else {
+        selected
+            .saturating_sub(capacity / 2)
+            .min(length.saturating_sub(capacity))
+    }
 }
 
 fn draw_detail(frame: &mut Frame<'_>, area: Rect, app: &App) {
@@ -691,6 +713,7 @@ fn footer_text(app: &App, width: u16) -> Line<'static> {
     if width >= 88 {
         actions.splice(2..2, [("s", "sort"), ("g", "group")]);
         actions.push(("space", if app.paused { "resume" } else { "pause" }));
+        actions.push(("!", "shell"));
         actions.push(("?", "help"));
     }
     for (key, action) in actions {
@@ -730,6 +753,86 @@ fn draw_input(frame: &mut Frame<'_>, area: Rect, app: &App, mode: InputMode) {
     frame.set_cursor_position((cursor_x.min(popup.right().saturating_sub(2)), popup.y + 1));
 }
 
+fn draw_diagnostic(frame: &mut Frame<'_>, area: Rect, app: &App) {
+    let panel = if area.width >= 120 && area.height >= 20 {
+        Rect::new(
+            area.x + area.width * 55 / 100,
+            area.y + 2,
+            area.width * 45 / 100 - 1,
+            area.height.saturating_sub(4),
+        )
+    } else {
+        Rect::new(
+            area.x + 1,
+            area.y + 1,
+            area.width.saturating_sub(2),
+            area.height.saturating_sub(2),
+        )
+    };
+    frame.render_widget(Clear, panel);
+    let status = if app.diagnostic_running {
+        " running… "
+    } else {
+        " Enter run · Esc close "
+    };
+    let inner_height = panel.height.saturating_sub(4) as usize;
+    let start = app.diagnostic_output.len().saturating_sub(inner_height);
+    let output = app.diagnostic_output[start..].join("\n");
+    let rows = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([Constraint::Min(1), Constraint::Length(3)])
+        .split(panel);
+    frame.render_widget(
+        Paragraph::new(output)
+            .style(muted_style(app.capabilities))
+            .wrap(Wrap { trim: false })
+            .block(
+                Block::default()
+                    .borders(Borders::ALL)
+                    .border_type(BorderType::Rounded)
+                    .border_style(brand_style(app.capabilities))
+                    .style(canvas_style(app.capabilities))
+                    .title(Span::styled(
+                        " DIAGNOSTIC SHELL ",
+                        label_style(app.capabilities),
+                    ))
+                    .title_bottom(Span::styled(status, muted_style(app.capabilities))),
+            ),
+        rows[0],
+    );
+    let prompt = if app.diagnostic_running {
+        "waiting for command…"
+    } else {
+        app.diagnostic_input.as_str()
+    };
+    frame.render_widget(
+        Paragraph::new(prompt)
+            .style(title_style(app.capabilities))
+            .block(
+                Block::default()
+                    .borders(Borders::ALL)
+                    .border_type(BorderType::Rounded)
+                    .border_style(border_style(app.capabilities))
+                    .style(canvas_style(app.capabilities))
+                    .title(" $ "),
+            ),
+        rows[1],
+    );
+    if !app.diagnostic_running {
+        let cursor_x = rows[1].x + 1 + app.diagnostic_input.chars().count() as u16;
+        frame.set_cursor_position((
+            cursor_x.min(rows[1].right().saturating_sub(2)),
+            rows[1].y + 1,
+        ));
+    }
+}
+
+fn local_clock() -> String {
+    let now = OffsetDateTime::now_local().unwrap_or_else(|_| OffsetDateTime::now_utc());
+    now.format(format_description!("[hour]:[minute]:[second]"))
+        .unwrap_or_else(|_| "--:--:--".to_owned())
+}
+
 fn draw_help(frame: &mut Frame<'_>, area: Rect, capabilities: TerminalCapabilities) {
     let popup = centered_rect(76, 22, area);
     frame.render_widget(Clear, popup);
@@ -744,6 +847,7 @@ fn draw_help(frame: &mut Frame<'_>, area: Rect, capabilities: TerminalCapabiliti
         help_line("⇥ / ⇧⇥", "Next / previous", capabilities),
         help_line("space", "Pause or resume", capabilities),
         help_line("r", "Refresh now", capabilities),
+        help_line("!", "Open diagnostic shell", capabilities),
         help_line("?", "Open this guide", capabilities),
         help_line("q / ctrl-c", "Quit safely", capabilities),
         Line::from(""),
@@ -1217,6 +1321,14 @@ mod tests {
         terminal
             .draw(|frame| draw(frame, &mut app))
             .expect("render");
+    }
+
+    #[test]
+    fn process_viewport_centres_selection_away_from_the_edges() {
+        assert_eq!(viewport_start(50, 100, 20), 40);
+        assert_eq!(viewport_start(3, 100, 20), 0);
+        assert_eq!(viewport_start(98, 100, 20), 80);
+        assert_eq!(viewport_start(3, 10, 20), 0);
     }
 
     #[test]
