@@ -155,18 +155,19 @@ jobs:
         run: |
           cargo build --release --locked --workspace
           scripts/generate-assets.sh target/release/lens-top dist/generated
-      - name: Build GNU archive, Debian and RPM packages
+      - name: Build GNU archive
         env:
           VERSION: ${{ needs.prepare.outputs.version }}
           TARGET: ${{ matrix.gnu_target }}
-          DEB_ARCH: ${{ matrix.deb_arch }}
-          RPM_ARCH: ${{ matrix.rpm_arch }}
+          PACKAGE_NATIVE: "false"
         run: scripts/package-suite.sh
-      - name: Build musl archive
+      - name: Build portable musl archive, Debian and RPM packages
         env:
           VERSION: ${{ needs.prepare.outputs.version }}
           TARGET: ${{ matrix.musl_target }}
-          PACKAGE_NATIVE: "false"
+          DEB_ARCH: ${{ matrix.deb_arch }}
+          RPM_ARCH: ${{ matrix.rpm_arch }}
+          NATIVE_OUTPUT_DIR: dist/${{ matrix.gnu_target }}
         run: scripts/package-suite.sh
       - name: Install and smoke-test generated packages
         if: ${{ !matrix.cross }}
