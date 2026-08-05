@@ -44,13 +44,6 @@ kbd { display: inline-block; min-width: 27px; padding: 3px 7px; border: 1px soli
 .callout.warm { border-left-color: var(--warm); background: var(--warm-soft); }
 .callout p:last-child { margin-bottom: 0; }
 
-.roadmap { display: grid; gap: 16px; }
-.roadmap-item { display: grid; grid-template-columns: 140px 1fr auto; gap: 28px; align-items: start; padding: 26px; border: 1px solid var(--line); border-radius: var(--radius-md); background: var(--panel); }
-.roadmap-id { font-family: var(--font-mono); color: var(--accent); font-size: 13px; font-weight: 700; }
-.roadmap-item p { margin: 8px 0 0; color: var(--muted); }
-.status { padding: 5px 9px; border: 1px solid var(--line-strong); border-radius: 999px; color: var(--subtle); font-family: var(--font-mono); font-size: 10px; font-weight: 700; text-transform: uppercase; white-space: nowrap; }
-.status.shipped { border-color: var(--accent); background: var(--accent-soft); color: var(--accent); }
-
 .site-footer { padding: 52px 0; border-top: 1px solid var(--line); }
 .footer-grid { display: grid; grid-template-columns: 1fr auto; gap: 40px; align-items: end; }
 .footer-copy { color: var(--subtle); font-size: 13px; }

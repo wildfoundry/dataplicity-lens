@@ -25,7 +25,7 @@ scripts/verify-release.sh dist/release
 ```
 
 Every archive and native package contains `lens`, `lens-top`, `lens-services`, `lens-logs`,
-`lens-disk`, `lens-net`, `lens-system` and `lens-health`. Archive verification also checks the generated man page,
+`lens-disk`, `lens-net`, `lens-hardware`, `lens-system` and `lens-health`. Archive verification also checks the generated man page,
 completions, licences, checksums and CycloneDX output.
 
 `workflow_dispatch` runs the complete machinery in dry-run mode without publishing a GitHub Release.

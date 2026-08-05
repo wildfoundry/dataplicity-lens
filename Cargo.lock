@@ -987,6 +987,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "lens-hardware"
+version = "0.3.0"
+dependencies = [
+ "lens-system",
+]
+
+[[package]]
 name = "lens-health"
 version = "0.3.0"
 dependencies = [

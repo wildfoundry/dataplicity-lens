@@ -366,6 +366,47 @@ pub struct GroupInfo {
     pub members: Vec<String>,
 }
 
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct HardwareIdentity {
+    pub manufacturer: Option<String>,
+    pub model: Option<String>,
+    pub board: Option<String>,
+    pub board_revision: Option<String>,
+    pub serial_number: Option<String>,
+    pub firmware_version: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub raspberry_pi: Option<RaspberryPiStatus>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RaspberryPiStatus {
+    pub throttled_raw: Option<u32>,
+    #[serde(default)]
+    pub active_conditions: Vec<String>,
+    #[serde(default)]
+    pub historical_conditions: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct TemperatureSensor {
+    pub name: String,
+    pub source: String,
+    pub temperature_c: f64,
+    pub max_c: Option<f64>,
+    pub critical_c: Option<f64>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct HardwareDevice {
+    pub kind: String,
+    pub name: String,
+    pub path: String,
+    pub manufacturer: Option<String>,
+    pub vendor_id: Option<String>,
+    pub product_id: Option<String>,
+    pub serial_number: Option<String>,
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Snapshot {
     pub schema_version: SchemaVersion,
@@ -395,6 +436,12 @@ pub struct Snapshot {
     pub accounts: Vec<AccountInfo>,
     #[serde(default)]
     pub groups: Vec<GroupInfo>,
+    #[serde(default)]
+    pub hardware: HardwareIdentity,
+    #[serde(default)]
+    pub temperatures: Vec<TemperatureSensor>,
+    #[serde(default)]
+    pub hardware_devices: Vec<HardwareDevice>,
     pub findings: Vec<Finding>,
     pub relationships: Vec<Relationship>,
     pub build: Option<BuildInfo>,
@@ -437,6 +484,9 @@ impl Snapshot {
             certificates: Vec::new(),
             accounts: Vec::new(),
             groups: Vec::new(),
+            hardware: HardwareIdentity::default(),
+            temperatures: Vec::new(),
+            hardware_devices: Vec::new(),
             findings: Vec::new(),
             relationships: Vec::new(),
             build: None,

@@ -3,7 +3,7 @@
 The pre-1.0 design targets:
 
 - draw the interactive host/process overview without waiting for supplemental system commands
-- keep navigation responsive while services, logs, storage and networking load in the background
+- keep navigation responsive while services, logs, storage, networking and hardware load in the background
 - show an interactive specialist immediately, then collect only that specialist's domain in the
   background
 - apply an eight-second deadline to each external platform command so a stuck utility cannot hold a

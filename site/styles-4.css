@@ -30,8 +30,6 @@
   .project-band-inner, .footer-grid { grid-template-columns: 1fr; }
   .footer-links { justify-content: flex-start; }
   .key-grid { grid-template-columns: 1fr; }
-  .roadmap-item { grid-template-columns: 1fr; gap: 10px; }
-  .status { justify-self: start; }
 }
 
 @media (prefers-reduced-motion: reduce) {

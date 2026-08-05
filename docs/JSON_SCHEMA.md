@@ -25,6 +25,14 @@ version.
   "routes": [],
   "sockets": [],
   "cellular_modems": [],
+  "clock": {},
+  "dns": {},
+  "certificates": [],
+  "accounts": [],
+  "groups": [],
+  "hardware": {},
+  "temperatures": [],
+  "hardware_devices": [],
   "findings": [],
   "relationships": [],
   "build": {},
@@ -34,6 +42,10 @@ version.
 
 `generated_at` is UTC RFC 3339. Memory and I/O totals are bytes. I/O rates are bytes per second.
 Durations are seconds. CPU and memory are percentages. Process CPU can exceed 100 on a multicore host.
+
+`hardware` contains machine, board, firmware and Raspberry Pi firmware state. `temperatures` records
+degrees Celsius with optional driver-provided maximum and critical limits. `hardware_devices` contains
+USB and serial inventory with stable paths and identifiers where the operating system exposes them.
 
 ## Nullable and unavailable data
 

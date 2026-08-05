@@ -2,7 +2,7 @@
 set -euo pipefail
 
 directory="${1:-./target/release}"
-specialists=(lens-services lens-logs lens-disk lens-net lens-system lens-health)
+specialists=(lens-services lens-logs lens-disk lens-net lens-hardware lens-system lens-health)
 temporary="$(mktemp -d)"
 trap 'rm -rf "$temporary"' EXIT
 

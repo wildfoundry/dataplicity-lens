@@ -3,14 +3,14 @@
 [![CI](https://github.com/wildfoundry/dataplicity-lens/actions/workflows/ci.yml/badge.svg)](https://github.com/wildfoundry/dataplicity-lens/actions/workflows/ci.yml)
 [![Apache 2.0](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
 
-**Processes, services, logs, storage and networking in one terminal toolkit.**
+**Processes, services, logs, storage, networking and hardware in one terminal toolkit.**
 
 Lens brings the system information we use most often into a consistent set of terminal commands for
 Linux and macOS. Start with a host overview, or go directly to processes, services, logs, storage,
-networking or health checks.
+networking, hardware, system context or health checks.
 
-This repository ships a system overview and six focused commands: **`lens`**, **`lens-top`**,
-**`lens-services`**, **`lens-logs`**, **`lens-disk`**, **`lens-net`**, **`lens-system`** and **`lens-health`**. They share
+This repository ships nine commands: **`lens`**, **`lens-top`**, **`lens-services`**, **`lens-logs`**,
+**`lens-disk`**, **`lens-net`**, **`lens-hardware`**, **`lens-system`** and **`lens-health`**. They share
 the same host snapshot and process and service identities.
 
 ## Why we built Lens
@@ -70,6 +70,7 @@ lens-services
 lens-logs --since "1 hour ago"
 lens-disk
 lens-net
+lens-hardware
 lens-system --filter ntp
 lens-health --json
 ```
@@ -84,7 +85,7 @@ brew untap local/dataplicity-lens-test
 See [`docs/INSTALLING.md`](docs/INSTALLING.md) for the package matrix, checksum verification, macOS
 prerequisites, removal and source builds.
 
-Until the first release is published, build from source with the pinned toolchain:
+Contributors can build the full workspace with the pinned toolchain:
 
 ```sh
 cargo build --release --locked --workspace
@@ -118,6 +119,7 @@ lens-logs --since "1 hour ago" --severity error
 lens-logs --log-file /var/log/my-app.log --process worker
 lens-disk --filter /var
 lens-net --filter 443
+lens-hardware --filter serial
 lens-system --json
 lens-health --json
 ```
@@ -262,12 +264,12 @@ SBOMs, checksums and package smoke tests. See [`SECURITY.md`](SECURITY.md) and
 - `lens-logs` — a navigable recent-message view, repeated-message folding and service/severity/time filters
 - `lens-disk` — navigable block devices, filesystems, mounts, inodes and deleted-open files
 - `lens-net` — navigable interfaces, routes and listener ownership
+- `lens-hardware` — temperatures, Raspberry Pi firmware status and USB/serial inventory
 - `lens-system` — clock/NTP, resolver, local identities and visible public certificate files
 - `lens-health` — selectable findings with the evidence and suggested checks behind each warning
 
-See [`docs/ROADMAP.md`](docs/ROADMAP.md) for shipped and future scope, and
-[`docs/V1_CONTRACT.md`](docs/V1_CONTRACT.md) for the compatibility, action and release gates that
-must be met before the project is labelled 1.0.
+Each specialist is documented on the [Lens documentation site](https://lens.dataplicity.com/lens-suite.html),
+including its data sources, controls, filters and structured output fields.
 
 ## Contribute
 
