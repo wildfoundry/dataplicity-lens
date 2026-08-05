@@ -1118,11 +1118,12 @@ fn render_cockpit(
             writeln!(stdout, "{}", ink(&row, Ink::Muted, colour))?;
         }
     }
-    writeln!(
-        stdout,
-        "\n{}",
-        ink(&format!("├{rule}┤"), Ink::Border, colour)
-    )?;
+    if rows >= 30 {
+        execute!(stdout, cursor::MoveTo(0, rows.saturating_sub(3)))?;
+    } else {
+        writeln!(stdout)?;
+    }
+    writeln!(stdout, "{}", ink(&format!("├{rule}┤"), Ink::Border, colour))?;
     if width >= 82 {
         writeln!(
             stdout,
@@ -1502,11 +1503,12 @@ fn render_specialist(
         _ => render_plain(view, snapshot, stdout)?,
     }
 
-    writeln!(
-        stdout,
-        "\n{}",
-        ink(&format!("├{rule}┤"), Ink::Border, colour)
-    )?;
+    if rows >= 30 {
+        execute!(stdout, cursor::MoveTo(0, rows.saturating_sub(3)))?;
+    } else {
+        writeln!(stdout)?;
+    }
+    writeln!(stdout, "{}", ink(&format!("├{rule}┤"), Ink::Border, colour))?;
     if width < 64 {
         writeln!(
             stdout,
