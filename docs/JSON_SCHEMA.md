@@ -49,6 +49,9 @@ USB and serial inventory with stable paths and identifiers where the operating s
 Each interface can include cumulative `rx_bytes` and `tx_bytes` counters. The interactive network
 view derives current rates and history charts from successive samples; one-shot JSON keeps the source
 counters so consumers can calculate deltas over their own sampling interval.
+`certificates` contains locally managed public certificates visible to the current user. Subject,
+issuer and expiry are populated when OpenSSL can inspect the file; Lens does not open private keys or
+enumerate the distribution's complete root CA catalogue.
 
 ## Nullable and unavailable data
 

@@ -1090,12 +1090,12 @@ fn direction_symbol(direction: SortDirection, capabilities: TerminalCapabilities
     }
 }
 
-fn rgb(capabilities: TerminalCapabilities, true_color: (u8, u8, u8), fallback: Color) -> Color {
-    if capabilities.true_color {
-        Color::Rgb(true_color.0, true_color.1, true_color.2)
-    } else {
-        fallback
-    }
+fn rgb(_capabilities: TerminalCapabilities, true_color: (u8, u8, u8), _fallback: Color) -> Color {
+    // Browser, serial and embedded terminals commonly support 24-bit colour without advertising
+    // COLORTERM. Their configurable ANSI palettes are also too inconsistent for accessibility:
+    // "dark gray" is frequently rendered almost white. Emit the deliberate Lens RGB palette
+    // whenever colour is enabled so light-background contrast does not depend on terminal metadata.
+    Color::Rgb(true_color.0, true_color.1, true_color.2)
 }
 
 fn theme_rgb(
@@ -1599,6 +1599,23 @@ mod tests {
         assert_eq!(
             muted_style(capabilities).fg,
             Some(Color::Rgb(105, 116, 132))
+        );
+    }
+
+    #[test]
+    fn browser_terminals_receive_the_contrast_safe_rgb_palette() {
+        let capabilities = TerminalCapabilities {
+            color: true,
+            true_color: false,
+            unicode: true,
+            light_background: true,
+        };
+
+        assert_eq!(label_style(capabilities).fg, Some(Color::Rgb(70, 85, 105)));
+        assert_eq!(muted_style(capabilities).fg, Some(Color::Rgb(78, 94, 112)));
+        assert_eq!(
+            border_style(capabilities).fg,
+            Some(Color::Rgb(148, 160, 174))
         );
     }
 
