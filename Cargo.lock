@@ -1100,6 +1100,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "lens-system-cli"
+version = "0.3.0"
+dependencies = [
+ "lens-system",
+]
+
+[[package]]
 name = "lens-top"
 version = "0.3.0"
 dependencies = [

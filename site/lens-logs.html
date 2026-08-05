@@ -21,7 +21,7 @@
   <section class="page-hero"><div class="container"><div class="breadcrumbs"><a href="lens-suite.html">Suite</a> / lens-logs</div><span class="eyebrow">Logs · Linux + macOS</span><h1>Find the messages around a failure.</h1><p><code>lens-logs</code> reads recent local logs once, lets you narrow them by time, service, process, severity or text, and emits plain text for people or schema-versioned JSON for scripts.</p><div class="hero-actions"><a class="button button-primary" href="#quick-start">Start with a failure</a><a class="button" href="install.html">Install Lens</a></div></div></section>
 
   <div class="container content-layout">
-    <aside class="toc" aria-label="On this page"><strong>On this page</strong><a href="#quick-start">Quick start</a><a href="#workflows">Common investigations</a><a href="#reading-output">Read the output</a><a href="#filters">Filters and options</a><a href="#sources">Sources and limits</a><a href="#json">JSON contract</a><a href="#permissions">Missing data</a></aside>
+    <aside class="toc" aria-label="On this page"><strong>On this page</strong><a href="#quick-start">Quick start</a><a href="#interaction">Interactive view</a><a href="#workflows">Common investigations</a><a href="#reading-output">Read the output</a><a href="#filters">Filters and options</a><a href="#sources">Sources and limits</a><a href="#json">JSON contract</a><a href="#permissions">Missing data</a></aside>
     <article class="prose">
       <section id="quick-start">
         <h2>Quick start</h2>
@@ -36,6 +36,22 @@
 <span class="token-command">lens-logs</span> <span class="token-flag">--since</span> <span class="token-value">1h</span></code></pre></div>
         <p>When stdout is a terminal, the command opens a navigable message list. Use the arrow keys and press Enter to inspect a message. On macOS, the latest minute appears first while the previous hour loads in the background. Redirect it or pass <code>--plain</code> or <code>--json</code> to take a single snapshot and exit.</p>
         <p>Lens reads the logs available to your current account and does not send them anywhere.</p>
+      </section>
+
+      <section id="interaction">
+        <h2>Use the interactive log view</h2>
+        <p>The list is a working view of one collected time range, not an endless log stream. The highlighted message stays selected while a background collection finishes, so a slower refresh does not move you to an unrelated entry.</p>
+        <div class="key-grid">
+          <div class="key-row"><span><code>Up</code> / <code>Down</code> or <code>j</code> / <code>k</code></span><span>Move through messages. The list scrolls around the selected row when space allows.</span></div>
+          <div class="key-row"><span><code>Enter</code></span><span>Open the selected message with its complete text, source, timestamp, inferred severity, service context and repeat count.</span></div>
+          <div class="key-row"><span><code>Esc</code></span><span>Return from message detail or close an overlay.</span></div>
+          <div class="key-row"><span><code>/</code></span><span>Open a search card over the current view and match message text without discarding the screen behind it.</span></div>
+          <div class="key-row"><span><code>r</code></span><span>Collect the selected time range again. This is a new snapshot, so messages may enter or leave the result.</span></div>
+          <div class="key-row"><span><code>!</code></span><span>Open the local diagnostic shell beside the log view on wide terminals, or as a bordered overlay on compact terminals.</span></div>
+          <div class="key-row"><span><code>?</code></span><span>Show the keys available in the current view.</span></div>
+          <div class="key-row"><span><code>q</code></span><span>Quit Lens.</span></div>
+        </div>
+        <p>On macOS, the initial interactive result uses a short one-minute window so the screen opens promptly. The previous hour then replaces it when collection completes. A loading label means that work is still in progress; zero entries is shown only after a source successfully returned no messages.</p>
       </section>
 
       <section id="workflows">

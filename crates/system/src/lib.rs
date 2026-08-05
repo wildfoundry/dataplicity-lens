@@ -19,13 +19,14 @@ use crossterm::{
     execute,
     terminal::{self, ClearType},
 };
+use lens_model::{
+    AccountInfo, CellularModem, CellularSim, CertificateInfo, Cgroup, ClockContext, DnsContext,
+    GroupInfo, IoCounters, Process, ProcessId, ProcessState, SchemaVersion, ServiceReference,
+    Timestamp, User,
+};
 pub use lens_model::{
     BlockDevice, DeletedOpenFile, EntityId, Filesystem, Interface, LogEntry, LogSource, Mount,
     Relationship, RelationshipKind, Route, Service, Snapshot as SystemSnapshot, Socket,
-};
-use lens_model::{
-    CellularModem, CellularSim, Cgroup, IoCounters, Process, ProcessId, ProcessState,
-    SchemaVersion, ServiceReference, Timestamp, User,
 };
 #[cfg(target_os = "linux")]
 use lens_platform_linux::LinuxCollector;
@@ -43,16 +44,18 @@ pub enum View {
     Logs,
     Disk,
     Net,
+    System,
     Health,
 }
 
 impl View {
-    pub const ALL: [Self; 6] = [
+    pub const ALL: [Self; 7] = [
         Self::Processes,
         Self::Services,
         Self::Logs,
         Self::Disk,
         Self::Net,
+        Self::System,
         Self::Health,
     ];
 
@@ -63,6 +66,7 @@ impl View {
             Self::Logs => "lens-logs",
             Self::Disk => "lens-disk",
             Self::Net => "lens-net",
+            Self::System => "lens-system",
             Self::Health => "lens-health",
         }
     }
@@ -74,6 +78,7 @@ impl View {
             Self::Logs => "Logs",
             Self::Disk => "Storage",
             Self::Net => "Network",
+            Self::System => "System",
             Self::Health => "Health",
         }
     }
@@ -432,6 +437,7 @@ impl Drop for CockpitTerminal {
 struct TerminalWriter<W> {
     inner: W,
     trailing_carriage_return: bool,
+    frame: Vec<u8>,
 }
 
 impl<W> TerminalWriter<W> {
@@ -439,6 +445,7 @@ impl<W> TerminalWriter<W> {
         Self {
             inner,
             trailing_carriage_return: false,
+            frame: Vec::new(),
         }
     }
 }
@@ -454,12 +461,18 @@ impl<W: Write> Write for TerminalWriter<W> {
             converted.push(byte);
             previous_was_carriage_return = byte == b'\r';
         }
-        self.inner.write_all(&converted)?;
+        self.frame.extend_from_slice(&converted);
         self.trailing_carriage_return = previous_was_carriage_return;
         Ok(buffer.len())
     }
 
     fn flush(&mut self) -> io::Result<()> {
+        // Buffer a complete frame and publish it as one synchronized terminal update. Remote
+        // terminals otherwise expose the clear between frames as a full-screen flash on slow links.
+        self.inner.write_all(b"\x1b[?2026h")?;
+        self.inner.write_all(&self.frame)?;
+        self.inner.write_all(b"\x1b[?2026l")?;
+        self.frame.clear();
         self.inner.flush()
     }
 }
@@ -753,6 +766,10 @@ fn spawn_specialist_collection(view: View, args: ViewArgs) -> Receiver<Specialis
                 }
                 snapshot.sockets = collect_sockets(&mut snapshot.collection_warnings);
                 snapshot.cellular_modems = collect_cellular(&mut snapshot.collection_warnings);
+                let _ = send_specialist_update(&sender, snapshot, &args, false, "Ready");
+            }
+            View::System => {
+                collect_system_context(&mut snapshot);
                 let _ = send_specialist_update(&sender, snapshot, &args, false, "Ready");
             }
             View::Health => {
@@ -1167,6 +1184,12 @@ fn cockpit_view_summary(view: View, snapshot: &SystemSnapshot, loading: bool) ->
             snapshot.sockets.len(),
             snapshot.cellular_modems.len()
         ),
+        View::System => format!(
+            "{} users · {} groups · {} certificates",
+            snapshot.accounts.len(),
+            snapshot.groups.len(),
+            snapshot.certificates.len()
+        ),
         View::Health => format!("{} findings", snapshot.findings.len()),
     }
 }
@@ -1274,6 +1297,7 @@ fn specialist_item_count(view: View, snapshot: &SystemSnapshot) -> usize {
                 + snapshot.sockets.len()
                 + snapshot.cellular_modems.len()
         }
+        View::System => system_rows(snapshot).len(),
         View::Health => snapshot.findings.len(),
         View::Processes => 0,
     }
@@ -1290,6 +1314,7 @@ fn specialist_has_data(view: View, snapshot: &SystemSnapshot) -> bool {
                 || !snapshot.routes.is_empty()
                 || !snapshot.cellular_modems.is_empty()
         }
+        View::System => !snapshot.dns.source.is_empty() || !snapshot.accounts.is_empty(),
         View::Health => !snapshot.findings.is_empty(),
     }
 }
@@ -1321,6 +1346,7 @@ fn preserve_specialist_selection(
                     .position(|candidate| candidate.id == current.id)
             })
             .unwrap_or_else(|| selected.min(next.findings.len().saturating_sub(1))),
+        View::System => selected.min(specialist_item_count(view, next).saturating_sub(1)),
         _ => selected.min(specialist_item_count(view, next).saturating_sub(1)),
     }
 }
@@ -1458,6 +1484,9 @@ fn render_specialist(
         View::Logs => render_log_specialist(snapshot, selected, inspecting, rows, width, stdout)?,
         View::Disk => render_disk_specialist(snapshot, selected, inspecting, rows, width, stdout)?,
         View::Net => render_net_specialist(snapshot, selected, inspecting, rows, width, stdout)?,
+        View::System => {
+            render_system_specialist(snapshot, selected, inspecting, rows, width, stdout)?
+        }
         View::Health => {
             render_health_specialist(snapshot, selected, inspecting, rows, width, stdout)?
         }
@@ -2302,6 +2331,18 @@ fn render_health_specialist(
                 )?;
             }
         }
+        if finding
+            .related_entities
+            .iter()
+            .any(|entity| matches!(entity, EntityId::Mount(_)))
+        {
+            writeln!(
+                out,
+                "\n  {}  {}",
+                keycap("Enter", colour),
+                ink("open the affected mount in Storage", Ink::Info, colour)
+            )?;
+        }
         return Ok(());
     }
 
@@ -2333,6 +2374,149 @@ fn render_health_specialist(
             writeln!(out, "{}", selected_row(&row, colour))?;
         } else {
             writeln!(out, "{}", ink(&row, severity_ink(finding.severity), colour))?;
+        }
+    }
+    Ok(())
+}
+
+fn system_rows(snapshot: &SystemSnapshot) -> Vec<(String, String)> {
+    let mut rows = vec![
+        (
+            "TIMEZONE".into(),
+            snapshot
+                .clock
+                .timezone
+                .clone()
+                .unwrap_or_else(|| "unavailable".into()),
+        ),
+        (
+            "NTP SYNC".into(),
+            snapshot.clock.ntp_synchronized.map_or_else(
+                || "unavailable".into(),
+                |value| if value { "yes".into() } else { "no".into() },
+            ),
+        ),
+        (
+            "NTP SERVICE".into(),
+            snapshot
+                .clock
+                .ntp_service
+                .clone()
+                .unwrap_or_else(|| "unavailable".into()),
+        ),
+    ];
+    rows.extend(
+        snapshot
+            .dns
+            .nameservers
+            .iter()
+            .cloned()
+            .map(|value| ("DNS SERVER".into(), value)),
+    );
+    rows.extend(
+        snapshot
+            .dns
+            .search_domains
+            .iter()
+            .cloned()
+            .map(|value| ("DNS SEARCH".into(), value)),
+    );
+    rows.extend(snapshot.accounts.iter().map(|item| {
+        (
+            "USER".into(),
+            format!(
+                "{} · uid {} · gid {} · {} · {}",
+                item.name, item.uid, item.gid, item.home, item.shell
+            ),
+        )
+    }));
+    rows.extend(snapshot.groups.iter().map(|item| {
+        (
+            "GROUP".into(),
+            format!(
+                "{} · gid {}{}",
+                item.name,
+                item.gid,
+                if item.members.is_empty() {
+                    String::new()
+                } else {
+                    format!(" · {}", item.members.join(","))
+                }
+            ),
+        )
+    }));
+    rows.extend(
+        snapshot
+            .certificates
+            .iter()
+            .map(|item| ("CERTIFICATE".into(), item.path.clone())),
+    );
+    rows
+}
+
+fn render_system_specialist(
+    snapshot: &SystemSnapshot,
+    selected: usize,
+    inspecting: bool,
+    rows: u16,
+    width: usize,
+    out: &mut impl Write,
+) -> Result<()> {
+    let colour = terminal_colour_enabled();
+    let items = system_rows(snapshot);
+    if items.is_empty() {
+        writeln!(
+            out,
+            "\n  {}",
+            ink(
+                "No system context is visible to this user.",
+                Ink::Muted,
+                colour
+            )
+        )?;
+        return Ok(());
+    }
+    let (kind, value) = &items[selected.min(items.len() - 1)];
+    if inspecting {
+        writeln!(out, "\n  {}", ink(kind, Ink::Label, colour))?;
+        writeln!(
+            out,
+            "  {}",
+            ink(
+                &truncate_text(value, width.saturating_sub(4)),
+                Ink::Bright,
+                colour
+            )
+        )?;
+        if kind == "CERTIFICATE" {
+            writeln!(
+                out,
+                "\n  {}",
+                ink(
+                    "Public certificate file visible to the invoking user; private keys are never read.",
+                    Ink::Muted,
+                    colour
+                )
+            )?;
+        }
+        return Ok(());
+    }
+    writeln!(
+        out,
+        "  Clock, DNS, accounts, groups and visible public certificates\n"
+    )?;
+    let capacity = usize::from(rows.saturating_sub(11)).max(1);
+    let start = viewport_start(selected, items.len(), capacity);
+    for (index, (kind, value)) in items.iter().enumerate().skip(start).take(capacity) {
+        let row = format!(
+            "  {:<12} {}",
+            kind,
+            truncate_text(value, width.saturating_sub(17))
+        );
+        if index == selected {
+            writeln!(out, "{}", selected_row(&row, colour))?;
+        } else {
+            writeln!(out, "{}", ink(&row, Ink::Muted, colour))?;
         }
     }
     Ok(())
@@ -2472,6 +2656,21 @@ fn specialist_loop(view: View, args: &ViewArgs, stdout: &mut impl Write) -> Resu
                 KeyCode::Down | KeyCode::Char('j') if !inspecting => {
                     selected = move_selection(selected, 1, specialist_item_count(view, &snapshot));
                     redraw = true;
+                }
+                KeyCode::Enter if inspecting && view == View::Health => {
+                    let mount = snapshot.findings.get(selected).and_then(|finding| {
+                        finding
+                            .related_entities
+                            .iter()
+                            .find_map(|entity| match entity {
+                                EntityId::Mount(target) => Some(target.clone()),
+                                _ => None,
+                            })
+                    });
+                    if let Some(target) = mount {
+                        launch_search(View::Disk, &target)?;
+                        redraw = true;
+                    }
                 }
                 KeyCode::Enter if !inspecting && specialist_item_count(view, &snapshot) > 0 => {
                     inspecting = true;
@@ -3030,6 +3229,7 @@ fn collect_view(
             snapshot.sockets = collect_sockets(&mut snapshot.collection_warnings);
             snapshot.cellular_modems = collect_cellular(&mut snapshot.collection_warnings);
         }
+        View::System => collect_system_context(&mut snapshot),
         View::Health => return enrich_snapshot(snapshot, since, log_files),
     }
     snapshot.relationships = domain_relationships(&snapshot);
@@ -3093,11 +3293,221 @@ fn enrich_snapshot(
     snapshot.routes = routes;
     snapshot.sockets = sockets;
     snapshot.cellular_modems = cellular_modems;
+    collect_system_context(&mut snapshot);
     snapshot.findings = diagnose(&snapshot);
     snapshot
         .relationships
         .extend(domain_relationships(&snapshot));
     snapshot
+}
+
+fn collect_system_context(snapshot: &mut SystemSnapshot) {
+    snapshot.clock = collect_clock_context(&mut snapshot.collection_warnings);
+    snapshot.dns = collect_dns_context(&mut snapshot.collection_warnings);
+    snapshot.certificates = collect_certificates(&mut snapshot.collection_warnings);
+    snapshot.accounts = collect_accounts("/etc/passwd", &mut snapshot.collection_warnings);
+    snapshot.groups = collect_groups("/etc/group", &mut snapshot.collection_warnings);
+}
+
+fn collect_clock_context(warnings: &mut Vec<String>) -> ClockContext {
+    #[cfg(not(target_os = "linux"))]
+    let _ = warnings;
+    let timezone = std::fs::read_to_string("/etc/timezone")
+        .ok()
+        .map(|value| value.trim().to_owned())
+        .filter(|value| !value.is_empty())
+        .or_else(|| {
+            std::fs::read_link("/etc/localtime").ok().and_then(|path| {
+                path.to_string_lossy()
+                    .split("zoneinfo/")
+                    .nth(1)
+                    .map(str::to_owned)
+            })
+        });
+    #[cfg(target_os = "linux")]
+    let status = command(
+        "timedatectl",
+        &["show", "--property=NTPSynchronized", "--property=NTP"],
+        warnings,
+    );
+    #[cfg(not(target_os = "linux"))]
+    let status: Option<String> = None;
+    let ntp_synchronized = status.as_deref().and_then(|text| {
+        text.lines()
+            .find_map(|line| line.strip_prefix("NTPSynchronized="))
+            .and_then(parse_bool)
+    });
+    let ntp_service = status.as_deref().and_then(|text| {
+        text.lines()
+            .find_map(|line| line.strip_prefix("NTP="))
+            .map(|value| {
+                if value.eq_ignore_ascii_case("yes") {
+                    "enabled"
+                } else {
+                    "disabled"
+                }
+                .to_owned()
+            })
+    });
+    ClockContext {
+        timezone,
+        ntp_synchronized,
+        ntp_service,
+    }
+}
+
+fn parse_bool(value: &str) -> Option<bool> {
+    match value.trim().to_ascii_lowercase().as_str() {
+        "yes" | "true" | "1" => Some(true),
+        "no" | "false" | "0" => Some(false),
+        _ => None,
+    }
+}
+
+fn collect_dns_context(warnings: &mut Vec<String>) -> DnsContext {
+    let path = "/etc/resolv.conf";
+    let text = match std::fs::read_to_string(path) {
+        Ok(text) => text,
+        Err(error) => {
+            warnings.push(format!("DNS configuration {path} unavailable: {error}"));
+            return DnsContext {
+                source: path.into(),
+                ..DnsContext::default()
+            };
+        }
+    };
+    let mut dns = DnsContext {
+        source: path.into(),
+        ..DnsContext::default()
+    };
+    for line in text
+        .lines()
+        .map(str::trim)
+        .filter(|line| !line.starts_with('#'))
+    {
+        let mut fields = line.split_whitespace();
+        match fields.next() {
+            Some("nameserver") => dns.nameservers.extend(fields.map(str::to_owned)),
+            Some("search" | "domain") => dns.search_domains.extend(fields.map(str::to_owned)),
+            _ => {}
+        }
+    }
+    dns
+}
+
+fn collect_certificates(warnings: &mut Vec<String>) -> Vec<CertificateInfo> {
+    #[cfg(target_os = "macos")]
+    {
+        let keychain = "/System/Library/Keychains/SystemRootCertificates.keychain";
+        let Some(text) = command(
+            "/usr/bin/security",
+            &["find-certificate", "-a", keychain],
+            warnings,
+        ) else {
+            return Vec::new();
+        };
+        text.lines()
+            .filter_map(|line| {
+                line.trim()
+                    .strip_prefix("\"alis\"<blob>=\"")
+                    .and_then(|value| value.strip_suffix('"'))
+            })
+            .take(100)
+            .map(|label| CertificateInfo {
+                path: format!("{keychain} :: {label}"),
+                subject: Some(label.to_owned()),
+                issuer: None,
+                not_after: None,
+            })
+            .collect()
+    }
+    #[cfg(target_os = "linux")]
+    {
+        let candidates = ["/etc/ssl/certs", "/usr/local/share/ca-certificates"];
+        let mut values = Vec::new();
+        for directory in candidates {
+            let entries = match std::fs::read_dir(directory) {
+                Ok(entries) => entries,
+                Err(error) => {
+                    if directory == "/etc/ssl/certs" {
+                        warnings.push(format!(
+                            "certificate store {directory} unavailable: {error}"
+                        ));
+                    }
+                    continue;
+                }
+            };
+            for entry in entries.filter_map(Result::ok) {
+                if values.len() >= 100 {
+                    break;
+                }
+                let path = entry.path();
+                if path.is_file() || path.is_symlink() {
+                    values.push(CertificateInfo {
+                        path: path.display().to_string(),
+                        subject: None,
+                        issuer: None,
+                        not_after: None,
+                    });
+                }
+            }
+        }
+        values.sort_by(|left, right| left.path.cmp(&right.path));
+        values.dedup_by(|left, right| left.path == right.path);
+        values
+    }
+}
+
+fn collect_accounts(path: &str, warnings: &mut Vec<String>) -> Vec<AccountInfo> {
+    let text = match std::fs::read_to_string(path) {
+        Ok(text) => text,
+        Err(error) => {
+            warnings.push(format!("accounts {path} unavailable: {error}"));
+            return Vec::new();
+        }
+    };
+    text.lines()
+        .filter_map(|line| {
+            let fields: Vec<_> = line.split(':').collect();
+            if fields.len() < 7 {
+                return None;
+            }
+            Some(AccountInfo {
+                name: fields[0].into(),
+                uid: fields[2].parse().ok()?,
+                gid: fields[3].parse().ok()?,
+                home: fields[5].into(),
+                shell: fields[6].into(),
+            })
+        })
+        .collect()
+}
+
+fn collect_groups(path: &str, warnings: &mut Vec<String>) -> Vec<GroupInfo> {
+    let text = match std::fs::read_to_string(path) {
+        Ok(text) => text,
+        Err(error) => {
+            warnings.push(format!("groups {path} unavailable: {error}"));
+            return Vec::new();
+        }
+    };
+    text.lines()
+        .filter_map(|line| {
+            let fields: Vec<_> = line.split(':').collect();
+            if fields.len() < 4 {
+                return None;
+            }
+            Some(GroupInfo {
+                name: fields[0].into(),
+                gid: fields[2].parse().ok()?,
+                members: fields[3]
+                    .split(',')
+                    .filter(|value| !value.is_empty())
+                    .map(str::to_owned)
+                    .collect(),
+            })
+        })
+        .collect()
 }
 
 fn platform_log_source() -> LogSource {
@@ -3682,9 +4092,39 @@ fn parse_block_device(line: &str) -> Option<BlockDevice> {
 
 #[cfg(target_os = "linux")]
 fn collect_interfaces(warnings: &mut Vec<String>) -> Vec<Interface> {
-    command("ip", &["-brief", "address", "show"], warnings)
-        .map(|text| text.lines().filter_map(parse_interface).collect())
-        .unwrap_or_default()
+    if let Some(text) = command("ip", &["-brief", "address", "show"], warnings) {
+        return text.lines().filter_map(parse_interface).collect();
+    }
+    collect_linux_sysfs_interfaces(warnings)
+}
+
+#[cfg(target_os = "linux")]
+fn collect_linux_sysfs_interfaces(warnings: &mut Vec<String>) -> Vec<Interface> {
+    let entries = match std::fs::read_dir("/sys/class/net") {
+        Ok(entries) => entries,
+        Err(error) => {
+            warnings.push(format!(
+                "network interfaces unavailable from sysfs: {error}"
+            ));
+            return Vec::new();
+        }
+    };
+    let mut interfaces: Vec<_> = entries
+        .filter_map(Result::ok)
+        .filter_map(|entry| {
+            let name = entry.file_name().into_string().ok()?;
+            let state = std::fs::read_to_string(entry.path().join("operstate"))
+                .map(|value| value.trim().to_ascii_uppercase())
+                .unwrap_or_else(|_| "UNKNOWN".into());
+            Some(Interface {
+                name,
+                state,
+                addresses: Vec::new(),
+            })
+        })
+        .collect();
+    interfaces.sort_by(|left, right| left.name.cmp(&right.name));
+    interfaces
 }
 
 #[cfg(target_os = "macos")]
@@ -3735,14 +4175,58 @@ fn parse_interface(line: &str) -> Option<Interface> {
 
 #[cfg(target_os = "linux")]
 fn collect_routes(warnings: &mut Vec<String>) -> Vec<Route> {
-    command("ip", &["route", "show"], warnings)
-        .map(|text| {
-            text.lines()
-                .enumerate()
-                .map(|(index, line)| parse_route(index, line))
-                .collect()
-        })
-        .unwrap_or_default()
+    if let Some(text) = command("ip", &["route", "show"], warnings) {
+        return text
+            .lines()
+            .enumerate()
+            .map(|(index, line)| parse_route(index, line))
+            .collect();
+    }
+    match std::fs::read_to_string("/proc/net/route") {
+        Ok(text) => text
+            .lines()
+            .skip(1)
+            .enumerate()
+            .filter_map(|(index, line)| parse_proc_route(index, line))
+            .collect(),
+        Err(error) => {
+            warnings.push(format!("network routes unavailable from procfs: {error}"));
+            Vec::new()
+        }
+    }
+}
+
+#[cfg(any(target_os = "linux", test))]
+fn parse_proc_route(index: usize, line: &str) -> Option<Route> {
+    let fields: Vec<_> = line.split_whitespace().collect();
+    if fields.len() < 8 {
+        return None;
+    }
+    let destination = proc_ipv4(fields[1])?;
+    let gateway = proc_ipv4(fields[2])?;
+    Some(Route {
+        id: format!("route-{index}"),
+        destination: if destination == "0.0.0.0" {
+            "default".into()
+        } else {
+            destination
+        },
+        gateway: (gateway != "0.0.0.0").then_some(gateway),
+        interface: Some(fields[0].into()),
+        raw: line.into(),
+    })
+}
+
+#[cfg(any(target_os = "linux", test))]
+fn proc_ipv4(value: &str) -> Option<String> {
+    let value = u32::from_str_radix(value, 16).ok()?;
+    Some(format!(
+        "{}.{}.{}.{}",
+        value & 0xff,
+        (value >> 8) & 0xff,
+        (value >> 16) & 0xff,
+        (value >> 24) & 0xff
+    ))
 }
 
 #[cfg(target_os = "macos")]
@@ -4441,6 +4925,21 @@ fn filter_snapshot(
             item.operator_name.as_deref().unwrap_or("")
         ))
     });
+    snapshot.accounts.retain(|item| {
+        matches(&format!(
+            "{} {} {} {} {}",
+            item.name, item.uid, item.gid, item.home, item.shell
+        ))
+    });
+    snapshot.groups.retain(|item| {
+        matches(&format!(
+            "{} {} {}",
+            item.name,
+            item.gid,
+            item.members.join(" ")
+        ))
+    });
+    snapshot.certificates.retain(|item| matches(&item.path));
     snapshot
         .findings
         .retain(|item| matches(&format!("{} {} {}", item.id, item.title, item.summary)));
@@ -4455,6 +4954,9 @@ fn filter_snapshot(
         snapshot.routes.truncate(limit);
         snapshot.sockets.truncate(limit);
         snapshot.cellular_modems.truncate(limit);
+        snapshot.accounts.truncate(limit);
+        snapshot.groups.truncate(limit);
+        snapshot.certificates.truncate(limit);
         snapshot.findings.truncate(limit);
     }
     snapshot
@@ -4619,6 +5121,84 @@ fn render_plain(view: View, snapshot: &SystemSnapshot, out: &mut dyn Write) -> R
                         )?;
                     }
                 }
+            }
+        }
+        View::System => {
+            writeln!(out, "CLOCK")?;
+            writeln!(
+                out,
+                "timezone: {}",
+                snapshot.clock.timezone.as_deref().unwrap_or("unavailable")
+            )?;
+            writeln!(
+                out,
+                "NTP synchronized: {}",
+                snapshot
+                    .clock
+                    .ntp_synchronized
+                    .map_or("unavailable", |value| if value { "yes" } else { "no" })
+            )?;
+            writeln!(
+                out,
+                "NTP service: {}",
+                snapshot
+                    .clock
+                    .ntp_service
+                    .as_deref()
+                    .unwrap_or("unavailable")
+            )?;
+            writeln!(
+                out,
+                "\nDNS ({})",
+                if snapshot.dns.source.is_empty() {
+                    "unavailable"
+                } else {
+                    &snapshot.dns.source
+                }
+            )?;
+            writeln!(
+                out,
+                "nameservers: {}",
+                if snapshot.dns.nameservers.is_empty() {
+                    "none".into()
+                } else {
+                    snapshot.dns.nameservers.join(", ")
+                }
+            )?;
+            writeln!(
+                out,
+                "search domains: {}",
+                if snapshot.dns.search_domains.is_empty() {
+                    "none".into()
+                } else {
+                    snapshot.dns.search_domains.join(", ")
+                }
+            )?;
+            writeln!(out, "\nACCOUNTS")?;
+            for item in &snapshot.accounts {
+                writeln!(
+                    out,
+                    "{:<20} uid {:<7} gid {:<7} {:<24} {}",
+                    item.name, item.uid, item.gid, item.home, item.shell
+                )?;
+            }
+            writeln!(out, "\nGROUPS")?;
+            for item in &snapshot.groups {
+                writeln!(
+                    out,
+                    "{:<20} gid {:<7} {}",
+                    item.name,
+                    item.gid,
+                    item.members.join(",")
+                )?;
+            }
+            writeln!(
+                out,
+                "\nVISIBLE CERTIFICATE FILES ({})",
+                snapshot.certificates.len()
+            )?;
+            for item in &snapshot.certificates {
+                writeln!(out, "{}", item.path)?;
             }
         }
         View::Health => render_findings(snapshot, out)?,
@@ -4877,6 +5457,34 @@ pub fn demo_snapshot() -> SystemSnapshot {
             operator_name: Some("Example Mobile".into()),
         }),
     }];
+    snapshot.clock = ClockContext {
+        timezone: Some("Australia/Brisbane".into()),
+        ntp_synchronized: Some(true),
+        ntp_service: Some("enabled".into()),
+    };
+    snapshot.dns = DnsContext {
+        source: "/etc/resolv.conf".into(),
+        nameservers: vec!["192.0.2.53".into()],
+        search_domains: vec!["device.example".into()],
+    };
+    snapshot.certificates = vec![CertificateInfo {
+        path: "/etc/ssl/certs/device-ca.pem".into(),
+        subject: None,
+        issuer: None,
+        not_after: None,
+    }];
+    snapshot.accounts = vec![AccountInfo {
+        name: "mosquitto".into(),
+        uid: 1883,
+        gid: 1883,
+        home: "/var/lib/mosquitto".into(),
+        shell: "/usr/sbin/nologin".into(),
+    }];
+    snapshot.groups = vec![GroupInfo {
+        name: "mosquitto".into(),
+        gid: 1883,
+        members: Vec::new(),
+    }];
     snapshot.findings = diagnose(&snapshot);
     snapshot.relationships = domain_relationships(&snapshot);
     snapshot
@@ -4936,6 +5544,10 @@ mod tests {
                 .expect("route"),
         );
         assert_eq!(route.interface.as_deref(), Some("eth0"));
+        let proc_route = parse_proc_route(0, "eth0 00000000 010011AC 0003 0 0 0 00000000 0 0 0")
+            .expect("proc route");
+        assert_eq!(proc_route.destination, "default");
+        assert_eq!(proc_route.gateway.as_deref(), Some("172.17.0.1"));
     }
 
     #[test]
@@ -5191,8 +5803,12 @@ mod tests {
         {
             let mut terminal = TerminalWriter::new(&mut output);
             write!(terminal, "first\nsecond\r\nthird\n").expect("terminal output");
+            terminal.flush().expect("flush frame");
         }
-        assert_eq!(output, b"first\r\nsecond\r\nthird\r\n");
+        assert_eq!(
+            output,
+            b"\x1b[?2026hfirst\r\nsecond\r\nthird\r\n\x1b[?2026l"
+        );
     }
 
     #[test]

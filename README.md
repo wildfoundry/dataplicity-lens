@@ -10,7 +10,7 @@ Linux and macOS. Start with a host overview, or go directly to processes, servic
 networking or health checks.
 
 This repository ships a system overview and six focused commands: **`lens`**, **`lens-top`**,
-**`lens-services`**, **`lens-logs`**, **`lens-disk`**, **`lens-net`** and **`lens-health`**. They share
+**`lens-services`**, **`lens-logs`**, **`lens-disk`**, **`lens-net`**, **`lens-system`** and **`lens-health`**. They share
 the same host snapshot and process and service identities.
 
 ## Why we built Lens
@@ -70,6 +70,7 @@ lens-services
 lens-logs --since "1 hour ago"
 lens-disk
 lens-net
+lens-system --filter ntp
 lens-health --json
 ```
 
@@ -97,6 +98,10 @@ Start with `lens` for a cockpit, or run a specialist directly. Each specialist s
 `--since`. The default limit is 1,000 rows. Pass `--limit 0` when you explicitly want every row in
 the selected time range or file.
 
+For practical fault-finding sequences, field interpretation and platform-specific behaviour, use
+the [operations guide](docs/OPERATIONS_GUIDE.md). The command pages on the documentation site cover
+every interactive view, filter, output mode, action and incomplete-data state in detail.
+
 The interactive cockpit draws the host and process summary first. Services, recent logs, storage and
 network details then load once in the background, so a slow platform command does not hold up the
 opening screen or normal navigation. Each specialist collects only the system data it displays, and
@@ -113,6 +118,7 @@ lens-logs --since "1 hour ago" --severity error
 lens-logs --log-file /var/log/my-app.log --process worker
 lens-disk --filter /var
 lens-net --filter 443
+lens-system --json
 lens-health --json
 ```
 
@@ -250,6 +256,7 @@ SBOMs, checksums and package smoke tests. See [`SECURITY.md`](SECURITY.md) and
 - `lens-logs` — a navigable recent-message view, repeated-message folding and service/severity/time filters
 - `lens-disk` — navigable block devices, filesystems, mounts, inodes and deleted-open files
 - `lens-net` — navigable interfaces, routes and listener ownership
+- `lens-system` — clock/NTP, resolver, local identities and visible public certificate files
 - `lens-health` — selectable findings with the evidence and suggested checks behind each warning
 
 See [`docs/ROADMAP.md`](docs/ROADMAP.md) for shipped and future scope, and

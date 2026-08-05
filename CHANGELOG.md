@@ -18,9 +18,18 @@ versioning once the first public release is tagged.
 - Local clock information throughout the interactive suite.
 - Guarded interactive process signals and systemd service actions with pinned targets, explicit
   review, confirmation and post-action verification.
+- A `lens-system` view for clock/NTP state, resolver configuration, local accounts and groups, and
+  public certificate files visible to the invoking user.
 
 ### Changed
 
+- Terminal refreshes are emitted as synchronized frames, process views respect the terminal's own
+  background colour, and the fixed-width updating badge no longer shifts the header.
+- Linux network collection falls back to sysfs and procfs when minimal containers do not include
+  `iproute2`; storage health findings open the affected mount directly.
+- Every command page now documents operational workflows, screen fields, controls, filters, action
+  safety, platform differences and incomplete-data semantics; a cross-tool operations guide connects
+  the views into practical fault-finding sequences.
 - The `lens` cockpit now opens with useful host and process status while slower service, log,
   storage and network checks continue in the background.
 - Interactive specialist screens now open immediately with a loading state and collect only the

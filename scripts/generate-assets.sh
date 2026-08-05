@@ -9,7 +9,7 @@ mkdir -p "$out/man" "$out/completions"
 "$binary" --generate-completion zsh --generate-output "$out/completions/_lens-top"
 "$binary" --generate-completion fish --generate-output "$out/completions/lens-top.fish"
 directory="$(dirname "$binary")"
-for command in lens lens-services lens-logs lens-disk lens-net lens-health; do
+for command in lens lens-services lens-logs lens-disk lens-net lens-system lens-health; do
   "$directory/$command" --generate-man "$out/man/$command.1"
   "$directory/$command" --generate-completion bash --generate-output "$out/completions/$command.bash"
   "$directory/$command" --generate-completion zsh --generate-output "$out/completions/_$command"
