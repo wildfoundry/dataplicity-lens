@@ -15,7 +15,7 @@ use time::{OffsetDateTime, macros::format_description};
 
 use crate::{
     TerminalCapabilities,
-    app::{App, InputMode, View},
+    app::{App, InputMode, ProcessActionStage, ProcessSignal, View},
 };
 
 pub fn draw(frame: &mut Frame<'_>, app: &mut App) {
@@ -54,7 +54,9 @@ pub fn draw(frame: &mut Frame<'_>, app: &mut App) {
     }
     draw_footer(frame, rows[3], app);
 
-    if app.diagnostic_open {
+    if app.process_action.is_some() {
+        draw_process_action(frame, area, app);
+    } else if app.diagnostic_open {
         draw_diagnostic(frame, area, app);
     } else if app.show_help {
         draw_help(frame, area, app.capabilities);
@@ -706,7 +708,12 @@ fn draw_footer(frame: &mut Frame<'_>, area: Rect, app: &App) {
 
 fn footer_text(app: &App, width: u16) -> Line<'static> {
     let mut spans = vec![Span::raw(" ")];
-    let mut actions = vec![("↵", "inspect"), ("r", "refresh"), ("q", "quit")];
+    let mut actions = vec![
+        ("↵", "inspect"),
+        ("a", "action"),
+        ("r", "refresh"),
+        ("q", "quit"),
+    ];
     if width >= 58 {
         actions.splice(0..0, [("/", "search"), ("f", "filter")]);
     }
@@ -751,6 +758,103 @@ fn draw_input(frame: &mut Frame<'_>, area: Rect, app: &App, mode: InputMode) {
     );
     let cursor_x = popup.x + 1 + app.input_buffer.chars().count() as u16;
     frame.set_cursor_position((cursor_x.min(popup.right().saturating_sub(2)), popup.y + 1));
+}
+
+fn draw_process_action(frame: &mut Frame<'_>, area: Rect, app: &App) {
+    let Some(dialog) = app.process_action.as_ref() else {
+        return;
+    };
+    let popup = centered_rect(62, 13, area);
+    frame.render_widget(Clear, popup);
+    let signal = ProcessSignal::ALL[dialog.selection];
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_type(BorderType::Rounded)
+        .border_style(brand_style(app.capabilities))
+        .style(canvas_style(app.capabilities))
+        .title(Span::styled(
+            " PROCESS ACTION ",
+            brand_style(app.capabilities),
+        ));
+
+    match dialog.stage {
+        ProcessActionStage::Choose => {
+            let items: Vec<ListItem<'_>> = ProcessSignal::ALL
+                .iter()
+                .map(|signal| ListItem::new(signal.label()))
+                .collect();
+            let list = List::new(items)
+                .block(block.title_bottom(Span::styled(
+                    format!(
+                        " {} · PID {} · Enter review · Esc cancel ",
+                        dialog.process, dialog.pid
+                    ),
+                    muted_style(app.capabilities),
+                )))
+                .highlight_style(selection_style(app.capabilities))
+                .highlight_symbol(if app.capabilities.unicode {
+                    "▸ "
+                } else {
+                    "> "
+                });
+            let mut state = ListState::default().with_selected(Some(dialog.selection));
+            frame.render_stateful_widget(list, popup, &mut state);
+        }
+        ProcessActionStage::Confirm => {
+            let warning = if signal == ProcessSignal::Kill {
+                "KILL cannot be handled or cleaned up by the process."
+            } else {
+                "Lens will re-check the process identity before sending the signal."
+            };
+            frame.render_widget(
+                Paragraph::new(vec![
+                    Line::from(""),
+                    Line::from(Span::styled(
+                        format!("Send {} to {}?", signal.short_name(), dialog.process),
+                        title_style(app.capabilities).add_modifier(Modifier::BOLD),
+                    )),
+                    Line::from(format!(
+                        "PID {} · start identity {}",
+                        dialog.pid, dialog.start_time_ticks
+                    )),
+                    Line::from(""),
+                    Line::from(Span::styled(warning, attention_style(app.capabilities))),
+                    Line::from(""),
+                    Line::from(vec![
+                        Span::styled(" y ", key_style(app.capabilities)),
+                        Span::raw(" confirm   "),
+                        Span::styled(" Esc ", key_style(app.capabilities)),
+                        Span::raw(" back"),
+                    ]),
+                ])
+                .alignment(Alignment::Center)
+                .block(block),
+                popup,
+            );
+        }
+        ProcessActionStage::Running => {
+            frame.render_widget(
+                Paragraph::new(format!(
+                    "\nSending {} to {} (PID {})…\n\nWaiting for operating-system verification.",
+                    signal.short_name(),
+                    dialog.process,
+                    dialog.pid
+                ))
+                .alignment(Alignment::Center)
+                .block(block),
+                popup,
+            );
+        }
+        ProcessActionStage::Result => {
+            frame.render_widget(
+                Paragraph::new(format!("\n{}\n\nEnter or Esc to close", dialog.result))
+                    .alignment(Alignment::Center)
+                    .wrap(Wrap { trim: false })
+                    .block(block),
+                popup,
+            );
+        }
+    }
 }
 
 fn draw_diagnostic(frame: &mut Frame<'_>, area: Rect, app: &App) {
@@ -856,6 +960,7 @@ fn draw_help(frame: &mut Frame<'_>, area: Rect, capabilities: TerminalCapabiliti
     let help = vec![
         help_line("↑/↓  j/k", "Move through processes", capabilities),
         help_line("↵", "Inspect selected process", capabilities),
+        help_line("a", "Act on selected process", capabilities),
         help_line("esc", "Go back or close", capabilities),
         help_line("/", "Search everything", capabilities),
         help_line("f", "Filter expression", capabilities),

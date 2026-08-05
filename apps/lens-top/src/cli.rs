@@ -155,6 +155,10 @@ pub struct Args {
     #[arg(long, requires = "signal")]
     pub pid: Option<u32>,
 
+    /// Expected process start time used to reject a recycled PID.
+    #[arg(long, hide = true, requires = "signal")]
+    pub expect_start_ticks: Option<u64>,
+
     /// Confirm a requested process signal for non-interactive use.
     #[arg(long, requires = "signal")]
     pub yes: bool,

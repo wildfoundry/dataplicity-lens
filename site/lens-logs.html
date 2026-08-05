@@ -71,7 +71,7 @@
         <h2>Filters and options</h2>
         <div class="key-grid">
           <div class="key-row"><span><code>--since VALUE</code></span><span>Limit the native platform log by time. Use journalctl syntax on Linux and durations such as <code>1h</code> or <code>30m</code> on macOS.</span></div>
-          <div class="key-row"><span><code>--service NAME</code></span><span>Keep logs attributed to a matching systemd unit. Linux only in v0.2.</span></div>
+          <div class="key-row"><span><code>--service NAME</code></span><span>Keep logs attributed to a matching systemd unit. Linux only.</span></div>
           <div class="key-row"><span><code>--process TEXT</code></span><span>Case-insensitive substring match against the complete message, useful for a process name or PID.</span></div>
           <div class="key-row"><span><code>--severity VALUE</code></span><span>Keep the inferred label <code>error</code> or <code>warning</code>. Messages without either label are excluded.</span></div>
           <div class="key-row"><span><code>--filter TEXT</code></span><span>Case-insensitive substring match against the message after the other filters.</span></div>
@@ -96,10 +96,10 @@
         <ul>
           <li>Runs <code>/usr/bin/log show --style syslog --last VALUE --info --debug</code>. The default time window is <code>1h</code>.</li>
           <li>Keeps the newest 1,000 returned messages by default; <code>--limit 0</code> keeps every message in the selected time range.</li>
-          <li>Unified-log entries do not carry a normalized service unit in v0.2, so use <code>--process</code> or <code>--filter</code> instead of <code>--service</code>.</li>
+          <li>Unified-log entries do not carry a normalized service unit, so use <code>--process</code> or <code>--filter</code> instead of <code>--service</code>.</li>
         </ul>
         <h3>Severity and repeat detection</h3>
-        <p>In v0.2, severity is a text heuristic: messages containing <code>error</code> or <code>failed</code> become <code>error</code>; messages containing <code>warn</code> become <code>warning</code>. It is not the native journal priority or macOS log level. Repeat folding compares adjacent message text exactly.</p>
+        <p>Severity is currently a text heuristic: messages containing <code>error</code> or <code>failed</code> become <code>error</code>; messages containing <code>warn</code> become <code>warning</code>. It is not the native journal priority or macOS log level. Repeat folding compares adjacent message text exactly.</p>
         <div class="callout warm"><strong>Choose the range deliberately for large investigations.</strong><p>The default is the newest 1,000 messages. Combine <code>--since</code> with <code>--limit 0</code> when you need every retained message in a known time range. Use <code>journalctl</code> or <code>log stream</code> when you need a continuously updating stream.</p></div>
       </section>
 

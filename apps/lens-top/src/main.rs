@@ -171,6 +171,12 @@ fn run_process_action(args: &Args, sampler: &mut Sampler) -> Result<()> {
         .with_context(|| format!("PID {pid} is not running or is not visible"))?;
     let identity = target.identity();
     let process = target.name.clone();
+    if args
+        .expect_start_ticks
+        .is_some_and(|expected| expected != identity.1)
+    {
+        bail!("PID {pid} changed or exited before confirmation; no signal was sent");
+    }
     if args.dry_run {
         return write_process_action(
             args,

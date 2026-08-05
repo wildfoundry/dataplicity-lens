@@ -16,6 +16,8 @@ versioning once the first public release is tagged.
 - Raspberry Pi OS packages for 64-bit and 32-bit Raspberry Pi systems.
 - Responsive diagnostic shell overlays that keep live system data visible while local commands run.
 - Local clock information throughout the interactive suite.
+- Guarded interactive process signals and systemd service actions with pinned targets, explicit
+  review, confirmation and post-action verification.
 
 ### Changed
 
@@ -38,6 +40,10 @@ versioning once the first public release is tagged.
 - User documentation now leads with installation and live collection; deterministic sample data is
   kept in contributor documentation.
 - Pull requests no longer repeat complete release-bundle assembly after the parallel CI builds.
+- Cockpit log summaries now distinguish collection failure from a genuine zero-entry result.
+- Wide storage detail views use paired fields instead of leaving most of the terminal empty.
+- Installation guidance now starts with Raspberry Pi OS and Debian packages, with macOS as a
+  supported secondary path.
 
 ## [0.2.0] - unreleased
 

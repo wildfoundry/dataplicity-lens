@@ -28,6 +28,22 @@ is the whole idea.
 
 ## Install
 
+### Raspberry Pi OS, Debian and Ubuntu
+
+Download the package matching `dpkg --print-architecture` from the
+[latest release](https://github.com/wildfoundry/dataplicity-lens/releases/latest), then install it
+through `apt`:
+
+```sh
+dpkg --print-architecture
+sudo apt install ./dataplicity-lens_<version>_<architecture>.deb
+lens
+```
+
+Use `armhf` for 32-bit Raspberry Pi OS, `arm64` for 64-bit Raspberry Pi OS and ARM gateways, and
+`amd64` for Intel/AMD Debian or Ubuntu. The release also contains checksummed GNU and musl archives
+and RPM packages for other Linux systems.
+
 ### macOS with Homebrew
 
 Install Homebrew and Apple's command-line tools if they are not already present, then build, install
@@ -64,34 +80,8 @@ brew uninstall dataplicity-lens
 brew untap local/dataplicity-lens-test
 ```
 
-See [`docs/INSTALLING.md`](docs/INSTALLING.md) for prerequisites, troubleshooting, direct source
-builds and the behaviour of macOS privacy restrictions.
-
-The intended installation path is a signed GitHub Release asset. Choose the archive or native package
-for your architecture, verify it against `SHA256SUMS`, then install it.
-
-Raspberry Pi OS is supported in both forms. Run `dpkg --print-architecture`: use the
-`aarch64-unknown-linux-gnu` archive or `arm64` Debian package when it prints `arm64`, and use the
-`arm-unknown-linux-gnueabihf` archive or `armhf` Debian package when it prints `armhf`. The 32-bit
-ARMv6 hard-float build runs across the Raspberry Pi models supported by 32-bit Raspberry Pi OS.
-
-```sh
-# Archive example
-curl -LO <release-asset-url>/dataplicity-lens-v0.3.0-x86_64-unknown-linux-gnu.tar.gz
-curl -LO <release-asset-url>/SHA256SUMS
-sha256sum --check SHA256SUMS --ignore-missing
-tar -xzf dataplicity-lens-v0.3.0-x86_64-unknown-linux-gnu.tar.gz
-sudo install -m 0755 dataplicity-lens-v0.3.0-x86_64-unknown-linux-gnu/bin/* /usr/local/bin/
-
-# Debian package example
-sudo apt install ./dataplicity-lens_0.3.0_amd64.deb
-
-# Raspberry Pi OS 32-bit example
-sudo apt install ./dataplicity-lens_0.3.0_armhf.deb
-
-# RPM package example
-sudo rpm -U ./dataplicity-lens-0.3.0-1.x86_64.rpm
-```
+See [`docs/INSTALLING.md`](docs/INSTALLING.md) for the package matrix, checksum verification, macOS
+prerequisites, removal and source builds.
 
 Until the first release is published, build from source with the pinned toolchain:
 
@@ -155,6 +145,7 @@ lens-top --no-color
 | --- | --- |
 | `Up` / `Down` or `j` / `k` | Move |
 | `Enter` | Inspect selected process |
+| `a` | Review and run a signal against the selected process |
 | `Esc` | Go back or close an overlay |
 | `/` | Search name, command, PID, user, service and cgroup |
 | `f` | Filter (`user:`, `state:`, `cpu:>`, `mem:>`, `name:`, `service:`) |
@@ -167,7 +158,7 @@ lens-top --no-color
 | `?` | Help |
 | `q` or `Ctrl+C` | Quit |
 
-Process signals are available as explicit one-shot commands. Lens resolves the process before acting,
+Process signals are available from the interactive `a` menu and as explicit one-shot commands. Lens resolves the process before acting,
 checks its PID/start-time identity again immediately before execution, requires `--yes`, and reports
 the observed result. Use `--dry-run` first:
 
@@ -176,7 +167,7 @@ lens-top --signal term --pid 4242 --dry-run
 lens-top --signal term --pid 4242 --yes
 ```
 
-On systemd Linux, services can be started, stopped, restarted, enabled or disabled with the same
+On systemd Linux, press `a` on a selected service, or use the CLI to start, stop, restart, enable or disable it with the same
 plan/confirm/result pattern. Lens does not run itself as root; system policy decides whether the
 invoking account may perform the action.
 

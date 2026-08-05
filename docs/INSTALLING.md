@@ -1,6 +1,52 @@
 # Installing Dataplicity Lens
 
-Lens supports Linux and macOS. Run it as your normal user.
+Lens is built first for Linux systems in the field, including Raspberry Pi OS, Debian and Ubuntu.
+macOS is also supported for local development and support work. Run Lens as your normal user; only a
+specific systemd action may ask for authorisation under the machine's existing policy.
+
+## Raspberry Pi OS, Debian and Ubuntu
+
+Download the Debian package for the machine from the
+[latest GitHub release](https://github.com/wildfoundry/dataplicity-lens/releases/latest). Check the
+architecture on the target itself:
+
+```sh
+dpkg --print-architecture
+```
+
+Choose the package with the matching suffix:
+
+| Output | Package | Typical systems |
+| --- | --- | --- |
+| `armhf` | `dataplicity-lens_<version>_armhf.deb` | 32-bit Raspberry Pi OS |
+| `arm64` | `dataplicity-lens_<version>_arm64.deb` | 64-bit Raspberry Pi OS and ARM gateways |
+| `amd64` | `dataplicity-lens_<version>_amd64.deb` | Intel/AMD Debian and Ubuntu systems |
+
+Then install the downloaded package and open the live overview:
+
+```sh
+sudo apt install ./dataplicity-lens_<version>_<architecture>.deb
+lens
+```
+
+This is a local package install through `apt`; it resolves package requirements and registers Lens
+with the system package database. The `armhf` build targets the hard-float ABI used by 32-bit
+Raspberry Pi OS. All seven commands and their manual pages are installed under `/usr`.
+
+For a quick non-interactive check on an unattended device:
+
+```sh
+lens-top --once
+lens-health --json
+```
+
+Remove it with `sudo apt remove dataplicity-lens`.
+
+## Other Linux systems
+
+Releases include GNU and statically linked musl archives for x86-64, ARM64 and ARM hard-float, plus
+RPM packages for supported Fedora/RHEL-family targets. Verify the selected artifact with
+`SHA256SUMS`, unpack it, and install the binaries in `/usr/local/bin`.
 
 ## macOS with Homebrew
 
@@ -51,27 +97,6 @@ brew untap local/dataplicity-lens-test
 Run `scripts/test-homebrew-local.sh` without `--keep` when you only want a clean verification; it
 automatically removes the package and tap after its tests pass.
 
-## Raspberry Pi OS
-
-Release artifacts support both 64-bit and 32-bit Raspberry Pi OS. Check the installed userland before
-downloading a package:
-
-```sh
-dpkg --print-architecture
-```
-
-- `arm64`: use the `aarch64-unknown-linux-gnu` archive or `dataplicity-lens_0.3.0_arm64.deb`.
-- `armhf`: use the `arm-unknown-linux-gnueabihf` archive or `dataplicity-lens_0.3.0_armhf.deb`.
-
-The `armhf` release targets ARMv6 with the hard-float ABI so it also runs on newer Raspberry Pi models
-using the 32-bit operating system. Install the Debian package, then check both sample and native data:
-
-```sh
-sudo apt install ./dataplicity-lens_0.3.0_armhf.deb
-lens
-lens-top --once
-```
-
 ## Build directly from source
 
 The workspace pins its Rust toolchain. Build every command with:
@@ -85,8 +110,5 @@ cargo build --release --locked --workspace
 
 The executables are written to `target/release/`.
 
-## Release archives and Linux packages
-
-Release automation produces checksummed archives for Apple Silicon macOS, Intel macOS, x86-64 Linux,
-ARM64 Linux and 32-bit Raspberry Pi OS. Linux releases also include Debian and RPM packages. Verify
-downloaded artifacts against `SHA256SUMS` before installing them.
+Source builds are primarily for contributors. Operators should prefer a release package so the exact
+build can be identified and cleanly upgraded or removed.
