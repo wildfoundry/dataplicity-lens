@@ -771,13 +771,26 @@ fn draw_diagnostic(frame: &mut Frame<'_>, area: Rect, app: &App) {
     };
     frame.render_widget(Clear, panel);
     let status = if app.diagnostic_running {
-        " running… "
+        " Running command… · Esc close "
     } else {
-        " Enter run · Esc close "
+        " Results appear here · Esc close "
     };
     let inner_height = panel.height.saturating_sub(4) as usize;
-    let start = app.diagnostic_output.len().saturating_sub(inner_height);
-    let output = app.diagnostic_output[start..].join("\n");
+    let output = if app.diagnostic_output.is_empty() {
+        [
+            "Run a command without leaving this view.",
+            "Lens keeps updating behind this panel.",
+            "",
+            "Try one of these:",
+            "  uptime",
+            "  df -h",
+            "  ps aux | head",
+        ]
+        .join("\n")
+    } else {
+        let start = app.diagnostic_output.len().saturating_sub(inner_height);
+        app.diagnostic_output[start..].join("\n")
+    };
     let rows = Layout::default()
         .direction(Direction::Vertical)
         .constraints([Constraint::Min(1), Constraint::Length(3)])
@@ -793,7 +806,7 @@ fn draw_diagnostic(frame: &mut Frame<'_>, area: Rect, app: &App) {
                     .border_style(brand_style(app.capabilities))
                     .style(canvas_style(app.capabilities))
                     .title(Span::styled(
-                        " DIAGNOSTIC SHELL ",
+                        " COMMAND OUTPUT ",
                         label_style(app.capabilities),
                     ))
                     .title_bottom(Span::styled(status, muted_style(app.capabilities))),
@@ -801,9 +814,9 @@ fn draw_diagnostic(frame: &mut Frame<'_>, area: Rect, app: &App) {
         rows[0],
     );
     let prompt = if app.diagnostic_running {
-        "waiting for command…"
+        "Running…".to_owned()
     } else {
-        app.diagnostic_input.as_str()
+        format!("$ {}", app.diagnostic_input)
     };
     frame.render_widget(
         Paragraph::new(prompt)
@@ -814,12 +827,16 @@ fn draw_diagnostic(frame: &mut Frame<'_>, area: Rect, app: &App) {
                     .border_type(BorderType::Rounded)
                     .border_style(border_style(app.capabilities))
                     .style(canvas_style(app.capabilities))
-                    .title(" $ "),
+                    .title(Span::styled(" COMMAND ", label_style(app.capabilities)))
+                    .title_bottom(Span::styled(
+                        " Enter to run ",
+                        muted_style(app.capabilities),
+                    )),
             ),
         rows[1],
     );
     if !app.diagnostic_running {
-        let cursor_x = rows[1].x + 1 + app.diagnostic_input.chars().count() as u16;
+        let cursor_x = rows[1].x + 3 + app.diagnostic_input.chars().count() as u16;
         frame.set_cursor_position((
             cursor_x.min(rows[1].right().saturating_sub(2)),
             rows[1].y + 1,
@@ -1362,5 +1379,36 @@ mod tests {
         let rendered = rendered_text(&terminal);
         assert!(rendered.contains("SERVICE/CGROUP"));
         assert!(rendered.contains("MEMORY"));
+    }
+
+    #[test]
+    fn diagnostic_shell_has_a_clear_empty_state_and_command_field() {
+        let backend = TestBackend::new(180, 50);
+        let mut terminal = Terminal::new(backend).expect("test terminal");
+        let options = UiOptions {
+            interval: std::time::Duration::from_secs(1),
+            sort_key: SortKey::Cpu,
+            sort_direction: SortDirection::Descending,
+            group: GroupMode::None,
+            filter: ProcessFilter::default(),
+            limit: None,
+            history_length: 10,
+            color_mode: ColorMode::Never,
+            ascii: true,
+        };
+        let capabilities = TerminalCapabilities::detect(ColorMode::Never, true);
+        let mut app = App::new(Snapshot::empty("fixture"), options, capabilities);
+        app.diagnostic_open = true;
+
+        terminal
+            .draw(|frame| draw(frame, &mut app))
+            .expect("render diagnostic shell");
+
+        let rendered = rendered_text(&terminal);
+        assert!(rendered.contains("COMMAND OUTPUT"));
+        assert!(rendered.contains("COMMAND"));
+        assert!(rendered.contains("Run a command without leaving this view."));
+        assert!(rendered.contains("uptime"));
+        assert!(rendered.contains("Enter to run"));
     }
 }

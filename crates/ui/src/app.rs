@@ -82,10 +82,7 @@ impl App {
             show_sort: false,
             diagnostic_open: false,
             diagnostic_input: String::new(),
-            diagnostic_output: vec![
-                "Run a local diagnostic command without leaving Lens.".to_owned(),
-                "Commands use your normal shell and your current permissions.".to_owned(),
-            ],
+            diagnostic_output: Vec::new(),
             diagnostic_running: false,
             sort_selection: SortKey::ALL
                 .iter()

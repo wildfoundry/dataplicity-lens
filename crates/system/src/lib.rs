@@ -2412,10 +2412,7 @@ impl DiagnosticShell {
         Self {
             open: false,
             input: String::new(),
-            output: vec![
-                "Run a local diagnostic command without leaving Lens.".to_owned(),
-                "Commands use your normal shell and current permissions.".to_owned(),
-            ],
+            output: Vec::new(),
             running: false,
             receiver: None,
         }
@@ -2518,34 +2515,54 @@ fn render_diagnostic_overlay(stdout: &mut impl Write, shell: &DiagnosticShell) -
     }
     let inner = usize::from(width - 2);
     let output_rows = usize::from(height.saturating_sub(5));
-    let start = shell.output.len().saturating_sub(output_rows);
+    let empty_output = [
+        "Run a command without leaving this view.",
+        "Lens keeps updating behind this panel.",
+        "",
+        "Try one of these:",
+        "  uptime",
+        "  df -h",
+        "  ps aux | head",
+    ];
+    let visible_output: Vec<&str> = if shell.output.is_empty() {
+        empty_output.to_vec()
+    } else {
+        let start = shell.output.len().saturating_sub(output_rows);
+        shell.output[start..].iter().map(String::as_str).collect()
+    };
     execute!(stdout, cursor::MoveTo(x, y))?;
+    let title = "COMMAND OUTPUT";
     write!(
         stdout,
-        "╭─DIAGNOSTIC SHELL{}╮",
-        "─".repeat(inner.saturating_sub(17))
+        "╭─{title}{}╮",
+        "─".repeat(inner.saturating_sub(title.len() + 1))
     )?;
-    for (row, line) in shell.output[start..].iter().take(output_rows).enumerate() {
+    for (row, line) in visible_output.iter().take(output_rows).enumerate() {
         execute!(stdout, cursor::MoveTo(x, y + 1 + row as u16))?;
         let line = truncate_text(line, inner);
         write!(stdout, "│{line:<inner$}│")?;
     }
-    for row in shell.output[start..].len()..output_rows {
+    for row in visible_output.len().min(output_rows)..output_rows {
         execute!(stdout, cursor::MoveTo(x, y + 1 + row as u16))?;
         write!(stdout, "│{:<inner$}│", "")?;
     }
     execute!(stdout, cursor::MoveTo(x, y + height - 4))?;
-    write!(stdout, "├{}┤", "─".repeat(inner))?;
+    let command_title = " COMMAND ";
+    write!(
+        stdout,
+        "├{command_title}{}┤",
+        "─".repeat(inner.saturating_sub(command_title.len()))
+    )?;
     execute!(stdout, cursor::MoveTo(x, y + height - 3))?;
     let prompt = if shell.running {
-        "waiting for command…".to_owned()
+        "Running…".to_owned()
     } else {
         format!("$ {}", shell.input)
     };
     let prompt = truncate_text(&prompt, inner);
     write!(stdout, "│{prompt:<inner$}│")?;
     execute!(stdout, cursor::MoveTo(x, y + height - 2))?;
-    let help = truncate_text("Enter run · Esc close", inner);
+    let help = truncate_text("Enter to run · Esc to close · results appear above", inner);
     write!(stdout, "│{help:<inner$}│")?;
     execute!(stdout, cursor::MoveTo(x, y + height - 1))?;
     write!(stdout, "╰{}╯", "─".repeat(inner))?;
