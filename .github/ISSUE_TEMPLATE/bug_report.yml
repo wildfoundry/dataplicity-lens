@@ -1,20 +1,47 @@
 name: Bug report
 description: Report incorrect behaviour or a crash
 title: "[bug] "
+labels: ["bug"]
 body:
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Before reporting
+      options:
+        - label: I searched existing issues for the same problem.
+          required: true
+        - label: I tested the latest available Lens build or release.
+          required: true
   - type: textarea
+    id: problem
     attributes:
       label: What happened?
       description: Include the command, expected result and actual result.
+      placeholder: Tell us what you were trying to do and what Lens did instead.
     validations:
       required: true
   - type: textarea
+    id: reproduce
+    attributes:
+      label: How can we reproduce it?
+      description: Give the smallest set of commands or steps that reliably shows the problem.
+      placeholder: |
+        1. Run `lens-top`
+        2. Press ...
+        3. Observe ...
+    validations:
+      required: true
+  - type: textarea
+    id: environment
     attributes:
       label: Environment
-      description: Lens version, Linux distribution, kernel, architecture and terminal.
+      description: Include `lens-top --version`, operating system, architecture and terminal application.
+      render: shell
     validations:
       required: true
   - type: textarea
+    id: evidence
     attributes:
-      label: Reproduction
-      description: Minimal steps or a safe fixture that reproduces the issue.
+      label: Relevant output
+      description: Paste errors, logs or screenshots after removing hostnames, usernames, addresses and other sensitive data.
+      render: shell

@@ -1,10 +1,20 @@
 # Security policy
 
+## Supported versions
+
+Before 1.0, security fixes are made against the latest published release. We may ask reporters to
+confirm an issue against the current `main` branch when the relevant code has changed. Older preview
+releases do not receive separate security updates.
+
 ## Reporting a vulnerability
 
 Do not open a public issue for a suspected vulnerability. Report it privately through GitHub's
-security advisory flow for this repository. Include affected versions, reproduction steps and any
-known mitigation.
+security advisory flow for this repository. Include affected versions, reproduction steps, impact
+and any known mitigation. Do not include credentials, private keys or system data that is not needed
+to understand the report.
+
+We will keep the report private while it is assessed and, when a fix is required, coordinate the
+release and disclosure with the reporter.
 
 ## Trust model
 
