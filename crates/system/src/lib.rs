@@ -86,7 +86,7 @@ pub enum CompletionShell {
     Fish,
 }
 
-#[derive(Debug, Clone, Copy, ValueEnum, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ServiceAction {
     Start,
@@ -94,6 +94,36 @@ pub enum ServiceAction {
     Restart,
     Enable,
     Disable,
+}
+
+impl ServiceAction {
+    const ALL: [Self; 5] = [
+        Self::Restart,
+        Self::Start,
+        Self::Stop,
+        Self::Enable,
+        Self::Disable,
+    ];
+
+    const fn cli_name(self) -> &'static str {
+        match self {
+            Self::Start => "start",
+            Self::Stop => "stop",
+            Self::Restart => "restart",
+            Self::Enable => "enable",
+            Self::Disable => "disable",
+        }
+    }
+
+    const fn label(self) -> &'static str {
+        match self {
+            Self::Start => "Start the service now",
+            Self::Stop => "Stop the service now",
+            Self::Restart => "Restart the service",
+            Self::Enable => "Enable at boot",
+            Self::Disable => "Disable at boot",
+        }
+    }
 }
 
 #[derive(Debug, Clone, Parser)]
@@ -577,7 +607,7 @@ fn spawn_cockpit_collection(
         {
             return;
         }
-        let snapshot = enrich_snapshot(base, since.as_deref(), &log_files);
+        let snapshot = enrich_snapshot(base, cockpit_log_since(since.as_deref()), &log_files);
         let _ = sender.send(CockpitUpdate {
             snapshot,
             loading: false,
@@ -1119,6 +1149,9 @@ fn cockpit_view_summary(view: View, snapshot: &SystemSnapshot, loading: bool) ->
     match view {
         View::Processes => format!("{} processes", snapshot.processes.len()),
         View::Services => format!("{} services", snapshot.services.len()),
+        View::Logs if snapshot.logs.is_empty() && log_collection_failed(snapshot) => {
+            "log collection unavailable".into()
+        }
         View::Logs => format!("{} recent entries", snapshot.logs.len()),
         View::Disk => snapshot
             .mounts
@@ -1136,6 +1169,21 @@ fn cockpit_view_summary(view: View, snapshot: &SystemSnapshot, loading: bool) ->
         ),
         View::Health => format!("{} findings", snapshot.findings.len()),
     }
+}
+
+fn log_collection_failed(snapshot: &SystemSnapshot) -> bool {
+    snapshot.collection_warnings.iter().any(|warning| {
+        warning.contains("journalctl")
+            || warning.contains("/usr/bin/log")
+            || warning.contains("log timed out")
+    })
+}
+
+fn cockpit_log_since(requested: Option<&str>) -> Option<&str> {
+    #[cfg(target_os = "macos")]
+    return requested.or(Some("1m"));
+    #[cfg(not(target_os = "macos"))]
+    return requested;
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -1454,15 +1502,25 @@ fn render_specialist(
                 ink("quit", Ink::Muted, colour),
             )?;
         } else {
+            let action_hint = if view == View::Services && cfg!(target_os = "linux") {
+                format!(
+                    "   {} {}",
+                    keycap("a", colour),
+                    ink("action", Ink::Muted, colour)
+                )
+            } else {
+                String::new()
+            };
             writeln!(
                 stdout,
-                "  {} {}   {} {}   {} {}   {} {}   {} {}   {} {}",
+                "  {} {}   {} {}   {} {}{}   {} {}   {} {}   {} {}",
                 keycap("↑↓", colour),
                 ink("move", Ink::Muted, colour),
                 keycap("↵", colour),
                 ink("inspect", Ink::Muted, colour),
                 keycap("/", colour),
                 ink("search", Ink::Muted, colour),
+                action_hint,
                 keycap("r", colour),
                 ink("refresh", Ink::Muted, colour),
                 keycap("!", colour),
@@ -1757,44 +1815,88 @@ fn render_disk_specialist(
         if let Some(mount) = snapshot.mounts.get(selected) {
             writeln!(out, "\n  {}", ink("MOUNT", Ink::Label, colour))?;
             writeln!(out, "  {}", ink(&mount.target, Ink::Bright, colour))?;
-            writeln!(
-                out,
-                "  {} {}",
-                ink("SOURCE", Ink::Label, colour),
-                mount.source
-            )?;
-            writeln!(
-                out,
-                "  {} {}",
-                ink("FILESYSTEM", Ink::Label, colour),
-                mount.filesystem
-            )?;
-            writeln!(
-                out,
-                "  {} {:.1}%  ({} used, {} available)",
-                ink("CAPACITY", Ink::Label, colour),
-                mount.used_percent,
-                human_bytes(mount.used_bytes),
-                human_bytes(mount.available_bytes)
-            )?;
-            if let (Some(used), Some(total)) = (mount.inode_used, mount.inode_total) {
+            if width >= 80 {
+                let value_width = width.saturating_sub(28) / 2;
                 writeln!(
                     out,
-                    "  {} {used} of {total}",
-                    ink("INODES", Ink::Label, colour)
+                    "  {} {:<value_width$}  {} {}",
+                    ink("SOURCE", Ink::Label, colour),
+                    truncate_text(&mount.source, value_width),
+                    ink("FILESYSTEM", Ink::Label, colour),
+                    mount.filesystem,
                 )?;
+                writeln!(
+                    out,
+                    "  {} {:<value_width$}  {} {}",
+                    ink("USED", Ink::Label, colour),
+                    human_bytes(mount.used_bytes),
+                    ink("AVAILABLE", Ink::Label, colour),
+                    human_bytes(mount.available_bytes),
+                )?;
+                let inode_summary = match (mount.inode_used, mount.inode_total) {
+                    (Some(used), Some(total)) => format!("{used} of {total}"),
+                    _ => "unavailable".into(),
+                };
+                writeln!(
+                    out,
+                    "  {} {:<value_width$}  {} {}",
+                    ink("CAPACITY", Ink::Label, colour),
+                    format!("{:.1}%", mount.used_percent),
+                    ink("INODES", Ink::Label, colour),
+                    inode_summary,
+                )?;
+            } else {
+                writeln!(
+                    out,
+                    "  {} {}",
+                    ink("SOURCE", Ink::Label, colour),
+                    mount.source
+                )?;
+                writeln!(
+                    out,
+                    "  {} {}",
+                    ink("FILESYSTEM", Ink::Label, colour),
+                    mount.filesystem
+                )?;
+                writeln!(
+                    out,
+                    "  {} {:.1}%  ({} used, {} available)",
+                    ink("CAPACITY", Ink::Label, colour),
+                    mount.used_percent,
+                    human_bytes(mount.used_bytes),
+                    human_bytes(mount.available_bytes)
+                )?;
+                if let (Some(used), Some(total)) = (mount.inode_used, mount.inode_total) {
+                    writeln!(
+                        out,
+                        "  {} {used} of {total}",
+                        ink("INODES", Ink::Label, colour)
+                    )?;
+                }
             }
         } else {
             let device = &snapshot.block_devices[selected - snapshot.mounts.len()];
             writeln!(out, "\n  {}", ink("BLOCK DEVICE", Ink::Label, colour))?;
             writeln!(out, "  {}", ink(&device.name, Ink::Bright, colour))?;
-            writeln!(out, "  {} {}", ink("TYPE", Ink::Label, colour), device.kind)?;
-            writeln!(
-                out,
-                "  {} {}",
-                ink("SIZE", Ink::Label, colour),
-                human_bytes(device.size_bytes)
-            )?;
+            if width >= 80 {
+                let value_width = width.saturating_sub(22) / 2;
+                writeln!(
+                    out,
+                    "  {} {:<value_width$}  {} {}",
+                    ink("TYPE", Ink::Label, colour),
+                    device.kind,
+                    ink("SIZE", Ink::Label, colour),
+                    human_bytes(device.size_bytes)
+                )?;
+            } else {
+                writeln!(out, "  {} {}", ink("TYPE", Ink::Label, colour), device.kind)?;
+                writeln!(
+                    out,
+                    "  {} {}",
+                    ink("SIZE", Ink::Label, colour),
+                    human_bytes(device.size_bytes)
+                )?;
+            }
             writeln!(
                 out,
                 "  {} {}",
@@ -2246,6 +2348,7 @@ fn specialist_loop(view: View, args: &ViewArgs, stdout: &mut impl Write) -> Resu
     let mut inspecting = false;
     let mut search_query: Option<String> = None;
     let mut diagnostic = DiagnosticShell::new();
+    let mut service_action: Option<ServiceActionDialog> = None;
     let mut next_clock = Instant::now() + Duration::from_secs(1);
     let mut redraw = true;
     loop {
@@ -2254,6 +2357,12 @@ fn specialist_loop(view: View, args: &ViewArgs, stdout: &mut impl Write) -> Resu
             redraw = true;
         }
         if diagnostic.poll() {
+            redraw = true;
+        }
+        if service_action
+            .as_mut()
+            .is_some_and(ServiceActionDialog::poll)
+        {
             redraw = true;
         }
         match receiver.try_recv() {
@@ -2286,6 +2395,9 @@ fn specialist_loop(view: View, args: &ViewArgs, stdout: &mut impl Write) -> Resu
             if diagnostic.open {
                 render_diagnostic_overlay(stdout, &diagnostic)?;
             }
+            if let Some(dialog) = service_action.as_ref() {
+                render_service_action_overlay(stdout, dialog)?;
+            }
             redraw = false;
         }
 
@@ -2298,6 +2410,20 @@ fn specialist_loop(view: View, args: &ViewArgs, stdout: &mut impl Write) -> Resu
             let Event::Key(key) = event else {
                 continue;
             };
+            if let Some(dialog) = service_action.as_mut() {
+                let completed = dialog.stage == ServiceActionStage::Result;
+                if dialog.handle_key(key) {
+                    service_action = None;
+                    if completed {
+                        snapshot = SystemSnapshot::empty(hostname());
+                        receiver = spawn_specialist_collection(view, active_args.clone());
+                        loading = true;
+                        status = "Refreshing service state after action…".into();
+                    }
+                }
+                redraw = true;
+                continue;
+            }
             if diagnostic.open {
                 diagnostic.handle_key(key);
                 redraw = true;
@@ -2359,6 +2485,18 @@ fn specialist_loop(view: View, args: &ViewArgs, stdout: &mut impl Write) -> Resu
                     diagnostic.open = true;
                     redraw = true;
                 }
+                KeyCode::Char('a') if view == View::Services && !inspecting => {
+                    #[cfg(target_os = "linux")]
+                    if let Some(service) = snapshot.services.get(selected) {
+                        service_action = Some(ServiceActionDialog::new(service.name.clone()));
+                    }
+                    #[cfg(not(target_os = "linux"))]
+                    {
+                        status = "Service actions require systemd on Linux; no change was made."
+                            .to_owned();
+                    }
+                    redraw = true;
+                }
                 KeyCode::Char('r') => {
                     snapshot = SystemSnapshot::empty(hostname());
                     receiver = spawn_specialist_collection(view, active_args.clone());
@@ -2372,6 +2510,199 @@ fn specialist_loop(view: View, args: &ViewArgs, stdout: &mut impl Write) -> Resu
             }
         }
     }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ServiceActionStage {
+    Choose,
+    Confirm,
+    Running,
+    Result,
+}
+
+struct ServiceActionDialog {
+    target: String,
+    selection: usize,
+    stage: ServiceActionStage,
+    result: String,
+    receiver: Option<Receiver<String>>,
+}
+
+impl ServiceActionDialog {
+    #[cfg(target_os = "linux")]
+    fn new(target: String) -> Self {
+        Self {
+            target,
+            selection: 0,
+            stage: ServiceActionStage::Choose,
+            result: String::new(),
+            receiver: None,
+        }
+    }
+
+    fn poll(&mut self) -> bool {
+        let Some(receiver) = self.receiver.as_ref() else {
+            return false;
+        };
+        match receiver.try_recv() {
+            Ok(result) => {
+                self.result = result;
+                self.stage = ServiceActionStage::Result;
+                self.receiver = None;
+                true
+            }
+            Err(TryRecvError::Disconnected) => {
+                self.result = "Service action stopped unexpectedly; check the unit state.".into();
+                self.stage = ServiceActionStage::Result;
+                self.receiver = None;
+                true
+            }
+            Err(TryRecvError::Empty) => false,
+        }
+    }
+
+    fn handle_key(&mut self, key: crossterm::event::KeyEvent) -> bool {
+        match self.stage {
+            ServiceActionStage::Choose => match key.code {
+                KeyCode::Esc => return true,
+                KeyCode::Down | KeyCode::Char('j') => {
+                    self.selection = (self.selection + 1).min(ServiceAction::ALL.len() - 1);
+                }
+                KeyCode::Up | KeyCode::Char('k') => {
+                    self.selection = self.selection.saturating_sub(1);
+                }
+                KeyCode::Enter => self.stage = ServiceActionStage::Confirm,
+                _ => {}
+            },
+            ServiceActionStage::Confirm => match key.code {
+                KeyCode::Esc => self.stage = ServiceActionStage::Choose,
+                KeyCode::Char('y') | KeyCode::Char('Y') => self.execute(),
+                _ => {}
+            },
+            ServiceActionStage::Running => {}
+            ServiceActionStage::Result => {
+                if matches!(key.code, KeyCode::Esc | KeyCode::Enter) {
+                    return true;
+                }
+            }
+        }
+        false
+    }
+
+    fn execute(&mut self) {
+        let action = ServiceAction::ALL[self.selection];
+        let target = self.target.clone();
+        let (sender, receiver) = mpsc::channel();
+        self.receiver = Some(receiver);
+        self.stage = ServiceActionStage::Running;
+        thread::spawn(move || {
+            let _ = sender.send(run_service_action_command(action, &target));
+        });
+    }
+}
+
+fn run_service_action_command(action: ServiceAction, target: &str) -> String {
+    let executable = match env::current_exe() {
+        Ok(executable) => executable,
+        Err(error) => return format!("Unable to locate lens-services: {error}"),
+    };
+    match Command::new(executable)
+        .args(["--action", action.cli_name(), "--target", target, "--yes"])
+        .output()
+    {
+        Ok(output) => {
+            let mut text = String::from_utf8_lossy(&output.stdout).into_owned();
+            text.push_str(&String::from_utf8_lossy(&output.stderr));
+            let text = sanitise_terminal_output(&text);
+            if output.status.success() {
+                text.trim().to_owned()
+            } else {
+                format!("Action failed: {}", text.trim())
+            }
+        }
+        Err(error) => format!("Unable to run service action: {error}"),
+    }
+}
+
+fn render_service_action_overlay(
+    stdout: &mut impl Write,
+    dialog: &ServiceActionDialog,
+) -> Result<()> {
+    let (columns, rows) = terminal::size().unwrap_or((80, 24));
+    let width = columns.saturating_sub(2).clamp(38, 74);
+    let height = 12u16.min(rows.saturating_sub(2));
+    let x = columns.saturating_sub(width) / 2;
+    let y = rows.saturating_sub(height) / 2;
+    let inner = usize::from(width.saturating_sub(2));
+    let colour = terminal_colour_enabled();
+    execute!(stdout, cursor::MoveTo(x, y))?;
+    write!(
+        stdout,
+        "╭─SERVICE ACTION{}╮",
+        "─".repeat(inner.saturating_sub(15))
+    )?;
+    let action = ServiceAction::ALL[dialog.selection];
+    let mut lines = match dialog.stage {
+        ServiceActionStage::Choose => ServiceAction::ALL
+            .iter()
+            .enumerate()
+            .map(|(index, item)| {
+                let marker = if index == dialog.selection {
+                    "▶"
+                } else {
+                    " "
+                };
+                format!(" {marker} {}", item.label())
+            })
+            .collect::<Vec<_>>(),
+        ServiceActionStage::Confirm => vec![
+            String::new(),
+            format!(
+                "{} {}?",
+                action.cli_name().to_ascii_uppercase(),
+                dialog.target
+            ),
+            String::new(),
+            "Lens will run one exact systemd action and verify the unit state.".into(),
+            String::new(),
+            "y confirm · Esc back".into(),
+        ],
+        ServiceActionStage::Running => vec![
+            String::new(),
+            format!("Running {} on {}…", action.cli_name(), dialog.target),
+            String::new(),
+            "Waiting for systemd and verification.".into(),
+        ],
+        ServiceActionStage::Result => vec![
+            String::new(),
+            dialog.result.clone(),
+            String::new(),
+            "Enter or Esc to close".into(),
+        ],
+    };
+    if dialog.stage == ServiceActionStage::Choose {
+        lines.push(String::new());
+        lines.push(format!(
+            "Target: {} · Enter review · Esc cancel",
+            dialog.target
+        ));
+    }
+    for row in 0..usize::from(height.saturating_sub(2)) {
+        execute!(stdout, cursor::MoveTo(x, y + 1 + row as u16))?;
+        let line = lines.get(row).map_or("", String::as_str);
+        let line = truncate_text(line, inner);
+        let padded = format!("{line:<inner$}");
+        let styled = if dialog.stage == ServiceActionStage::Choose && row == dialog.selection {
+            selected_row(&padded, colour)
+        } else {
+            ink(&padded, Ink::Bright, colour)
+        };
+        write!(stdout, "│{styled}│")?;
+    }
+    execute!(stdout, cursor::MoveTo(x, y + height - 1))?;
+    write!(stdout, "╰{}╯", "─".repeat(inner))?;
+    stdout.flush()?;
+    Ok(())
 }
 
 fn render_search_overlay(stdout: &mut impl Write, title: &str, query: &str) -> Result<()> {
@@ -4734,6 +5065,33 @@ mod tests {
     }
 
     #[test]
+    fn cockpit_does_not_report_failed_log_collection_as_zero_entries() {
+        let mut snapshot = demo_snapshot();
+        snapshot.logs.clear();
+        snapshot
+            .collection_warnings
+            .push("/usr/bin/log timed out after 8.0s".into());
+        assert_eq!(
+            cockpit_view_summary(View::Logs, &snapshot, false),
+            "log collection unavailable"
+        );
+    }
+
+    #[test]
+    fn cockpit_uses_a_fast_initial_log_window() {
+        #[cfg(target_os = "macos")]
+        {
+            assert_eq!(cockpit_log_since(None), Some("1m"));
+            assert_eq!(cockpit_log_since(Some("5m")), Some("5m"));
+        }
+        #[cfg(not(target_os = "macos"))]
+        {
+            assert_eq!(cockpit_log_since(None), None);
+            assert_eq!(cockpit_log_since(Some("5m")), Some("5m"));
+        }
+    }
+
+    #[test]
     fn cockpit_leads_with_host_status_while_details_load() {
         let snapshot = demo_snapshot();
         let mut loading_output = Vec::new();
@@ -4955,6 +5313,52 @@ mod tests {
         render_net_specialist(&snapshot, 0, false, 16, 50, &mut output).expect("compact network");
         render_health_specialist(&snapshot, 0, false, 16, 50, &mut output).expect("compact health");
         assert!(!output.is_empty());
+    }
+
+    #[test]
+    fn storage_detail_uses_two_columns_when_space_is_available() {
+        let snapshot = demo_snapshot();
+        let mut output = Vec::new();
+        render_disk_specialist(&snapshot, 0, true, 20, 120, &mut output)
+            .expect("wide storage detail");
+        let output = String::from_utf8(output).expect("UTF-8");
+        assert!(
+            output
+                .lines()
+                .any(|line| line.contains("SOURCE") && line.contains("FILESYSTEM"))
+        );
+        assert!(
+            output
+                .lines()
+                .any(|line| line.contains("USED") && line.contains("AVAILABLE"))
+        );
+        assert!(
+            output
+                .lines()
+                .any(|line| line.contains("CAPACITY") && line.contains("INODES"))
+        );
+    }
+
+    #[test]
+    fn service_action_requires_a_separate_review_step() {
+        let mut dialog = ServiceActionDialog {
+            target: "nginx.service".into(),
+            selection: 0,
+            stage: ServiceActionStage::Choose,
+            result: String::new(),
+            receiver: None,
+        };
+        assert!(!dialog.handle_key(crossterm::event::KeyEvent::new(
+            KeyCode::Enter,
+            KeyModifiers::NONE,
+        )));
+        assert_eq!(dialog.stage, ServiceActionStage::Confirm);
+        assert!(!dialog.handle_key(crossterm::event::KeyEvent::new(
+            KeyCode::Esc,
+            KeyModifiers::NONE,
+        )));
+        assert_eq!(dialog.stage, ServiceActionStage::Choose);
+        assert_eq!(ServiceAction::ALL[0], ServiceAction::Restart);
     }
 
     #[test]

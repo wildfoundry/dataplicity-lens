@@ -116,4 +116,22 @@ fn process_actions_require_confirmation_and_support_dry_run() {
     let value: serde_json::Value = serde_json::from_slice(&planned.stdout).expect("JSON outcome");
     assert_eq!(value["status"], "planned");
     assert_eq!(value["process"], "image-worker");
+
+    let stale = Command::new(binary())
+        .args([
+            "--demo",
+            "--signal",
+            "term",
+            "--pid",
+            "8421",
+            "--expect-start-ticks",
+            "1",
+            "--dry-run",
+        ])
+        .output()
+        .expect("run action for stale process identity");
+    assert!(!stale.status.success());
+    assert!(
+        String::from_utf8_lossy(&stale.stderr).contains("changed or exited before confirmation")
+    );
 }

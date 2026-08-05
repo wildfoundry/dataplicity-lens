@@ -5,6 +5,10 @@ target and intended change are correct.
 
 ## Processes
 
+In `lens-top`, select a process and press `a`. Choose a signal, review the pinned name, PID and
+start-time identity, then press `y` to confirm. The result remains visible until it is dismissed.
+The equivalent non-interactive commands are:
+
 ```sh
 lens-top --signal term --pid 4242 --dry-run
 lens-top --signal term --pid 4242 --yes
@@ -17,6 +21,9 @@ before execution, and stops if the identity changed. A successful signal deliver
 process exited; the result states whether the same process remains and its observed state.
 
 ## systemd services
+
+In the interactive `lens-services` view on Linux, select a unit and press `a`. Choose an action,
+review the exact unit name and press `y` to confirm. The same operations are available to scripts:
 
 ```sh
 lens-services --action restart --target nginx.service --dry-run

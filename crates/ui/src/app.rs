@@ -18,7 +18,84 @@ pub enum Action {
     Redraw,
     Refresh,
     RunDiagnostic(String),
+    ExecuteProcessSignal {
+        signal: ProcessSignal,
+        pid: u32,
+        start_time_ticks: u64,
+    },
     Quit,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ProcessSignal {
+    Term,
+    Hup,
+    Int,
+    Stop,
+    Cont,
+    Kill,
+}
+
+impl ProcessSignal {
+    pub const ALL: [Self; 6] = [
+        Self::Term,
+        Self::Hup,
+        Self::Int,
+        Self::Stop,
+        Self::Cont,
+        Self::Kill,
+    ];
+
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::Term => "TERM · ask the process to exit",
+            Self::Hup => "HUP · reload or reopen files",
+            Self::Int => "INT · interrupt the process",
+            Self::Stop => "STOP · suspend the process",
+            Self::Cont => "CONT · resume the process",
+            Self::Kill => "KILL · force immediate exit",
+        }
+    }
+
+    pub const fn cli_name(self) -> &'static str {
+        match self {
+            Self::Term => "term",
+            Self::Hup => "hup",
+            Self::Int => "int",
+            Self::Stop => "stop",
+            Self::Cont => "cont",
+            Self::Kill => "kill",
+        }
+    }
+
+    pub const fn short_name(self) -> &'static str {
+        match self {
+            Self::Term => "TERM",
+            Self::Hup => "HUP",
+            Self::Int => "INT",
+            Self::Stop => "STOP",
+            Self::Cont => "CONT",
+            Self::Kill => "KILL",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ProcessActionStage {
+    Choose,
+    Confirm,
+    Running,
+    Result,
+}
+
+#[derive(Debug)]
+pub struct ProcessActionDialog {
+    pub pid: u32,
+    pub start_time_ticks: u64,
+    pub process: String,
+    pub selection: usize,
+    pub stage: ProcessActionStage,
+    pub result: String,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -49,6 +126,7 @@ pub struct App {
     pub diagnostic_input: String,
     pub diagnostic_output: Vec<String>,
     pub diagnostic_running: bool,
+    pub process_action: Option<ProcessActionDialog>,
     pub sort_selection: usize,
     pub paused: bool,
     pub collecting: bool,
@@ -84,6 +162,7 @@ impl App {
             diagnostic_input: String::new(),
             diagnostic_output: Vec::new(),
             diagnostic_running: false,
+            process_action: None,
             sort_selection: SortKey::ALL
                 .iter()
                 .position(|key| *key == options.sort_key)
@@ -210,6 +289,9 @@ impl App {
     }
 
     pub fn handle_key(&mut self, key: KeyEvent) -> Action {
+        if self.process_action.is_some() {
+            return self.handle_process_action_key(key);
+        }
         if self.diagnostic_open {
             return self.handle_diagnostic_key(key);
         }
@@ -280,6 +362,21 @@ impl App {
                 Action::Redraw
             }
             KeyCode::Char('r') => Action::Refresh,
+            KeyCode::Char('a') => {
+                if let Some(process) = self.selected_process() {
+                    self.process_action = Some(ProcessActionDialog {
+                        pid: process.pid.0,
+                        start_time_ticks: process.start_time_ticks,
+                        process: process.name.clone(),
+                        selection: 0,
+                        stage: ProcessActionStage::Choose,
+                        result: String::new(),
+                    });
+                    Action::Redraw
+                } else {
+                    Action::None
+                }
+            }
             KeyCode::Char('!') => {
                 self.diagnostic_open = true;
                 Action::Redraw
@@ -297,6 +394,48 @@ impl App {
                 Action::Redraw
             }
             _ => Action::None,
+        }
+    }
+
+    fn handle_process_action_key(&mut self, key: KeyEvent) -> Action {
+        let dialog = self.process_action.as_mut().expect("action dialog");
+        match dialog.stage {
+            ProcessActionStage::Choose => match key.code {
+                KeyCode::Esc => self.process_action = None,
+                KeyCode::Down | KeyCode::Char('j') => {
+                    dialog.selection = (dialog.selection + 1).min(ProcessSignal::ALL.len() - 1);
+                }
+                KeyCode::Up | KeyCode::Char('k') => {
+                    dialog.selection = dialog.selection.saturating_sub(1);
+                }
+                KeyCode::Enter => dialog.stage = ProcessActionStage::Confirm,
+                _ => return Action::None,
+            },
+            ProcessActionStage::Confirm => match key.code {
+                KeyCode::Esc => dialog.stage = ProcessActionStage::Choose,
+                KeyCode::Char('y') | KeyCode::Char('Y') => {
+                    dialog.stage = ProcessActionStage::Running;
+                    return Action::ExecuteProcessSignal {
+                        signal: ProcessSignal::ALL[dialog.selection],
+                        pid: dialog.pid,
+                        start_time_ticks: dialog.start_time_ticks,
+                    };
+                }
+                _ => return Action::None,
+            },
+            ProcessActionStage::Running => return Action::None,
+            ProcessActionStage::Result => match key.code {
+                KeyCode::Esc | KeyCode::Enter => self.process_action = None,
+                _ => return Action::None,
+            },
+        }
+        Action::Redraw
+    }
+
+    pub fn finish_process_action(&mut self, result: String) {
+        if let Some(dialog) = self.process_action.as_mut() {
+            dialog.result = result;
+            dialog.stage = ProcessActionStage::Result;
         }
     }
 
@@ -644,6 +783,34 @@ mod tests {
         assert_eq!(
             app.diagnostic_output.last().map(String::as_str),
             Some("lens")
+        );
+    }
+
+    #[test]
+    fn process_action_pins_the_target_and_requires_confirmation() {
+        let mut app = App::new(
+            snapshot(vec![process(42, 9001, "worker", 20.0)]),
+            options(),
+            TerminalCapabilities::detect(ColorMode::Never, true),
+        );
+        assert_eq!(app.handle_key(key(KeyCode::Char('a'))), Action::Redraw);
+        assert_eq!(app.handle_key(key(KeyCode::Enter)), Action::Redraw);
+        assert_eq!(
+            app.handle_key(key(KeyCode::Char('y'))),
+            Action::ExecuteProcessSignal {
+                signal: ProcessSignal::Term,
+                pid: 42,
+                start_time_ticks: 9001,
+            }
+        );
+        assert_eq!(
+            app.process_action.as_ref().map(|dialog| dialog.stage),
+            Some(ProcessActionStage::Running)
+        );
+        app.finish_process_action("TERM PID 42: completed".into());
+        assert_eq!(
+            app.process_action.as_ref().map(|dialog| dialog.stage),
+            Some(ProcessActionStage::Result)
         );
     }
 }

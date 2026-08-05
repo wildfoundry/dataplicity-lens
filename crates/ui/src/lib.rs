@@ -13,7 +13,7 @@ use std::{
     time::{Duration, Instant},
 };
 
-use app::{Action, App};
+use app::{Action, App, ProcessSignal};
 use crossterm::event::{self, Event, KeyCode, KeyModifiers};
 use lens_core::{GroupMode, ProcessFilter, SortDirection, SortKey};
 use lens_model::Snapshot;
@@ -72,6 +72,7 @@ where
     let mut app = App::new(initial, options, capabilities);
     let (request_tx, result_rx) = spawn_collection_worker(collect);
     let (diagnostic_tx, diagnostic_rx) = mpsc::channel();
+    let (process_action_tx, process_action_rx) = mpsc::channel();
     let mut next_refresh = Instant::now() + app.interval();
     let mut next_clock = Instant::now() + Duration::from_secs(1);
     let mut refresh_in_flight = false;
@@ -81,6 +82,14 @@ where
     loop {
         if let Ok(output) = diagnostic_rx.try_recv() {
             app.finish_diagnostic(output);
+            dirty = true;
+        }
+        if let Ok(output) = process_action_rx.try_recv() {
+            app.finish_process_action(output);
+            if !refresh_in_flight && collector_available && request_tx.send(()).is_ok() {
+                refresh_in_flight = true;
+                app.set_collecting(true);
+            }
             dirty = true;
         }
         if refresh_in_flight {
@@ -154,6 +163,17 @@ where
                         let _ = sender.send(run_diagnostic_command(&command));
                     });
                 }
+                Action::ExecuteProcessSignal {
+                    signal,
+                    pid,
+                    start_time_ticks,
+                } => {
+                    let sender = process_action_tx.clone();
+                    thread::spawn(move || {
+                        let _ =
+                            sender.send(run_process_action_command(signal, pid, start_time_ticks));
+                    });
+                }
                 Action::Redraw => {}
                 Action::None => continue,
             }
@@ -182,6 +202,37 @@ where
         }
     }
     Ok(())
+}
+
+fn run_process_action_command(signal: ProcessSignal, pid: u32, start_time_ticks: u64) -> String {
+    let executable = match env::current_exe() {
+        Ok(executable) => executable,
+        Err(error) => return format!("Unable to locate lens-top: {error}"),
+    };
+    match Command::new(executable)
+        .args([
+            "--signal",
+            signal.cli_name(),
+            "--pid",
+            &pid.to_string(),
+            "--expect-start-ticks",
+            &start_time_ticks.to_string(),
+            "--yes",
+        ])
+        .output()
+    {
+        Ok(output) => {
+            let mut text = String::from_utf8_lossy(&output.stdout).into_owned();
+            text.push_str(&String::from_utf8_lossy(&output.stderr));
+            let text = sanitise_terminal_output(&text);
+            if output.status.success() {
+                text.trim().to_owned()
+            } else {
+                format!("Action failed: {}", text.trim())
+            }
+        }
+        Err(error) => format!("Unable to run process action: {error}"),
+    }
 }
 
 fn run_diagnostic_command(command: &str) -> String {

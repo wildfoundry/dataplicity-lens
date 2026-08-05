@@ -44,8 +44,10 @@ Lens 1.0 keeps product actions named and typed. It also provides a deliberately 
 diagnostic shell so an operator can run ordinary commands beside live Lens data; those commands are
 not treated as Lens actions and use the invoking user's shell and permissions.
 
-- Process actions: TERM, KILL, HUP, INT, STOP and CONT for one exact PID.
-- Linux service actions: start, stop, restart, enable and disable for one exact systemd unit.
+- Process actions: TERM, KILL, HUP, INT, STOP and CONT for one exact PID, available from the
+  interactive process view and the CLI.
+- Linux service actions: start, stop, restart, enable and disable for one exact systemd unit,
+  available from the interactive service view and the CLI.
 - Every action has a dry-run plan, requires explicit confirmation, has a deadline where the OS
   operation can block, and reports the observed post-action state.
 - Process identity is checked with PID and start time immediately before execution.
