@@ -59,6 +59,13 @@ pub enum CompletionShell {
     Fish,
 }
 
+#[derive(Debug, Clone, Copy, ValueEnum)]
+pub enum ThemeArg {
+    Auto,
+    Dark,
+    Light,
+}
+
 #[derive(Debug, Clone, Copy, ValueEnum, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum SignalArg {
@@ -170,6 +177,10 @@ pub struct Args {
     /// Disable colour even when the terminal supports it.
     #[arg(long)]
     pub no_color: bool,
+
+    /// Choose colours for an auto-detected, dark or light terminal background.
+    #[arg(long, value_enum)]
+    pub theme: Option<ThemeArg>,
 
     /// Force ASCII rendering instead of Unicode line and graph characters.
     #[arg(long)]

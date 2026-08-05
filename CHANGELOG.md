@@ -23,6 +23,9 @@ versioning once the first public release is tagged.
 
 ### Changed
 
+- Interactive commands now choose contrasting colours for light and dark terminal backgrounds, with
+  explicit `--theme` and `LENS_THEME` overrides for terminals that do not report their background.
+- Direct Rust dependencies are updated to their current Rust-1.88-compatible releases.
 - Terminal refreshes are emitted as synchronized frames, process views respect the terminal's own
   background colour, and the fixed-width updating badge no longer shifts the header.
 - Linux network collection falls back to sysfs and procfs when minimal containers do not include

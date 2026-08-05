@@ -142,6 +142,7 @@ lens-top --filter-service sshd
 lens-top --min-cpu 5
 lens-top --min-memory 1
 lens-top --limit 20
+lens-top --theme light
 lens-top --no-color
 ```
 
@@ -210,6 +211,11 @@ No configuration is required. Lens loads, in increasing precedence:
 ```sh
 lens-top --print-default-config
 ```
+
+Lens normally infers a light or dark background from `COLORFGBG` and chooses a contrasting palette.
+Some serial and browser terminals do not expose that metadata. Use `--theme light` or `--theme dark`
+when needed; `LENS_THEME=light` (or `dark`) applies the same override to the complete suite. Lens
+continues to use the terminal's own background rather than painting over it.
 
 ## Architecture
 

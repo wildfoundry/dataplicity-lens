@@ -27,6 +27,11 @@ Interactive views share the main controls: arrows or `j`/`k` move, `Enter` opens
 back, `/` searches, `r` refreshes, `!` opens a local diagnostic shell, `?` shows contextual help and
 `q` quits. The layout adds useful columns and rows as the terminal grows.
 
+Lens follows the terminal's own background and automatically selects a contrasting palette when the
+terminal publishes `COLORFGBG`. If a browser, serial console or terminal multiplexer does not report
+its background, start any command with `--theme light` or `--theme dark`. Set `LENS_THEME=light` or
+`LENS_THEME=dark` to apply the choice to every Lens command in that shell.
+
 ## A service is not working
 
 1. Run `lens-services --service NAME` and inspect load, active and sub-state. A loaded service can

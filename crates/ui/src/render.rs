@@ -1098,11 +1098,45 @@ fn rgb(capabilities: TerminalCapabilities, true_color: (u8, u8, u8), fallback: C
     }
 }
 
+fn theme_rgb(
+    capabilities: TerminalCapabilities,
+    dark: (u8, u8, u8),
+    light: (u8, u8, u8),
+    fallback: Color,
+) -> Color {
+    let fallback = if capabilities.light_background {
+        match fallback {
+            Color::White => Color::Black,
+            Color::Gray => Color::DarkGray,
+            Color::Cyan => Color::Blue,
+            Color::Yellow => Color::DarkGray,
+            Color::Black => Color::Gray,
+            other => other,
+        }
+    } else {
+        fallback
+    };
+    rgb(
+        capabilities,
+        if capabilities.light_background {
+            light
+        } else {
+            dark
+        },
+        fallback,
+    )
+}
+
 fn canvas_style(capabilities: TerminalCapabilities) -> Style {
     if capabilities.color {
         // Respect the terminal's configured background. This avoids a conspicuous grey canvas in
         // browser and serial terminals while retaining Lens foreground colours.
-        Style::default().fg(rgb(capabilities, (207, 216, 230), Color::White))
+        Style::default().fg(theme_rgb(
+            capabilities,
+            (207, 216, 230),
+            (25, 39, 44),
+            Color::White,
+        ))
     } else {
         Style::default()
     }
@@ -1111,7 +1145,12 @@ fn canvas_style(capabilities: TerminalCapabilities) -> Style {
 fn brand_style(capabilities: TerminalCapabilities) -> Style {
     if capabilities.color {
         Style::default()
-            .fg(rgb(capabilities, (190, 125, 255), Color::Magenta))
+            .fg(theme_rgb(
+                capabilities,
+                (190, 125, 255),
+                (105, 40, 160),
+                Color::Magenta,
+            ))
             .add_modifier(Modifier::BOLD)
     } else {
         Style::default().add_modifier(Modifier::BOLD)
@@ -1120,7 +1159,12 @@ fn brand_style(capabilities: TerminalCapabilities) -> Style {
 
 fn title_style(capabilities: TerminalCapabilities) -> Style {
     if capabilities.color {
-        Style::default().fg(rgb(capabilities, (238, 243, 252), Color::White))
+        Style::default().fg(theme_rgb(
+            capabilities,
+            (238, 243, 252),
+            (16, 31, 35),
+            Color::White,
+        ))
     } else {
         Style::default()
     }
@@ -1129,7 +1173,12 @@ fn title_style(capabilities: TerminalCapabilities) -> Style {
 fn label_style(capabilities: TerminalCapabilities) -> Style {
     if capabilities.color {
         Style::default()
-            .fg(rgb(capabilities, (139, 155, 180), Color::Gray))
+            .fg(theme_rgb(
+                capabilities,
+                (139, 155, 180),
+                (70, 85, 105),
+                Color::Gray,
+            ))
             .add_modifier(Modifier::BOLD)
     } else {
         Style::default().add_modifier(Modifier::BOLD)
@@ -1138,7 +1187,12 @@ fn label_style(capabilities: TerminalCapabilities) -> Style {
 
 fn muted_style(capabilities: TerminalCapabilities) -> Style {
     if capabilities.color {
-        Style::default().fg(rgb(capabilities, (125, 140, 165), Color::Gray))
+        Style::default().fg(theme_rgb(
+            capabilities,
+            (125, 140, 165),
+            (78, 94, 112),
+            Color::Gray,
+        ))
     } else {
         Style::default()
     }
@@ -1146,7 +1200,12 @@ fn muted_style(capabilities: TerminalCapabilities) -> Style {
 
 fn faint_style(capabilities: TerminalCapabilities) -> Style {
     if capabilities.color {
-        Style::default().fg(rgb(capabilities, (52, 64, 84), Color::DarkGray))
+        Style::default().fg(theme_rgb(
+            capabilities,
+            (52, 64, 84),
+            (122, 136, 151),
+            Color::DarkGray,
+        ))
     } else {
         Style::default()
     }
@@ -1154,7 +1213,12 @@ fn faint_style(capabilities: TerminalCapabilities) -> Style {
 
 fn border_style(capabilities: TerminalCapabilities) -> Style {
     if capabilities.color {
-        Style::default().fg(rgb(capabilities, (48, 62, 84), Color::DarkGray))
+        Style::default().fg(theme_rgb(
+            capabilities,
+            (48, 62, 84),
+            (148, 160, 174),
+            Color::DarkGray,
+        ))
     } else {
         Style::default()
     }
@@ -1163,7 +1227,12 @@ fn border_style(capabilities: TerminalCapabilities) -> Style {
 fn metric_style(capabilities: TerminalCapabilities) -> Style {
     if capabilities.color {
         Style::default()
-            .fg(rgb(capabilities, (91, 215, 255), Color::Cyan))
+            .fg(theme_rgb(
+                capabilities,
+                (91, 215, 255),
+                (0, 103, 148),
+                Color::Cyan,
+            ))
             .add_modifier(Modifier::BOLD)
     } else {
         Style::default().add_modifier(Modifier::BOLD)
@@ -1172,11 +1241,12 @@ fn metric_style(capabilities: TerminalCapabilities) -> Style {
 
 fn info_style(capabilities: TerminalCapabilities) -> Style {
     if capabilities.color {
-        Style::default().fg(if capabilities.true_color {
-            Color::Rgb(91, 215, 255)
-        } else {
-            Color::Blue
-        })
+        Style::default().fg(theme_rgb(
+            capabilities,
+            (91, 215, 255),
+            (0, 103, 148),
+            Color::Blue,
+        ))
     } else {
         Style::default()
     }
@@ -1184,7 +1254,12 @@ fn info_style(capabilities: TerminalCapabilities) -> Style {
 
 fn attention_style(capabilities: TerminalCapabilities) -> Style {
     if capabilities.color {
-        Style::default().fg(rgb(capabilities, (255, 190, 92), Color::Yellow))
+        Style::default().fg(theme_rgb(
+            capabilities,
+            (255, 190, 92),
+            (145, 79, 0),
+            Color::Yellow,
+        ))
     } else {
         Style::default().add_modifier(Modifier::BOLD)
     }
@@ -1193,7 +1268,12 @@ fn attention_style(capabilities: TerminalCapabilities) -> Style {
 fn critical_style(capabilities: TerminalCapabilities) -> Style {
     if capabilities.color {
         Style::default()
-            .fg(rgb(capabilities, (255, 105, 125), Color::Red))
+            .fg(theme_rgb(
+                capabilities,
+                (255, 105, 125),
+                (185, 30, 55),
+                Color::Red,
+            ))
             .add_modifier(Modifier::BOLD)
     } else {
         Style::default().add_modifier(Modifier::BOLD)
@@ -1217,7 +1297,12 @@ fn selection_style(capabilities: TerminalCapabilities) -> Style {
 
 fn success_style(capabilities: TerminalCapabilities) -> Style {
     if capabilities.color {
-        Style::default().fg(rgb(capabilities, (88, 224, 166), Color::Green))
+        Style::default().fg(theme_rgb(
+            capabilities,
+            (88, 224, 166),
+            (0, 110, 79),
+            Color::Green,
+        ))
     } else {
         Style::default()
     }
@@ -1288,8 +1373,18 @@ fn alternate_row_style(capabilities: TerminalCapabilities) -> Style {
 fn table_header_style(capabilities: TerminalCapabilities) -> Style {
     if capabilities.color {
         Style::default()
-            .fg(rgb(capabilities, (158, 176, 204), Color::Gray))
-            .bg(rgb(capabilities, (20, 28, 42), Color::Black))
+            .fg(theme_rgb(
+                capabilities,
+                (158, 176, 204),
+                (56, 72, 92),
+                Color::Gray,
+            ))
+            .bg(theme_rgb(
+                capabilities,
+                (20, 28, 42),
+                (231, 236, 240),
+                Color::Black,
+            ))
             .add_modifier(Modifier::BOLD)
     } else {
         Style::default().add_modifier(Modifier::BOLD | Modifier::UNDERLINED)
@@ -1410,6 +1505,7 @@ mod tests {
             limit: None,
             history_length: 10,
             color_mode: ColorMode::Never,
+            theme_mode: crate::ThemeMode::Auto,
             ascii: true,
         };
         let capabilities = TerminalCapabilities::detect(ColorMode::Never, true);
@@ -1436,6 +1532,7 @@ mod tests {
             limit: None,
             history_length: 10,
             color_mode: ColorMode::Never,
+            theme_mode: crate::ThemeMode::Auto,
             ascii: true,
         };
         let capabilities = TerminalCapabilities::detect(ColorMode::Never, true);
@@ -1466,12 +1563,14 @@ mod tests {
             limit: None,
             history_length: 10,
             color_mode: ColorMode::Always,
+            theme_mode: crate::ThemeMode::Dark,
             ascii: false,
         };
         let capabilities = TerminalCapabilities {
             color: true,
             true_color: true,
             unicode: true,
+            light_background: false,
         };
         let mut app = App::new(
             Snapshot::empty("production-gateway-04"),
@@ -1487,6 +1586,20 @@ mod tests {
     }
 
     #[test]
+    fn light_theme_uses_dark_primary_text() {
+        let capabilities = TerminalCapabilities {
+            color: true,
+            true_color: true,
+            unicode: true,
+            light_background: true,
+        };
+
+        assert_eq!(canvas_style(capabilities).fg, Some(Color::Rgb(25, 39, 44)));
+        assert_eq!(title_style(capabilities).fg, Some(Color::Rgb(16, 31, 35)));
+        assert_eq!(muted_style(capabilities).fg, Some(Color::Rgb(78, 94, 112)));
+    }
+
+    #[test]
     fn diagnostic_shell_has_a_clear_empty_state_and_command_field() {
         let backend = TestBackend::new(180, 50);
         let mut terminal = Terminal::new(backend).expect("test terminal");
@@ -1499,6 +1612,7 @@ mod tests {
             limit: None,
             history_length: 10,
             color_mode: ColorMode::Never,
+            theme_mode: crate::ThemeMode::Auto,
             ascii: true,
         };
         let capabilities = TerminalCapabilities::detect(ColorMode::Never, true);
