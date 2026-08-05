@@ -115,14 +115,14 @@ jobs:
           RPM_ARCH: ${{ matrix.rpm_arch }}
         run: |
           for target in "$GNU_TARGET" "$MUSL_TARGET"; do
-            for binary in lens lens-top lens-services lens-logs lens-disk lens-net lens-health; do
+            for binary in lens lens-top lens-services lens-logs lens-disk lens-net lens-system lens-health; do
               cross run --release --locked --target "$target" --bin "$binary" -- --demo --json > smoke-output.json
               grep -q '"schema_version": "2"' smoke-output.json
             done
           done
           dpkg-deb --contents "./dist/${GNU_TARGET}/dataplicity-lens_${VERSION}_${DEB_ARCH}.deb" > deb-contents.txt
           rpm --query --package --list "dist/${GNU_TARGET}/dataplicity-lens-${VERSION}-1.${RPM_ARCH}.rpm" > rpm-contents.txt
-          for binary in lens lens-top lens-services lens-logs lens-disk lens-net lens-health; do
+          for binary in lens lens-top lens-services lens-logs lens-disk lens-net lens-system lens-health; do
             grep -q "/usr/bin/${binary}$" deb-contents.txt
             grep -q "/usr/bin/${binary}$" rpm-contents.txt
           done

@@ -17,6 +17,7 @@
 - `lens-disk` with block devices, capacity, inodes and deleted-open files
 - `lens-net` with interfaces, routes, listeners and owner relationships
 - `lens-health` with warnings from every specialist check
+- `lens-system` with clock/NTP, resolver, local identity and visible certificate context
 - Shared schema version 2, fixtures and complete-suite packages
 
 ## Under consideration

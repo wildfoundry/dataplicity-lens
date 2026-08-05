@@ -68,7 +68,14 @@ pub fn draw(frame: &mut Frame<'_>, app: &mut App) {
 }
 
 fn draw_header(frame: &mut Frame<'_>, area: Rect, app: &App) {
-    let status = if app.paused { " PAUSED " } else { " LIVE " };
+    // Keep the badge width fixed so starting and completing a sample never shifts the title row.
+    let status = if app.paused {
+        " PAUSED   "
+    } else if app.collecting() {
+        " UPDATING "
+    } else {
+        " LIVE     "
+    };
     let diamond = if app.capabilities.unicode {
         "  ◆  "
     } else {
@@ -79,7 +86,7 @@ fn draw_header(frame: &mut Frame<'_>, area: Rect, app: &App) {
     } else {
         "   |   "
     };
-    let status_style = if app.paused {
+    let status_style = if app.paused || app.collecting() {
         attention_badge(app.capabilities)
     } else {
         success_badge(app.capabilities)
@@ -110,11 +117,7 @@ fn draw_header(frame: &mut Frame<'_>, area: Rect, app: &App) {
             Span::styled(status, status_style),
         ])
     };
-    let refresh = if app.collecting() {
-        format!("refresh {:.1}s · updating", app.interval().as_secs_f64())
-    } else {
-        format!("refresh {:.1}s", app.interval().as_secs_f64())
-    };
+    let refresh = format!("refresh {:.1}s", app.interval().as_secs_f64());
     let mut meta = vec![
         Span::raw("  "),
         Span::styled(refresh, muted_style(app.capabilities)),
@@ -1097,9 +1100,9 @@ fn rgb(capabilities: TerminalCapabilities, true_color: (u8, u8, u8), fallback: C
 
 fn canvas_style(capabilities: TerminalCapabilities) -> Style {
     if capabilities.color {
-        Style::default()
-            .fg(rgb(capabilities, (207, 216, 230), Color::White))
-            .bg(rgb(capabilities, (10, 14, 23), Color::Black))
+        // Respect the terminal's configured background. This avoids a conspicuous grey canvas in
+        // browser and serial terminals while retaining Lens foreground colours.
+        Style::default().fg(rgb(capabilities, (207, 216, 230), Color::White))
     } else {
         Style::default()
     }
@@ -1278,11 +1281,8 @@ fn badge(
 }
 
 fn alternate_row_style(capabilities: TerminalCapabilities) -> Style {
-    if capabilities.color {
-        Style::default().bg(rgb(capabilities, (14, 20, 31), Color::Black))
-    } else {
-        Style::default()
-    }
+    let _ = capabilities;
+    Style::default()
 }
 
 fn table_header_style(capabilities: TerminalCapabilities) -> Style {

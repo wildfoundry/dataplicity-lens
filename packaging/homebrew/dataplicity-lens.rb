@@ -12,7 +12,7 @@ class DataplicityLens < Formula
   depends_on "rust" => :build
 
   def install
-    packages = %w[lens lens-top lens-services lens-logs lens-disk lens-net lens-health]
+    packages = %w[lens lens-top lens-services lens-logs lens-disk lens-net lens-system lens-health]
     packages.each do |package|
       system "cargo", "install", *std_cargo_args(path: "apps/#{package}")
     end
@@ -25,7 +25,7 @@ class DataplicityLens < Formula
   end
 
   test do
-    commands = %w[lens lens-top lens-services lens-logs lens-disk lens-net lens-health]
+    commands = %w[lens lens-top lens-services lens-logs lens-disk lens-net lens-system lens-health]
     commands.each do |command|
       output = shell_output("#{bin}/#{command} --demo --json")
       assert_match '"schema_version": "2"', output

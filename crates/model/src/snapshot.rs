@@ -328,6 +328,44 @@ pub struct CellularModem {
     pub sim: Option<CellularSim>,
 }
 
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ClockContext {
+    pub timezone: Option<String>,
+    pub ntp_synchronized: Option<bool>,
+    pub ntp_service: Option<String>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DnsContext {
+    pub source: String,
+    pub nameservers: Vec<String>,
+    pub search_domains: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CertificateInfo {
+    pub path: String,
+    pub subject: Option<String>,
+    pub issuer: Option<String>,
+    pub not_after: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AccountInfo {
+    pub name: String,
+    pub uid: u32,
+    pub gid: u32,
+    pub home: String,
+    pub shell: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct GroupInfo {
+    pub name: String,
+    pub gid: u32,
+    pub members: Vec<String>,
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Snapshot {
     pub schema_version: SchemaVersion,
@@ -347,6 +385,16 @@ pub struct Snapshot {
     pub sockets: Vec<Socket>,
     #[serde(default)]
     pub cellular_modems: Vec<CellularModem>,
+    #[serde(default)]
+    pub clock: ClockContext,
+    #[serde(default)]
+    pub dns: DnsContext,
+    #[serde(default)]
+    pub certificates: Vec<CertificateInfo>,
+    #[serde(default)]
+    pub accounts: Vec<AccountInfo>,
+    #[serde(default)]
+    pub groups: Vec<GroupInfo>,
     pub findings: Vec<Finding>,
     pub relationships: Vec<Relationship>,
     pub build: Option<BuildInfo>,
@@ -384,6 +432,11 @@ impl Snapshot {
             routes: Vec::new(),
             sockets: Vec::new(),
             cellular_modems: Vec::new(),
+            clock: ClockContext::default(),
+            dns: DnsContext::default(),
+            certificates: Vec::new(),
+            accounts: Vec::new(),
+            groups: Vec::new(),
             findings: Vec::new(),
             relationships: Vec::new(),
             build: None,

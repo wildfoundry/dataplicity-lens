@@ -6,6 +6,7 @@ members = [
     "apps/lens-logs",
     "apps/lens-disk",
     "apps/lens-net",
+    "apps/lens-system",
     "apps/lens-health",
     "crates/core",
     "crates/model",
