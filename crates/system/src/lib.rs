@@ -1256,7 +1256,7 @@ fn render_cockpit_content(
         }
     }
     if rows >= 30 {
-        execute!(stdout, cursor::MoveTo(0, rows.saturating_sub(3)))?;
+        clear_gap_and_anchor_footer(stdout, rows)?;
     } else {
         writeln!(stdout)?;
     }
@@ -1309,6 +1309,18 @@ fn present_frame(stdout: &mut impl Write, frame: &[u8]) -> Result<()> {
     execute!(update, terminal::Clear(ClearType::FromCursorDown))?;
     stdout.write_all(&update)?;
     stdout.flush()?;
+    Ok(())
+}
+
+fn clear_gap_and_anchor_footer(stdout: &mut impl Write, rows: u16) -> Result<()> {
+    // Detail screens are usually shorter than their list screens. Erase the vacated rows before
+    // jumping to the anchored footer so content from the previous frame cannot remain visible.
+    // This is part of the buffered frame, avoiding a separate visible clear on slow terminals.
+    execute!(
+        stdout,
+        terminal::Clear(ClearType::FromCursorDown),
+        cursor::MoveTo(0, rows.saturating_sub(3))
+    )?;
     Ok(())
 }
 
@@ -1795,7 +1807,7 @@ fn render_specialist_content(
     }
 
     if rows >= 30 {
-        execute!(stdout, cursor::MoveTo(0, rows.saturating_sub(3)))?;
+        clear_gap_and_anchor_footer(stdout, rows)?;
     } else {
         writeln!(stdout)?;
     }
@@ -7005,6 +7017,31 @@ mod tests {
         assert!(!output.contains("\u{1b}[2J"));
         assert!(output.contains("\u{1b}[J"));
         assert!(output.matches("\u{1b}[2K").count() > 4);
+    }
+
+    #[test]
+    fn anchored_footers_clear_rows_vacated_by_detail_views() {
+        let snapshot = demo_snapshot();
+        let mut specialist = Vec::new();
+        render_specialist_content(
+            View::Disk,
+            &snapshot,
+            &NetworkActivity::default(),
+            0,
+            true,
+            false,
+            "Ready",
+            30,
+            &mut specialist,
+        )
+        .expect("storage detail");
+        let specialist = String::from_utf8(specialist).expect("UTF-8");
+        assert!(specialist.contains("\u{1b}[J\u{1b}[28;1H"));
+
+        let mut cockpit = Vec::new();
+        render_cockpit_content(&snapshot, 0, false, 30, &mut cockpit).expect("cockpit");
+        let cockpit = String::from_utf8(cockpit).expect("UTF-8");
+        assert!(cockpit.contains("\u{1b}[J\u{1b}[28;1H"));
     }
 
     #[test]
