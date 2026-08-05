@@ -746,7 +746,7 @@ fn render_cockpit(
     let columns = terminal::size().map_or(88, |(width, _)| width);
     if columns < 36 || rows < 10 {
         writeln!(stdout, "LENS")?;
-        writeln!(stdout, "Terminal too small ({}x{}).", columns, rows)?;
+        writeln!(stdout, "Terminal too small ({columns}x{rows}).")?;
         writeln!(stdout, "Resize to at least 36x10 or press q to quit.")?;
         stdout.flush()?;
         return Ok(());
@@ -1284,7 +1284,7 @@ fn render_specialist(
     let columns = terminal::size().map_or(100, |(width, _)| width);
     if columns < 36 || rows < 10 {
         writeln!(stdout, "LENS / {}", view.title().to_ascii_uppercase())?;
-        writeln!(stdout, "Terminal too small ({}x{}).", columns, rows)?;
+        writeln!(stdout, "Terminal too small ({columns}x{rows}).")?;
         writeln!(stdout, "Resize to at least 36x10 or press q to quit.")?;
         stdout.flush()?;
         return Ok(());
