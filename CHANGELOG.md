@@ -25,6 +25,8 @@ versioning once the first public release is tagged.
 
 ### Changed
 
+- Security and repository settings docs no longer describe an internal-only repository, ready for
+  the public open-source release.
 - Interactive commands now choose contrasting colours for light and dark terminal backgrounds, with
   explicit `--theme` and `LENS_THEME` overrides for terminals that do not report their background.
 - Direct Rust dependencies are updated to their current Rust-1.88-compatible releases.

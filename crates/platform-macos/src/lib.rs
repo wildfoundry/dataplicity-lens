@@ -445,7 +445,7 @@ mod tests {
         );
         assert_eq!(memory.available_bytes, 4096 * 315);
         let process =
-            parse_process("42 1 501 elliot S 1.2 0.5 1024 4096 0:02.34 01:05 /usr/bin/example")
+            parse_process("42 1 501 alice S 1.2 0.5 1024 4096 0:02.34 01:05 /usr/bin/example")
                 .expect("process");
         assert_eq!(process.pid, ProcessId(42));
         assert_eq!(process.cpu_time_ticks, 234);

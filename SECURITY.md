@@ -31,9 +31,8 @@ credentials or elevates itself.
 Release artifacts are built only by GitHub Actions from a version tag reachable from `main`.
 Dependencies are locked, workflow actions are pinned to immutable commits, licences and advisories
 are checked, packages are smoke-tested, SBOMs and SHA-256 checksums are generated, and GitHub artifact
-attestations are attempted when the repository plan supports them. If attestations are unavailable
-for an internal repository, the release retains checksums, SBOMs and workflow provenance as the
-fallback.
+attestations are produced when the platform supports them. If an attestation cannot be attached,
+the release still ships checksums, SBOMs and workflow provenance as the verification fallback.
 
 Pull-request workflows use read-only tokens. Release permissions are granted only to tagged or
 explicitly dispatched release jobs. No release secrets are exposed to pull-request code.
