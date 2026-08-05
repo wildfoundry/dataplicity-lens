@@ -1,20 +1,40 @@
 name: Feature request
-description: Propose an improvement consistent with the Lens philosophy
+description: Suggest a practical improvement to Lens
 title: "[feature] "
+labels: ["enhancement"]
 body:
-  - type: textarea
+  - type: checkboxes
+    id: checks
     attributes:
-      label: Operator problem
-      description: Describe the job or question, not only the desired control.
+      label: Before suggesting
+      options:
+        - label: I searched existing issues for the same request.
+          required: true
+  - type: textarea
+    id: problem
+    attributes:
+      label: What are you trying to do?
+      description: Describe the day-to-day task or problem.
+      placeholder: When I am investigating ..., I need to ...
     validations:
       required: true
   - type: textarea
+    id: behaviour
     attributes:
-      label: Proposed behaviour
-      description: Explain interactive and machine-readable behaviour.
-    validations:
-      required: true
+      label: What would make that easier?
+      description: Describe the result you would find useful. A complete design is not required.
   - type: textarea
+    id: context
     attributes:
-      label: Alternatives
-      description: Existing Linux tools or workflows considered.
+      label: Current workaround
+      description: Tell us how you handle this today, including any existing Linux or macOS tools you use.
+  - type: dropdown
+    id: platform
+    attributes:
+      label: Where would you use it?
+      multiple: true
+      options:
+        - Linux
+        - macOS
+        - Raspberry Pi OS / IoT device
+        - Structured output / automation
