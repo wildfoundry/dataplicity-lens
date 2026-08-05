@@ -111,9 +111,15 @@ where
         let now = Instant::now();
         let until_refresh = next_refresh.saturating_duration_since(now);
         let timeout = until_refresh.min(Duration::from_millis(100));
-        if event::poll(timeout)?
-            && let Event::Key(key) = event::read()?
-        {
+        if event::poll(timeout)? {
+            let event = event::read()?;
+            if matches!(event, Event::Resize(_, _)) {
+                dirty = true;
+                continue;
+            }
+            let Event::Key(key) = event else {
+                continue;
+            };
             if key.code == KeyCode::Char('c') && key.modifiers.contains(KeyModifiers::CONTROL) {
                 break;
             }

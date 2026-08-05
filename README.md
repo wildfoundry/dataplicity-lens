@@ -136,6 +136,8 @@ The interactive cockpit draws the host and process summary first. Services, rece
 network details then load once in the background, so a slow platform command does not hold up the
 opening screen or normal navigation. Each specialist collects only the system data it displays, and
 individual operating-system commands time out instead of holding the whole tool open indefinitely.
+Interactive views follow the terminal as it is resized: larger windows show more rows and useful
+columns, while smaller windows hide secondary detail before navigation or primary values.
 
 ```sh
 lens

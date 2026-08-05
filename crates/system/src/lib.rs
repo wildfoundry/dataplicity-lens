@@ -466,9 +466,15 @@ fn cockpit_loop(
             redraw = false;
         }
 
-        if event::poll(Duration::from_millis(100))?
-            && let Event::Key(key) = event::read()?
-        {
+        if event::poll(Duration::from_millis(100))? {
+            let event = event::read()?;
+            if matches!(event, Event::Resize(_, _)) {
+                redraw = true;
+                continue;
+            }
+            let Event::Key(key) = event else {
+                continue;
+            };
             match key.code {
                 KeyCode::Char('q') | KeyCode::Esc => return Ok(()),
                 KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => {
@@ -737,42 +743,80 @@ fn render_cockpit(
         terminal::Clear(ClearType::All)
     )?;
     let host = &snapshot.host;
-    let width = terminal::size()
-        .map(|(width, _)| usize::from(width).clamp(58, 110))
-        .unwrap_or(88);
+    let columns = terminal::size().map_or(88, |(width, _)| width);
+    if columns < 36 || rows < 10 {
+        writeln!(stdout, "LENS")?;
+        writeln!(stdout, "Terminal too small ({columns}x{rows}).")?;
+        writeln!(stdout, "Resize to at least 36x10 or press q to quit.")?;
+        stdout.flush()?;
+        return Ok(());
+    }
+    let width = usize::from(columns);
     let colour = terminal_colour_enabled();
     let rule = "─".repeat(width.saturating_sub(2));
     writeln!(stdout, "{}", ink(&format!("╭{rule}╮"), Ink::Border, colour))?;
-    writeln!(
-        stdout,
-        "  {}{}{}  {}  {}  {}",
-        ink("DATAPLICITY", Ink::Brand, colour),
-        ink(" / ", Ink::Muted, colour),
-        ink("LENS", Ink::Bright, colour),
-        ink("◆", Ink::Border, colour),
-        ink(&host.hostname, Ink::Info, colour),
-        if loading {
-            badge(" CHECKING ", Ink::Attention, colour)
-        } else {
-            badge(" LIVE ", Ink::Success, colour)
-        },
-    )?;
-    writeln!(
-        stdout,
-        "  {}",
-        ink(
-            &format!(
-                "{}  •  kernel {}  •  up {}",
-                host.os_name
-                    .as_deref()
-                    .unwrap_or("Operating system unknown"),
-                host.kernel,
-                human_duration(host.uptime_seconds)
+    if width >= 64 {
+        writeln!(
+            stdout,
+            "  {}{}{}  {}  {}  {}",
+            ink("DATAPLICITY", Ink::Brand, colour),
+            ink(" / ", Ink::Muted, colour),
+            ink("LENS", Ink::Bright, colour),
+            ink("◆", Ink::Border, colour),
+            ink(
+                &truncate_text(&host.hostname, width.saturating_sub(42)),
+                Ink::Info,
+                colour
             ),
-            Ink::Muted,
-            colour,
-        )
-    )?;
+            if loading {
+                badge(" CHECKING ", Ink::Attention, colour)
+            } else {
+                badge(" LIVE ", Ink::Success, colour)
+            },
+        )?;
+    } else {
+        writeln!(
+            stdout,
+            "  {}  {}  {}",
+            ink("LENS", Ink::Brand, colour),
+            ink(
+                &truncate_text(&host.hostname, width.saturating_sub(24)),
+                Ink::Info,
+                colour
+            ),
+            if loading {
+                badge(" … ", Ink::Attention, colour)
+            } else {
+                badge(" LIVE ", Ink::Success, colour)
+            },
+        )?;
+    }
+    if rows >= 30 {
+        writeln!(
+            stdout,
+            "  {}",
+            ink(
+                &format!(
+                    "{}{}{}",
+                    host.os_name
+                        .as_deref()
+                        .unwrap_or("Operating system unknown"),
+                    if width >= 72 {
+                        format!("  •  kernel {}", host.kernel)
+                    } else {
+                        String::new()
+                    },
+                    if width >= 52 {
+                        format!("  •  up {}", human_duration(host.uptime_seconds))
+                    } else {
+                        String::new()
+                    }
+                ),
+                Ink::Muted,
+                colour,
+            )
+        )?;
+    }
     writeln!(stdout, "{}", ink(&format!("├{rule}┤"), Ink::Border, colour))?;
     writeln!(
         stdout,
@@ -795,32 +839,48 @@ fn render_cockpit(
             colour,
         ),
     )?;
-    writeln!(
-        stdout,
-        "  {} {}   {} {}   {} {}   {} {}",
-        ink("TASKS", Ink::Label, colour),
-        ink(&host.process_counts.total.to_string(), Ink::Bright, colour),
-        ink("RUNNING", Ink::Label, colour),
-        ink(
-            &host.process_counts.running.to_string(),
-            Ink::Success,
-            colour
-        ),
-        ink("SLEEPING", Ink::Label, colour),
-        ink(
-            &host.process_counts.sleeping.to_string(),
-            Ink::Muted,
-            colour
-        ),
-        ink("ZOMBIES", Ink::Label, colour),
-        ink(
-            &host.process_counts.zombie.to_string(),
-            Ink::Critical,
-            colour
-        ),
-    )?;
+    if width >= 52 && rows >= 30 {
+        writeln!(
+            stdout,
+            "  {} {}   {} {}{}{}",
+            ink("TASKS", Ink::Label, colour),
+            ink(&host.process_counts.total.to_string(), Ink::Bright, colour),
+            ink("RUNNING", Ink::Label, colour),
+            ink(
+                &host.process_counts.running.to_string(),
+                Ink::Success,
+                colour
+            ),
+            if width >= 76 {
+                format!(
+                    "   {} {}",
+                    ink("SLEEPING", Ink::Label, colour),
+                    ink(
+                        &host.process_counts.sleeping.to_string(),
+                        Ink::Muted,
+                        colour
+                    )
+                )
+            } else {
+                String::new()
+            },
+            if width >= 64 {
+                format!(
+                    "   {} {}",
+                    ink("ZOMBIES", Ink::Label, colour),
+                    ink(
+                        &host.process_counts.zombie.to_string(),
+                        Ink::Critical,
+                        colour
+                    )
+                )
+            } else {
+                String::new()
+            },
+        )?;
+    }
 
-    if rows >= 22 {
+    if rows >= 32 {
         let mut processes: Vec<_> = snapshot.processes.iter().collect();
         processes.sort_by(|left, right| {
             right
@@ -839,21 +899,53 @@ fn render_cockpit(
             "\n  {}",
             ink("BUSIEST PROCESSES", Ink::Label, colour)
         )?;
-        for process in processes.into_iter().take(3) {
-            writeln!(
-                stdout,
-                "  {}  {}  {} {}  {} {}",
-                ink(&format!("{:>6}", process.pid), Ink::Muted, colour),
-                ink(&format!("{:<22}", process.name), Ink::Bright, colour),
-                ink("CPU", Ink::Label, colour),
-                ink(&format!("{:>5.1}%", process.cpu_percent), Ink::Info, colour),
-                ink("MEM", Ink::Label, colour),
-                ink(
-                    &format!("{:>5.1}%", process.memory_percent),
-                    Ink::Attention,
-                    colour
-                ),
-            )?;
+        let extra = usize::from(rows.saturating_sub(36));
+        let process_capacity = if rows < 36 {
+            usize::from(rows.saturating_sub(31)).max(1)
+        } else {
+            3 + (extra * 2 / 3)
+        };
+        for process in processes.into_iter().take(process_capacity) {
+            if width >= 70 {
+                writeln!(
+                    stdout,
+                    "  {}  {}  {} {}  {} {}",
+                    ink(&format!("{:>6}", process.pid), Ink::Muted, colour),
+                    ink(
+                        &format!(
+                            "{:<width$}",
+                            truncate_text(&process.name, width.saturating_sub(50)),
+                            width = width.saturating_sub(50)
+                        ),
+                        Ink::Bright,
+                        colour
+                    ),
+                    ink("CPU", Ink::Label, colour),
+                    ink(&format!("{:>5.1}%", process.cpu_percent), Ink::Info, colour),
+                    ink("MEM", Ink::Label, colour),
+                    ink(
+                        &format!("{:>5.1}%", process.memory_percent),
+                        Ink::Attention,
+                        colour
+                    ),
+                )?;
+            } else {
+                writeln!(
+                    stdout,
+                    "  {}  {}  {}",
+                    ink(&format!("{:>6}", process.pid), Ink::Muted, colour),
+                    ink(
+                        &format!(
+                            "{:<width$}",
+                            truncate_text(&process.name, width.saturating_sub(24)),
+                            width = width.saturating_sub(24)
+                        ),
+                        Ink::Bright,
+                        colour
+                    ),
+                    ink(&format!("{:>5.1}%", process.cpu_percent), Ink::Info, colour),
+                )?;
+            }
         }
     }
 
@@ -892,13 +984,19 @@ fn render_cockpit(
                 colour,
             ),
         )?;
-        if rows >= 28 {
-            for finding in snapshot.findings.iter().take(2) {
+        if rows >= 36 {
+            let extra = usize::from(rows.saturating_sub(36));
+            let finding_capacity = 2 + (extra - extra * 2 / 3);
+            for finding in snapshot.findings.iter().take(finding_capacity) {
                 writeln!(
                     stdout,
                     "  {} {}",
                     ink("•", Ink::Critical, colour),
-                    ink(&finding.title, Ink::Muted, colour)
+                    ink(
+                        &truncate_text(&finding.title, width.saturating_sub(6)),
+                        Ink::Muted,
+                        colour
+                    )
                 )?;
             }
         }
@@ -907,11 +1005,16 @@ fn render_cockpit(
     writeln!(stdout, "\n  {}", ink("EXPLORE", Ink::Label, colour))?;
     for (index, view) in View::ALL.iter().enumerate() {
         let marker = if index == selected { "▶" } else { " " };
-        let row = format!(
-            "{marker} {:<12} {}",
-            view.title(),
-            cockpit_view_summary(*view, snapshot, loading),
-        );
+        let summary = cockpit_view_summary(*view, snapshot, loading);
+        let row = if width >= 48 {
+            format!(
+                "{marker} {:<12} {}",
+                view.title(),
+                truncate_text(&summary, width.saturating_sub(18))
+            )
+        } else {
+            format!("{marker} {}", view.title())
+        };
         if index == selected {
             writeln!(stdout, "{}", selected_row(&row, colour))?;
         } else {
@@ -923,22 +1026,35 @@ fn render_cockpit(
         "\n{}",
         ink(&format!("├{rule}┤"), Ink::Border, colour)
     )?;
-    writeln!(
-        stdout,
-        "  {} {}   {} {}   {} {}   {} {}   {} {}   {} {}",
-        keycap("↑↓", colour),
-        ink("move", Ink::Muted, colour),
-        keycap("↵", colour),
-        ink("open", Ink::Muted, colour),
-        keycap("/", colour),
-        ink("search", Ink::Muted, colour),
-        keycap("?", colour),
-        ink("help", Ink::Muted, colour),
-        keycap("r", colour),
-        ink("refresh", Ink::Muted, colour),
-        keycap("q", colour),
-        ink("quit", Ink::Muted, colour),
-    )?;
+    if width >= 82 {
+        writeln!(
+            stdout,
+            "  {} {}   {} {}   {} {}   {} {}   {} {}   {} {}",
+            keycap("↑↓", colour),
+            ink("move", Ink::Muted, colour),
+            keycap("↵", colour),
+            ink("open", Ink::Muted, colour),
+            keycap("/", colour),
+            ink("search", Ink::Muted, colour),
+            keycap("?", colour),
+            ink("help", Ink::Muted, colour),
+            keycap("r", colour),
+            ink("refresh", Ink::Muted, colour),
+            keycap("q", colour),
+            ink("quit", Ink::Muted, colour)
+        )?;
+    } else {
+        writeln!(
+            stdout,
+            "  {} {}   {} {}   {} {}",
+            keycap("↑↓", colour),
+            ink("move", Ink::Muted, colour),
+            keycap("↵", colour),
+            ink("open", Ink::Muted, colour),
+            keycap("q", colour),
+            ink("quit", Ink::Muted, colour)
+        )?;
+    }
     if rows >= 22 {
         writeln!(stdout, "{}", ink(&format!("╰{rule}╯"), Ink::Border, colour))?;
     }
@@ -1165,26 +1281,54 @@ fn render_specialist(
         cursor::MoveTo(0, 0),
         terminal::Clear(ClearType::All)
     )?;
-    let width = terminal::size()
-        .map(|(width, _)| usize::from(width).clamp(58, 150))
-        .unwrap_or(100);
+    let columns = terminal::size().map_or(100, |(width, _)| width);
+    if columns < 36 || rows < 10 {
+        writeln!(stdout, "LENS / {}", view.title().to_ascii_uppercase())?;
+        writeln!(stdout, "Terminal too small ({columns}x{rows}).")?;
+        writeln!(stdout, "Resize to at least 36x10 or press q to quit.")?;
+        stdout.flush()?;
+        return Ok(());
+    }
+    let width = usize::from(columns);
     let colour = terminal_colour_enabled();
     let rule = "─".repeat(width.saturating_sub(2));
     writeln!(stdout, "{}", ink(&format!("╭{rule}╮"), Ink::Border, colour))?;
-    writeln!(
-        stdout,
-        "  {}{}{}  {}  {}  {}",
-        ink("DATAPLICITY", Ink::Brand, colour),
-        ink(" / ", Ink::Muted, colour),
-        ink(&view.title().to_ascii_uppercase(), Ink::Bright, colour),
-        ink("◆", Ink::Border, colour),
-        ink(&snapshot.host.hostname, Ink::Info, colour),
-        if loading {
-            badge(" LOADING ", Ink::Attention, colour)
-        } else {
-            badge(" LIVE ", Ink::Success, colour)
-        },
-    )?;
+    if width >= 64 {
+        writeln!(
+            stdout,
+            "  {}{}{}  {}  {}  {}",
+            ink("DATAPLICITY", Ink::Brand, colour),
+            ink(" / ", Ink::Muted, colour),
+            ink(&view.title().to_ascii_uppercase(), Ink::Bright, colour),
+            ink("◆", Ink::Border, colour),
+            ink(
+                &truncate_text(&snapshot.host.hostname, width.saturating_sub(42)),
+                Ink::Info,
+                colour
+            ),
+            if loading {
+                badge(" LOADING ", Ink::Attention, colour)
+            } else {
+                badge(" LIVE ", Ink::Success, colour)
+            }
+        )?;
+    } else {
+        writeln!(
+            stdout,
+            "  {}  {}  {}",
+            ink(&view.title().to_ascii_uppercase(), Ink::Brand, colour),
+            ink(
+                &truncate_text(&snapshot.host.hostname, width.saturating_sub(24)),
+                Ink::Info,
+                colour
+            ),
+            if loading {
+                badge(" … ", Ink::Attention, colour)
+            } else {
+                badge(" LIVE ", Ink::Success, colour)
+            }
+        )?;
+    }
     writeln!(
         stdout,
         "  {}",
@@ -1228,7 +1372,18 @@ fn render_specialist(
         "\n{}",
         ink(&format!("├{rule}┤"), Ink::Border, colour)
     )?;
-    if view != View::Processes && specialist_item_count(view, snapshot) > 0 {
+    if width < 64 {
+        writeln!(
+            stdout,
+            "  {} {}   {} {}   {} {}",
+            keycap("↑↓", colour),
+            ink("move", Ink::Muted, colour),
+            keycap("↵", colour),
+            ink("open", Ink::Muted, colour),
+            keycap("q", colour),
+            ink("quit", Ink::Muted, colour)
+        )?;
+    } else if view != View::Processes && specialist_item_count(view, snapshot) > 0 {
         if inspecting {
             writeln!(
                 stdout,
@@ -1342,14 +1497,23 @@ fn render_log_specialist(
         return Ok(());
     }
 
-    writeln!(
-        out,
-        "  {}  {}  {}  {}",
-        ink("LEVEL", Ink::Label, colour),
-        ink("TIME", Ink::Label, colour),
-        ink("SOURCE", Ink::Label, colour),
-        ink("MESSAGE", Ink::Label, colour),
-    )?;
+    if width >= 70 {
+        writeln!(
+            out,
+            "  {}  {}  {}  {}",
+            ink("LEVEL", Ink::Label, colour),
+            ink("TIME", Ink::Label, colour),
+            ink("SOURCE", Ink::Label, colour),
+            ink("MESSAGE", Ink::Label, colour)
+        )?;
+    } else {
+        writeln!(
+            out,
+            "  {}  {}",
+            ink("TIME", Ink::Label, colour),
+            ink("MESSAGE", Ink::Label, colour)
+        )?;
+    }
     let capacity = usize::from(rows.saturating_sub(9)).max(1);
     let start = viewport_start(selected, snapshot.logs.len(), capacity);
     let message_width = width.saturating_sub(50).max(16);
@@ -1362,14 +1526,23 @@ fn render_log_specialist(
         } else {
             String::new()
         };
-        let row = format!(
-            "  {:<8} {:<8} {:<22} {}{}",
-            truncate_text(priority, 8),
-            time,
-            truncate_text(source, 22),
-            truncate_text(&item.message, message_width.saturating_sub(repeat.len())),
-            repeat,
-        );
+        let row = if width >= 70 {
+            format!(
+                "  {:<8} {:<8} {:<22} {}{}",
+                truncate_text(priority, 8),
+                time,
+                truncate_text(source, 22),
+                truncate_text(&item.message, message_width.saturating_sub(repeat.len())),
+                repeat
+            )
+        } else {
+            format!(
+                "  {:<8} {}{}",
+                time,
+                truncate_text(&item.message, width.saturating_sub(14 + repeat.len())),
+                repeat
+            )
+        };
         if index == selected {
             writeln!(out, "{}", selected_row(&row, colour))?;
         } else {
@@ -1434,14 +1607,24 @@ fn render_service_specialist(
         )?;
         return Ok(());
     }
-    writeln!(
-        out,
-        "  {:<34} {:<12} {:<14} {}",
-        ink("SERVICE", Ink::Label, colour),
-        ink("ACTIVE", Ink::Label, colour),
-        ink("STATE", Ink::Label, colour),
-        ink("DESCRIPTION", Ink::Label, colour)
-    )?;
+    if width >= 70 {
+        writeln!(
+            out,
+            "  {:<34} {:<12} {:<14} {}",
+            ink("SERVICE", Ink::Label, colour),
+            ink("ACTIVE", Ink::Label, colour),
+            ink("STATE", Ink::Label, colour),
+            ink("DESCRIPTION", Ink::Label, colour)
+        )?;
+    } else {
+        writeln!(
+            out,
+            "  {:<width$} {}",
+            ink("SERVICE", Ink::Label, colour),
+            ink("STATE", Ink::Label, colour),
+            width = width.saturating_sub(16)
+        )?;
+    }
     let capacity = usize::from(rows.saturating_sub(9)).max(1);
     let start = viewport_start(selected, snapshot.services.len(), capacity);
     for (index, service) in snapshot
@@ -1451,13 +1634,22 @@ fn render_service_specialist(
         .skip(start)
         .take(capacity)
     {
-        let row = format!(
-            "  {:<34} {:<12} {:<14} {}",
-            truncate_text(&service.name, 34),
-            service.active,
-            service.sub,
-            truncate_text(&service.description, width.saturating_sub(66).max(12))
-        );
+        let row = if width >= 70 {
+            format!(
+                "  {:<34} {:<12} {:<14} {}",
+                truncate_text(&service.name, 34),
+                service.active,
+                service.sub,
+                truncate_text(&service.description, width.saturating_sub(66).max(4))
+            )
+        } else {
+            format!(
+                "  {:<name_width$} {}",
+                truncate_text(&service.name, width.saturating_sub(16)),
+                service.active,
+                name_width = width.saturating_sub(16)
+            )
+        };
         if index == selected {
             writeln!(out, "{}", selected_row(&row, colour))?;
         } else {
@@ -1554,18 +1746,48 @@ fn render_disk_specialist(
         }
         return Ok(());
     }
-    writeln!(
-        out,
-        "  {:<9} {:<34} {:>9}  {}",
-        ink("TYPE", Ink::Label, colour),
-        ink("TARGET", Ink::Label, colour),
-        ink("USE", Ink::Label, colour),
-        ink("SOURCE", Ink::Label, colour)
-    )?;
+    if width >= 70 {
+        writeln!(
+            out,
+            "  {:<9} {:<34} {:>9}  {}",
+            ink("TYPE", Ink::Label, colour),
+            ink("TARGET", Ink::Label, colour),
+            ink("USE", Ink::Label, colour),
+            ink("SOURCE", Ink::Label, colour)
+        )?;
+    } else {
+        writeln!(
+            out,
+            "  {:<8} {:<width$} {}",
+            ink("TYPE", Ink::Label, colour),
+            ink("TARGET", Ink::Label, colour),
+            ink("USE", Ink::Label, colour),
+            width = width.saturating_sub(23)
+        )?;
+    }
     let capacity = usize::from(rows.saturating_sub(9)).max(1);
     let start = viewport_start(selected, count, capacity);
     for index in start..(start + capacity).min(count) {
-        let row = if let Some(mount) = snapshot.mounts.get(index) {
+        let row = if width < 70 {
+            if let Some(mount) = snapshot.mounts.get(index) {
+                format!(
+                    "  {:<8} {:<target_width$} {:>6.1}%",
+                    "mount",
+                    truncate_text(&mount.target, width.saturating_sub(23)),
+                    mount.used_percent,
+                    target_width = width.saturating_sub(23)
+                )
+            } else {
+                let device = &snapshot.block_devices[index - snapshot.mounts.len()];
+                format!(
+                    "  {:<8} {:<target_width$} {:>7}",
+                    "device",
+                    truncate_text(&device.name, width.saturating_sub(23)),
+                    human_bytes(device.size_bytes),
+                    target_width = width.saturating_sub(23)
+                )
+            }
+        } else if let Some(mount) = snapshot.mounts.get(index) {
             format!(
                 "  {:<9} {:<34} {:>8.1}%  {}",
                 "mount",
@@ -1730,18 +1952,69 @@ fn render_net_specialist(
         }
         return Ok(());
     }
-    writeln!(
-        out,
-        "  {:<11} {:<18} {:<12} {}",
-        ink("TYPE", Ink::Label, colour),
-        ink("NAME", Ink::Label, colour),
-        ink("STATE", Ink::Label, colour),
-        ink("DETAIL", Ink::Label, colour)
-    )?;
+    if width >= 70 {
+        writeln!(
+            out,
+            "  {:<11} {:<18} {:<12} {}",
+            ink("TYPE", Ink::Label, colour),
+            ink("NAME", Ink::Label, colour),
+            ink("STATE", Ink::Label, colour),
+            ink("DETAIL", Ink::Label, colour)
+        )?;
+    } else {
+        writeln!(
+            out,
+            "  {:<10} {:<name_width$} {}",
+            ink("TYPE", Ink::Label, colour),
+            ink("NAME", Ink::Label, colour),
+            ink("STATE", Ink::Label, colour),
+            name_width = width.saturating_sub(25)
+        )?;
+    }
     let capacity = usize::from(rows.saturating_sub(9)).max(1);
     let start = viewport_start(selected, count, capacity);
     for index in start..(start + capacity).min(count) {
-        let row = if let Some(interface) = snapshot.interfaces.get(index) {
+        let row = if width < 70 {
+            if let Some(interface) = snapshot.interfaces.get(index) {
+                format!(
+                    "  {:<10} {:<name_width$} {}",
+                    "interface",
+                    truncate_text(&interface.name, width.saturating_sub(25)),
+                    interface.state,
+                    name_width = width.saturating_sub(25)
+                )
+            } else if index < route_end {
+                let route = &snapshot.routes[index - interface_end];
+                format!(
+                    "  {:<10} {:<name_width$} {}",
+                    "route",
+                    truncate_text(&route.destination, width.saturating_sub(25)),
+                    route.interface.as_deref().unwrap_or("-"),
+                    name_width = width.saturating_sub(25)
+                )
+            } else if index < socket_end {
+                let socket = &snapshot.sockets[index - route_end];
+                format!(
+                    "  {:<10} {:<name_width$} {}",
+                    "listener",
+                    truncate_text(&socket.local, width.saturating_sub(25)),
+                    socket.state,
+                    name_width = width.saturating_sub(25)
+                )
+            } else {
+                let modem = &snapshot.cellular_modems[index - socket_end];
+                format!(
+                    "  {:<10} {:<name_width$} {}",
+                    "cellular",
+                    truncate_text(
+                        modem.model.as_deref().unwrap_or(&modem.path),
+                        width.saturating_sub(25)
+                    ),
+                    modem.state,
+                    name_width = width.saturating_sub(25)
+                )
+            }
+        } else if let Some(interface) = snapshot.interfaces.get(index) {
             format!(
                 "  {:<11} {:<18} {:<12} {}",
                 "interface",
@@ -1878,12 +2151,20 @@ fn render_health_specialist(
         .skip(start)
         .take(capacity)
     {
-        let row = format!(
-            "  {:<11} {:<30} {}",
-            finding.severity.label().to_ascii_uppercase(),
-            truncate_text(&finding.title, 30),
-            truncate_text(&finding.summary, width.saturating_sub(47).max(12)),
-        );
+        let row = if width >= 70 {
+            format!(
+                "  {:<11} {:<30} {}",
+                finding.severity.label().to_ascii_uppercase(),
+                truncate_text(&finding.title, 30),
+                truncate_text(&finding.summary, width.saturating_sub(47))
+            )
+        } else {
+            format!(
+                "  {:<10} {}",
+                finding.severity.label().to_ascii_uppercase(),
+                truncate_text(&finding.title, width.saturating_sub(14))
+            )
+        };
         if index == selected {
             writeln!(out, "{}", selected_row(&row, colour))?;
         } else {
@@ -1930,9 +2211,15 @@ fn specialist_loop(view: View, args: &ViewArgs, stdout: &mut impl Write) -> Resu
             redraw = false;
         }
 
-        if event::poll(Duration::from_millis(100))?
-            && let Event::Key(key) = event::read()?
-        {
+        if event::poll(Duration::from_millis(100))? {
+            let event = event::read()?;
+            if matches!(event, Event::Resize(_, _)) {
+                redraw = true;
+                continue;
+            }
+            let Event::Key(key) = event else {
+                continue;
+            };
             match key.code {
                 KeyCode::Char('q') => return Ok(()),
                 KeyCode::Esc if inspecting => {
@@ -4163,7 +4450,7 @@ mod tests {
     fn cockpit_leads_with_host_status_while_details_load() {
         let snapshot = demo_snapshot();
         let mut loading_output = Vec::new();
-        render_cockpit(&snapshot, 0, true, 30, &mut loading_output).expect("loading cockpit");
+        render_cockpit(&snapshot, 0, true, 36, &mut loading_output).expect("loading cockpit");
         let loading_output = String::from_utf8(loading_output).expect("UTF-8");
         assert!(loading_output.contains("CPU"));
         assert!(loading_output.contains("Memory"));
@@ -4368,6 +4655,19 @@ mod tests {
             assert!(!list.is_empty());
             assert!(!detail.is_empty());
         }
+    }
+
+    #[test]
+    fn specialist_lists_reflow_at_compact_width() {
+        let snapshot = demo_snapshot();
+        let mut output = Vec::new();
+        render_service_specialist(&snapshot, 0, false, 16, 50, &mut output)
+            .expect("compact services");
+        render_log_specialist(&snapshot, 0, false, 16, 50, &mut output).expect("compact logs");
+        render_disk_specialist(&snapshot, 0, false, 16, 50, &mut output).expect("compact storage");
+        render_net_specialist(&snapshot, 0, false, 16, 50, &mut output).expect("compact network");
+        render_health_specialist(&snapshot, 0, false, 16, 50, &mut output).expect("compact health");
+        assert!(!output.is_empty());
     }
 
     #[test]
