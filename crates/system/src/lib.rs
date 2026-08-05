@@ -1395,9 +1395,15 @@ fn cockpit_log_summary(snapshot: &SystemSnapshot) -> String {
 
 fn interactive_accounts(snapshot: &SystemSnapshot) -> impl Iterator<Item = &AccountInfo> {
     snapshot.accounts.iter().filter(|account| {
-        !account.shell.is_empty()
-            && !account.shell.ends_with("/false")
-            && !account.shell.ends_with("/nologin")
+        Path::new(&account.shell)
+            .file_name()
+            .and_then(|value| value.to_str())
+            .is_some_and(|shell| {
+                matches!(
+                    shell,
+                    "sh" | "bash" | "zsh" | "fish" | "csh" | "tcsh" | "ksh" | "dash" | "ash"
+                )
+            })
     })
 }
 
