@@ -30,25 +30,25 @@ repository = "https://github.com/wildfoundry/dataplicity-lens"
 homepage = "https://lens.dataplicity.com/"
 
 [workspace.dependencies]
-anyhow = "=1.0.103"
-clap = { version = "=4.5.23", features = ["derive", "env"] }
-clap_complete = "=4.5.40"
-clap_mangen = "=0.2.24"
+anyhow = "=1.0.104"
+clap = { version = "=4.6.5", features = ["derive", "env"] }
+clap_complete = "=4.6.8"
+clap_mangen = "=0.3.0"
 crossterm = "=0.29.0"
 indexmap = { version = "=2.7.0", features = ["serde"] }
-insta = { version = "=1.42.0", features = ["json"] }
-procfs = "=0.16.0"
-proptest = "=1.6.0"
+insta = { version = "=1.48.0", features = ["json"] }
+procfs = "=0.18.0"
+proptest = "=1.11.0"
 ratatui = "=0.30.2"
-serde = { version = "=1.0.228", features = ["derive"] }
-serde_json = "=1.0.145"
-thiserror = "=2.0.11"
-time = { version = "=0.3.47", features = ["formatting", "local-offset", "macros", "serde"] }
-toml = "=0.8.23"
-tracing = "=0.1.41"
-tracing-subscriber = { version = "=0.3.20", features = ["env-filter", "fmt"] }
-unicode-width = "=0.2.0"
-criterion = { version = "=0.5.1", features = ["html_reports"] }
+serde = { version = "=1.0.229", features = ["derive"] }
+serde_json = "=1.0.151"
+thiserror = "=2.0.19"
+time = { version = "=0.3.55", features = ["formatting", "local-offset", "macros", "serde"] }
+toml = "=1.1.4"
+tracing = "=0.1.44"
+tracing-subscriber = { version = "=0.3.23", features = ["env-filter", "fmt"] }
+unicode-width = "=0.2.2"
+criterion = { version = "=0.8.2", features = ["html_reports"] }
 
 [workspace.lints.rust]
 unsafe_code = "forbid"
