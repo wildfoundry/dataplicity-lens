@@ -48,7 +48,7 @@ Required host-level files produce a clear top-level error. Optional process fiel
 unavailable and collection continues. Environment variables are deliberately not read.
 
 The interactive `lens` cockpit collects host and process data for its first screen, then enriches that
-snapshot with services, logs, storage and network data on a background thread. Specialist commands
+snapshot with services, logs, storage, network and hardware data on background threads. Specialist commands
 collect only their own domain for both interactive and non-interactive use. External commands have
 individual deadlines; a timeout becomes an unavailable-data warning without blocking another domain.
 
@@ -57,8 +57,6 @@ individual deadlines; a timeout becomes an unavailable-data warning without bloc
 History is session-local and bounded. CPU usage is calculated from process tick deltas relative to
 host tick deltas. I/O rates use counter deltas over measured elapsed time. Counter decreases are
 saturating, protecting against process replacement, resets and malformed data.
-
-No persistence is included in v0.3.0.
 
 ## Findings
 

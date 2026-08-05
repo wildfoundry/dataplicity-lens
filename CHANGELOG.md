@@ -20,6 +20,8 @@ versioning once the first public release is tagged.
   review, confirmation and post-action verification.
 - A `lens-system` view for clock/NTP state, resolver configuration, local accounts and groups, and
   public certificate files visible to the invoking user.
+- A `lens-hardware` view for device identity, firmware, Linux thermal/hwmon sensors, Raspberry Pi
+  power and throttling status, and USB/serial inventory on Linux and macOS.
 
 ### Changed
 
@@ -56,6 +58,8 @@ versioning once the first public release is tagged.
 - Wide storage detail views use paired fields instead of leaving most of the terminal empty.
 - Installation guidance now starts with Raspberry Pi OS and Debian packages, with macOS as a
   supported secondary path.
+- User documentation now describes shipped behavior only; roadmap and unimplemented-feature copy
+  has been removed from the product site.
 
 ## [0.2.0] - unreleased
 

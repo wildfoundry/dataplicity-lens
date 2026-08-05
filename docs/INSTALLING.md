@@ -31,7 +31,7 @@ lens
 
 This is a local package install through `apt`; it resolves package requirements and registers Lens
 with the system package database. The `armhf` build targets the hard-float ABI used by 32-bit
-Raspberry Pi OS. All seven commands and their manual pages are installed under `/usr`.
+Raspberry Pi OS. All nine commands and their manual pages are installed under `/usr`.
 
 For a quick non-interactive check on an unattended device:
 
@@ -50,7 +50,7 @@ RPM packages for supported Fedora/RHEL-family targets. Verify the selected artif
 
 ## macOS with Homebrew
 
-The repository contains a Homebrew formula and a test installer that builds all seven applications,
+The repository contains a Homebrew formula and a test installer that builds all nine applications,
 installs their man pages and shell completions, then checks sample output and native macOS collection.
 
 Prerequisites:
@@ -81,7 +81,8 @@ lens-health --json
 ```
 
 Open the interactive process explorer with `lens-top` and press `q` to exit. The other native
-collectors are available as `lens-services`, `lens-logs`, `lens-disk` and `lens-net`.
+collectors are `lens-services`, `lens-logs`, `lens-disk`, `lens-net`, `lens-hardware`, `lens-system`
+and `lens-health`.
 
 macOS privacy controls can hide some unified-log or per-process details. Lens preserves normal user
 permissions and reports unavailable information as warnings instead of requiring `sudo` or failing

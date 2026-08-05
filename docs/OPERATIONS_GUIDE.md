@@ -20,6 +20,7 @@ Open a selected domain with the arrow keys and `Enter`, or start its command dir
 | What was logged around a failure? | `lens-logs` |
 | Which filesystem is under pressure? | `lens-disk` |
 | Does the device have the expected address, route, listener or modem? | `lens-net` |
+| Is the device hot, throttled, under-voltage or missing attached hardware? | `lens-hardware` |
 | Is time synchronized and which DNS, identity or certificate context applies? | `lens-system` |
 | What evidence triggered a warning? | `lens-health` |
 
@@ -87,8 +88,8 @@ have free bytes but no free inodes. Confirm that the mount path is the one used 
 container, removable and simulator mounts can make the fullest entry irrelevant to the failure.
 
 If space did not return after deleting a large file, inspect deleted-but-open files. A running
-process can retain the underlying storage until it closes the file or exits. Lens reports that
-condition where the platform exposes it, but does not delete, unmount, resize or repair storage.
+process can retain the underlying storage until it closes the file or exits. Lens reports the
+process, path and retained size where the platform exposes them.
 
 ```sh
 lens-disk --plain --filter /var
@@ -113,9 +114,8 @@ lens-net --json | jq '{interfaces, routes, listeners, cellular_modems}'
 ```
 
 On Linux, Lens queries ModemManager when `mmcli` is installed. It can show modem registration state,
-access technology, signal quality, operator and SIM identifiers made available by ModemManager. It
-does not send vendor-specific AT commands or configure the connection. Treat ICCIDs and related SIM
-identifiers as sensitive inventory data before sharing output.
+access technology, signal quality, operator and SIM identifiers made available by ModemManager.
+Treat ICCIDs and related SIM identifiers as sensitive inventory data before sharing output.
 
 ## Investigate logs without hiding collection failures
 
@@ -142,7 +142,7 @@ lens-logs --json | jq '{count: (.logs | length), warnings: .collection_warnings}
 
 ## Use health findings as leads
 
-`lens-health` combines process, service, log, storage and network checks. Open a finding to read the
+`lens-health` combines process, service, log, storage, network and hardware checks. Open a finding to read the
 observed evidence, related entity and suggested next check. The severity is a triage aid; follow the
 evidence in the relevant specialist before taking action.
 

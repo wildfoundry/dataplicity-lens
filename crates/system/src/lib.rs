@@ -1,5 +1,7 @@
 #![forbid(unsafe_code)]
 
+mod hardware;
+
 use std::{
     cmp::Ordering,
     env,
@@ -24,8 +26,8 @@ use crossterm::{
 };
 use lens_model::{
     AccountInfo, CellularModem, CellularSim, CertificateInfo, Cgroup, ClockContext, DnsContext,
-    GroupInfo, IoCounters, Process, ProcessId, ProcessState, SchemaVersion, ServiceReference,
-    Timestamp, User,
+    GroupInfo, HardwareDevice, HardwareIdentity, IoCounters, Process, ProcessId, ProcessState,
+    SchemaVersion, ServiceReference, TemperatureSensor, Timestamp, User,
 };
 pub use lens_model::{
     BlockDevice, DeletedOpenFile, EntityId, Filesystem, Interface, LogEntry, LogSource, Mount,
@@ -47,17 +49,19 @@ pub enum View {
     Logs,
     Disk,
     Net,
+    Hardware,
     System,
     Health,
 }
 
 impl View {
-    pub const ALL: [Self; 7] = [
+    pub const ALL: [Self; 8] = [
         Self::Processes,
         Self::Services,
         Self::Logs,
         Self::Disk,
         Self::Net,
+        Self::Hardware,
         Self::System,
         Self::Health,
     ];
@@ -69,6 +73,7 @@ impl View {
             Self::Logs => "lens-logs",
             Self::Disk => "lens-disk",
             Self::Net => "lens-net",
+            Self::Hardware => "lens-hardware",
             Self::System => "lens-system",
             Self::Health => "lens-health",
         }
@@ -81,6 +86,7 @@ impl View {
             Self::Logs => "Logs",
             Self::Disk => "Storage",
             Self::Net => "Network",
+            Self::Hardware => "Hardware",
             Self::System => "System",
             Self::Health => "Health",
         }
@@ -783,6 +789,10 @@ fn spawn_specialist_collection(view: View, args: ViewArgs) -> Receiver<Specialis
                 snapshot.cellular_modems = collect_cellular(&mut snapshot.collection_warnings);
                 let _ = send_specialist_update(&sender, snapshot, &args, false, "Ready");
             }
+            View::Hardware => {
+                collect_hardware_context(&mut snapshot);
+                let _ = send_specialist_update(&sender, snapshot, &args, false, "Ready");
+            }
             View::System => {
                 collect_system_context(&mut snapshot);
                 let _ = send_specialist_update(&sender, snapshot, &args, false, "Ready");
@@ -823,6 +833,7 @@ fn spawn_specialist_collection(view: View, args: ViewArgs) -> Receiver<Specialis
                 snapshot.deleted_open_files =
                     collect_deleted_open_files(&mut snapshot.collection_warnings);
                 snapshot.block_devices = collect_block_devices(&mut snapshot.collection_warnings);
+                collect_hardware_context(&mut snapshot);
                 snapshot.findings = diagnose(&snapshot);
                 snapshot
                     .relationships
@@ -1200,6 +1211,20 @@ fn cockpit_view_summary(view: View, snapshot: &SystemSnapshot, loading: bool) ->
             snapshot.sockets.len(),
             snapshot.cellular_modems.len()
         ),
+        View::Hardware => format!(
+            "{} sensors · {} USB · {} serial",
+            snapshot.temperatures.len(),
+            snapshot
+                .hardware_devices
+                .iter()
+                .filter(|device| device.kind == "usb")
+                .count(),
+            snapshot
+                .hardware_devices
+                .iter()
+                .filter(|device| device.kind == "serial")
+                .count()
+        ),
         View::System => format!(
             "{} users · {} groups · {} certificates",
             snapshot.accounts.len(),
@@ -1359,6 +1384,7 @@ fn specialist_item_count(view: View, snapshot: &SystemSnapshot) -> usize {
                 + snapshot.sockets.len()
                 + snapshot.cellular_modems.len()
         }
+        View::Hardware => hardware_rows(snapshot).len(),
         View::System => system_rows(snapshot).len(),
         View::Health => snapshot.findings.len(),
         View::Processes => 0,
@@ -1375,6 +1401,11 @@ fn specialist_has_data(view: View, snapshot: &SystemSnapshot) -> bool {
             !snapshot.interfaces.is_empty()
                 || !snapshot.routes.is_empty()
                 || !snapshot.cellular_modems.is_empty()
+        }
+        View::Hardware => {
+            hardware_identity_present(&snapshot.hardware)
+                || !snapshot.temperatures.is_empty()
+                || !snapshot.hardware_devices.is_empty()
         }
         View::System => !snapshot.dns.source.is_empty() || !snapshot.accounts.is_empty(),
         View::Health => !snapshot.findings.is_empty(),
@@ -1546,6 +1577,9 @@ fn render_specialist(
         View::Logs => render_log_specialist(snapshot, selected, inspecting, rows, width, stdout)?,
         View::Disk => render_disk_specialist(snapshot, selected, inspecting, rows, width, stdout)?,
         View::Net => render_net_specialist(snapshot, selected, inspecting, rows, width, stdout)?,
+        View::Hardware => {
+            render_hardware_specialist(snapshot, selected, inspecting, rows, width, stdout)?
+        }
         View::System => {
             render_system_specialist(snapshot, selected, inspecting, rows, width, stdout)?
         }
@@ -2442,6 +2476,199 @@ fn render_health_specialist(
     Ok(())
 }
 
+fn hardware_identity_present(identity: &HardwareIdentity) -> bool {
+    identity.manufacturer.is_some()
+        || identity.model.is_some()
+        || identity.board.is_some()
+        || identity.board_revision.is_some()
+        || identity.serial_number.is_some()
+        || identity.firmware_version.is_some()
+        || identity.raspberry_pi.is_some()
+}
+
+fn hardware_rows(snapshot: &SystemSnapshot) -> Vec<(String, String, String)> {
+    let mut rows = Vec::new();
+    if hardware_identity_present(&snapshot.hardware) {
+        let title = snapshot
+            .hardware
+            .model
+            .clone()
+            .or_else(|| snapshot.hardware.board.clone())
+            .unwrap_or_else(|| "System hardware".into());
+        let details = [
+            snapshot
+                .hardware
+                .manufacturer
+                .as_deref()
+                .map(|value| format!("Manufacturer: {value}")),
+            snapshot
+                .hardware
+                .board
+                .as_deref()
+                .map(|value| format!("Board: {value}")),
+            snapshot
+                .hardware
+                .board_revision
+                .as_deref()
+                .map(|value| format!("Revision: {value}")),
+            snapshot
+                .hardware
+                .serial_number
+                .as_deref()
+                .map(|value| format!("Serial: {value}")),
+            snapshot
+                .hardware
+                .firmware_version
+                .as_deref()
+                .map(|value| format!("Firmware: {value}")),
+        ]
+        .into_iter()
+        .flatten()
+        .collect::<Vec<_>>()
+        .join("\n");
+        rows.push(("SYSTEM".into(), title, details));
+        if let Some(pi) = &snapshot.hardware.raspberry_pi {
+            let state = if pi.throttled_raw.is_none() {
+                "Firmware status unavailable".into()
+            } else if pi.active_conditions.is_empty() {
+                "Power and thermal state normal".into()
+            } else {
+                pi.active_conditions.join(", ")
+            };
+            let mut details = format!(
+                "Current: {}\nRecorded: {}",
+                if pi.throttled_raw.is_none() {
+                    "unavailable".into()
+                } else if pi.active_conditions.is_empty() {
+                    "none".into()
+                } else {
+                    pi.active_conditions.join(", ")
+                },
+                if pi.throttled_raw.is_none() {
+                    "unavailable".into()
+                } else if pi.historical_conditions.is_empty() {
+                    "none".into()
+                } else {
+                    pi.historical_conditions.join(", ")
+                }
+            );
+            if let Some(raw) = pi.throttled_raw {
+                details.push_str(&format!("\nFirmware flags: 0x{raw:x}"));
+            }
+            rows.push(("RASPBERRY PI".into(), state, details));
+        }
+    }
+    rows.extend(snapshot.temperatures.iter().map(|sensor| {
+        let mut details = format!("Source: {}", sensor.source);
+        if let Some(maximum) = sensor.max_c {
+            details.push_str(&format!("\nMaximum: {maximum:.1} °C"));
+        }
+        if let Some(critical) = sensor.critical_c {
+            details.push_str(&format!("\nCritical: {critical:.1} °C"));
+        }
+        (
+            "TEMPERATURE".into(),
+            format!("{} · {:.1} °C", sensor.name, sensor.temperature_c),
+            details,
+        )
+    }));
+    rows.extend(snapshot.hardware_devices.iter().map(|device| {
+        let details = [
+            Some(format!("Path: {}", device.path)),
+            device
+                .manufacturer
+                .as_deref()
+                .map(|value| format!("Manufacturer: {value}")),
+            device
+                .vendor_id
+                .as_deref()
+                .map(|value| format!("Vendor ID: {value}")),
+            device
+                .product_id
+                .as_deref()
+                .map(|value| format!("Product ID: {value}")),
+            device
+                .serial_number
+                .as_deref()
+                .map(|value| format!("Serial: {value}")),
+        ]
+        .into_iter()
+        .flatten()
+        .collect::<Vec<_>>()
+        .join("\n");
+        (
+            device.kind.to_ascii_uppercase(),
+            device.name.clone(),
+            details,
+        )
+    }));
+    rows
+}
+
+fn render_hardware_specialist(
+    snapshot: &SystemSnapshot,
+    selected: usize,
+    inspecting: bool,
+    rows: u16,
+    width: usize,
+    out: &mut impl Write,
+) -> Result<()> {
+    let colour = terminal_colour_enabled();
+    let items = hardware_rows(snapshot);
+    if items.is_empty() {
+        writeln!(
+            out,
+            "\n  {}",
+            ink("No hardware inventory was detected.", Ink::Muted, colour)
+        )?;
+        return Ok(());
+    }
+    let (kind, value, details) = &items[selected.min(items.len() - 1)];
+    if inspecting {
+        writeln!(out, "\n  {}", ink(kind, Ink::Label, colour))?;
+        writeln!(
+            out,
+            "  {}",
+            ink(
+                &truncate_text(value, width.saturating_sub(4)),
+                Ink::Bright,
+                colour
+            )
+        )?;
+        for line in details.lines() {
+            writeln!(
+                out,
+                "  {}",
+                ink(
+                    &truncate_text(line, width.saturating_sub(4)),
+                    Ink::Muted,
+                    colour
+                )
+            )?;
+        }
+        return Ok(());
+    }
+    writeln!(
+        out,
+        "  Identity, temperatures, Raspberry Pi status and attached devices\n"
+    )?;
+    let capacity = usize::from(rows.saturating_sub(11)).max(1);
+    let start = viewport_start(selected, items.len(), capacity);
+    for (index, (kind, value, _)) in items.iter().enumerate().skip(start).take(capacity) {
+        let row = format!(
+            "  {:<13} {}",
+            kind,
+            truncate_text(value, width.saturating_sub(18))
+        );
+        if index == selected {
+            writeln!(out, "{}", selected_row(&row, colour))?;
+        } else {
+            writeln!(out, "{}", ink(&row, Ink::Muted, colour))?;
+        }
+    }
+    Ok(())
+}
+
 fn system_rows(snapshot: &SystemSnapshot) -> Vec<(String, String)> {
     let mut rows = vec![
         (
@@ -3292,6 +3519,7 @@ fn collect_view(
             snapshot.sockets = collect_sockets(&mut snapshot.collection_warnings);
             snapshot.cellular_modems = collect_cellular(&mut snapshot.collection_warnings);
         }
+        View::Hardware => collect_hardware_context(&mut snapshot),
         View::System => collect_system_context(&mut snapshot),
         View::Health => return enrich_snapshot(snapshot, since, log_files),
     }
@@ -3304,42 +3532,51 @@ fn enrich_snapshot(
     since: Option<&str>,
     log_files: &[PathBuf],
 ) -> SystemSnapshot {
-    let (service_result, log_result, disk_result, net_result) = thread::scope(|scope| {
-        let services = scope.spawn(|| {
-            let mut warnings = Vec::new();
-            let values = collect_services(&mut warnings);
-            (values, warnings)
+    let (service_result, log_result, disk_result, net_result, hardware_result) =
+        thread::scope(|scope| {
+            let services = scope.spawn(|| {
+                let mut warnings = Vec::new();
+                let values = collect_services(&mut warnings);
+                (values, warnings)
+            });
+            let logs = scope.spawn(|| {
+                let mut warnings = Vec::new();
+                let mut values = collect_logs(&mut warnings, since, 1000);
+                let sources = collect_file_logs(log_files, &mut values, &mut warnings, 1000);
+                (values, sources, warnings)
+            });
+            let disk = scope.spawn(|| {
+                let mut warnings = Vec::new();
+                let mut mounts = collect_mounts(&mut warnings);
+                apply_inode_usage(&mut mounts, &mut warnings);
+                let deleted = collect_deleted_open_files(&mut warnings);
+                let devices = collect_block_devices(&mut warnings);
+                (mounts, deleted, devices, warnings)
+            });
+            let net = scope.spawn(|| {
+                let mut warnings = Vec::new();
+                let interfaces = collect_interfaces(&mut warnings);
+                let routes = collect_routes(&mut warnings);
+                let sockets = collect_sockets(&mut warnings);
+                let cellular = collect_cellular(&mut warnings);
+                (interfaces, routes, sockets, cellular, warnings)
+            });
+            let hardware = scope.spawn(hardware::collect);
+            (
+                services.join(),
+                logs.join(),
+                disk.join(),
+                net.join(),
+                hardware.join(),
+            )
         });
-        let logs = scope.spawn(|| {
-            let mut warnings = Vec::new();
-            let mut values = collect_logs(&mut warnings, since, 1000);
-            let sources = collect_file_logs(log_files, &mut values, &mut warnings, 1000);
-            (values, sources, warnings)
-        });
-        let disk = scope.spawn(|| {
-            let mut warnings = Vec::new();
-            let mut mounts = collect_mounts(&mut warnings);
-            apply_inode_usage(&mut mounts, &mut warnings);
-            let deleted = collect_deleted_open_files(&mut warnings);
-            let devices = collect_block_devices(&mut warnings);
-            (mounts, deleted, devices, warnings)
-        });
-        let net = scope.spawn(|| {
-            let mut warnings = Vec::new();
-            let interfaces = collect_interfaces(&mut warnings);
-            let routes = collect_routes(&mut warnings);
-            let sockets = collect_sockets(&mut warnings);
-            let cellular = collect_cellular(&mut warnings);
-            (interfaces, routes, sockets, cellular, warnings)
-        });
-        (services.join(), logs.join(), disk.join(), net.join())
-    });
     let (services, service_warnings) = service_result.unwrap_or_default();
     let (logs, file_sources, log_warnings) = log_result.unwrap_or_default();
     let (mounts, deleted_open_files, block_devices, disk_warnings) =
         disk_result.unwrap_or_default();
     let (interfaces, routes, sockets, cellular_modems, net_warnings) =
         net_result.unwrap_or_default();
+    let hardware = hardware_result.unwrap_or_default();
     snapshot.collection_warnings.extend(service_warnings);
     snapshot.collection_warnings.extend(log_warnings);
     snapshot.collection_warnings.extend(disk_warnings);
@@ -3356,12 +3593,22 @@ fn enrich_snapshot(
     snapshot.routes = routes;
     snapshot.sockets = sockets;
     snapshot.cellular_modems = cellular_modems;
+    snapshot.hardware = hardware.identity;
+    snapshot.temperatures = hardware.temperatures;
+    snapshot.hardware_devices = hardware.devices;
     collect_system_context(&mut snapshot);
     snapshot.findings = diagnose(&snapshot);
     snapshot
         .relationships
         .extend(domain_relationships(&snapshot));
     snapshot
+}
+
+fn collect_hardware_context(snapshot: &mut SystemSnapshot) {
+    let hardware = hardware::collect();
+    snapshot.hardware = hardware.identity;
+    snapshot.temperatures = hardware.temperatures;
+    snapshot.hardware_devices = hardware.devices;
 }
 
 fn collect_system_context(snapshot: &mut SystemSnapshot) {
@@ -4897,6 +5144,80 @@ fn diagnose(snapshot: &SystemSnapshot) -> Vec<SystemFinding> {
             suggested_actions: vec!["Inspect preceding service logs with lens-logs.".into()],
         });
     }
+    for sensor in snapshot.temperatures.iter().filter(|sensor| {
+        sensor.temperature_c
+            >= sensor
+                .max_c
+                .unwrap_or(80.0)
+                .min(sensor.critical_c.unwrap_or(90.0))
+    }) {
+        let critical = sensor
+            .critical_c
+            .is_some_and(|threshold| sensor.temperature_c >= threshold)
+            || sensor.temperature_c >= 90.0;
+        findings.push(SystemFinding {
+            id: format!("hardware.temperature.{}", sensor.name),
+            severity: if critical {
+                Severity::Critical
+            } else {
+                Severity::Attention
+            },
+            title: "High hardware temperature".into(),
+            summary: format!("{} is {:.1} °C.", sensor.name, sensor.temperature_c),
+            evidence: vec![lens_model::Evidence {
+                label: sensor.name.clone(),
+                value: format!("{:.1}", sensor.temperature_c),
+                unit: Some("°C".into()),
+            }],
+            related_entities: vec![EntityId::Host(snapshot.host.hostname.clone())],
+            suggested_actions: vec![
+                "Open lens-hardware and inspect temperature limits and thermal status.".into(),
+            ],
+        });
+    }
+    if let Some(pi) = snapshot.hardware.raspberry_pi.as_ref() {
+        if !pi.active_conditions.is_empty() {
+            findings.push(SystemFinding {
+                id: "hardware.raspberry-pi.active-throttling".into(),
+                severity: if pi
+                    .active_conditions
+                    .iter()
+                    .any(|condition| condition == "under-voltage" || condition == "throttled")
+                {
+                    Severity::Critical
+                } else {
+                    Severity::Attention
+                },
+                title: "Raspberry Pi power or thermal constraint".into(),
+                summary: pi.active_conditions.join(", "),
+                evidence: pi
+                    .active_conditions
+                    .iter()
+                    .map(|condition| lens_model::Evidence {
+                        label: "active".into(),
+                        value: condition.clone(),
+                        unit: None,
+                    })
+                    .collect(),
+                related_entities: vec![EntityId::Host(snapshot.host.hostname.clone())],
+                suggested_actions: vec![
+                    "Open lens-hardware and check the power supply, cooling and workload.".into(),
+                ],
+            });
+        } else if !pi.historical_conditions.is_empty() {
+            findings.push(SystemFinding {
+                id: "hardware.raspberry-pi.recorded-throttling".into(),
+                severity: Severity::Information,
+                title: "Raspberry Pi recorded a power or thermal event".into(),
+                summary: pi.historical_conditions.join(", "),
+                evidence: Vec::new(),
+                related_entities: vec![EntityId::Host(snapshot.host.hostname.clone())],
+                suggested_actions: vec![
+                    "Review Raspberry Pi firmware status in lens-hardware.".into(),
+                ],
+            });
+        }
+    }
     findings.sort_by_key(|finding| std::cmp::Reverse(finding.severity));
     findings
 }
@@ -4988,6 +5309,19 @@ fn filter_snapshot(
             item.operator_name.as_deref().unwrap_or("")
         ))
     });
+    snapshot
+        .temperatures
+        .retain(|item| matches(&format!("{} {}", item.name, item.source)));
+    snapshot.hardware_devices.retain(|item| {
+        matches(&format!(
+            "{} {} {} {} {}",
+            item.kind,
+            item.name,
+            item.path,
+            item.manufacturer.as_deref().unwrap_or(""),
+            item.serial_number.as_deref().unwrap_or("")
+        ))
+    });
     snapshot.accounts.retain(|item| {
         matches(&format!(
             "{} {} {} {} {}",
@@ -5017,6 +5351,8 @@ fn filter_snapshot(
         snapshot.routes.truncate(limit);
         snapshot.sockets.truncate(limit);
         snapshot.cellular_modems.truncate(limit);
+        snapshot.temperatures.truncate(limit);
+        snapshot.hardware_devices.truncate(limit);
         snapshot.accounts.truncate(limit);
         snapshot.groups.truncate(limit);
         snapshot.certificates.truncate(limit);
@@ -5184,6 +5520,68 @@ fn render_plain(view: View, snapshot: &SystemSnapshot, out: &mut dyn Write) -> R
                         )?;
                     }
                 }
+            }
+        }
+        View::Hardware => {
+            writeln!(out, "HARDWARE")?;
+            if let Some(value) = &snapshot.hardware.manufacturer {
+                writeln!(out, "manufacturer: {value}")?;
+            }
+            if let Some(value) = &snapshot.hardware.model {
+                writeln!(out, "model: {value}")?;
+            }
+            if let Some(value) = &snapshot.hardware.board {
+                writeln!(out, "board: {value}")?;
+            }
+            if let Some(value) = &snapshot.hardware.board_revision {
+                writeln!(out, "revision: {value}")?;
+            }
+            if let Some(value) = &snapshot.hardware.serial_number {
+                writeln!(out, "serial: {value}")?;
+            }
+            if let Some(value) = &snapshot.hardware.firmware_version {
+                writeln!(out, "firmware: {value}")?;
+            }
+            if let Some(pi) = &snapshot.hardware.raspberry_pi {
+                writeln!(out, "\nRASPBERRY PI")?;
+                writeln!(
+                    out,
+                    "active: {}",
+                    if pi.throttled_raw.is_none() {
+                        "unavailable".into()
+                    } else if pi.active_conditions.is_empty() {
+                        "none".into()
+                    } else {
+                        pi.active_conditions.join(", ")
+                    }
+                )?;
+                writeln!(
+                    out,
+                    "recorded: {}",
+                    if pi.throttled_raw.is_none() {
+                        "unavailable".into()
+                    } else if pi.historical_conditions.is_empty() {
+                        "none".into()
+                    } else {
+                        pi.historical_conditions.join(", ")
+                    }
+                )?;
+            }
+            writeln!(out, "\nTEMPERATURES")?;
+            for sensor in &snapshot.temperatures {
+                writeln!(
+                    out,
+                    "{:<32} {:>6.1} °C  {}",
+                    sensor.name, sensor.temperature_c, sensor.source
+                )?;
+            }
+            writeln!(out, "\nDEVICES")?;
+            for device in &snapshot.hardware_devices {
+                writeln!(
+                    out,
+                    "{:<8} {:<32} {}",
+                    device.kind, device.name, device.path
+                )?;
             }
         }
         View::System => {
@@ -5548,6 +5946,46 @@ pub fn demo_snapshot() -> SystemSnapshot {
         gid: 1883,
         members: Vec::new(),
     }];
+    snapshot.hardware = HardwareIdentity {
+        manufacturer: Some("Raspberry Pi Foundation".into()),
+        model: Some("Raspberry Pi 4 Model B Rev 1.5".into()),
+        board: Some("BCM2711".into()),
+        board_revision: Some("c03115".into()),
+        serial_number: Some("10000000abcdef01".into()),
+        firmware_version: Some("2026-07-22".into()),
+        raspberry_pi: Some(lens_model::RaspberryPiStatus {
+            throttled_raw: Some(0),
+            active_conditions: Vec::new(),
+            historical_conditions: Vec::new(),
+        }),
+    };
+    snapshot.temperatures = vec![TemperatureSensor {
+        name: "cpu-thermal".into(),
+        source: "/sys/class/thermal/thermal_zone0".into(),
+        temperature_c: 48.2,
+        max_c: Some(80.0),
+        critical_c: Some(85.0),
+    }];
+    snapshot.hardware_devices = vec![
+        HardwareDevice {
+            kind: "usb".into(),
+            name: "Quectel LTE modem".into(),
+            path: "/sys/bus/usb/devices/1-1".into(),
+            manufacturer: Some("Quectel".into()),
+            vendor_id: Some("2c7c".into()),
+            product_id: Some("0125".into()),
+            serial_number: Some("0123456789ABCDEF".into()),
+        },
+        HardwareDevice {
+            kind: "serial".into(),
+            name: "ttyUSB0".into(),
+            path: "/dev/ttyUSB0".into(),
+            manufacturer: None,
+            vendor_id: None,
+            product_id: None,
+            serial_number: None,
+        },
+    ];
     snapshot.findings = diagnose(&snapshot);
     snapshot.relationships = domain_relationships(&snapshot);
     snapshot
@@ -5958,9 +6396,34 @@ mod tests {
     }
 
     #[test]
+    fn health_reports_hot_sensors_and_active_pi_power_faults() {
+        let mut snapshot = SystemSnapshot::empty("fixture");
+        snapshot.temperatures.push(TemperatureSensor {
+            name: "cpu".into(),
+            source: "/sys/class/thermal/thermal_zone0".into(),
+            temperature_c: 86.0,
+            max_c: Some(80.0),
+            critical_c: Some(85.0),
+        });
+        snapshot.hardware.raspberry_pi = Some(lens_model::RaspberryPiStatus {
+            throttled_raw: Some(1),
+            active_conditions: vec!["under-voltage".into()],
+            historical_conditions: Vec::new(),
+        });
+        let findings = diagnose(&snapshot);
+        assert!(findings.iter().any(|finding| {
+            finding.id == "hardware.temperature.cpu" && finding.severity == Severity::Critical
+        }));
+        assert!(findings.iter().any(|finding| {
+            finding.id == "hardware.raspberry-pi.active-throttling"
+                && finding.severity == Severity::Critical
+        }));
+    }
+
+    #[test]
     fn every_specialist_domain_has_list_and_detail_rendering() {
         let snapshot = demo_snapshot();
-        for renderer in [View::Services, View::Disk, View::Net] {
+        for renderer in [View::Services, View::Disk, View::Net, View::Hardware] {
             let mut list = Vec::new();
             render_specialist(renderer, &snapshot, 0, false, false, "Ready", 30, &mut list)
                 .expect("list");
@@ -5990,6 +6453,8 @@ mod tests {
         render_log_specialist(&snapshot, 0, false, 16, 50, &mut output).expect("compact logs");
         render_disk_specialist(&snapshot, 0, false, 16, 50, &mut output).expect("compact storage");
         render_net_specialist(&snapshot, 0, false, 16, 50, &mut output).expect("compact network");
+        render_hardware_specialist(&snapshot, 0, false, 16, 50, &mut output)
+            .expect("compact hardware");
         render_health_specialist(&snapshot, 0, false, 16, 50, &mut output).expect("compact health");
         assert!(!output.is_empty());
     }
@@ -6050,6 +6515,9 @@ mod tests {
         assert!(!snapshot.routes.is_empty());
         assert!(!snapshot.sockets.is_empty());
         assert!(!snapshot.cellular_modems.is_empty());
+        assert!(hardware_identity_present(&snapshot.hardware));
+        assert!(!snapshot.temperatures.is_empty());
+        assert!(!snapshot.hardware_devices.is_empty());
         assert!(!snapshot.findings.is_empty());
     }
 }

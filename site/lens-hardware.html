@@ -1,0 +1,34 @@
+<!doctype html>
+<html lang="en" data-theme="dark">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="description" content="Inspect temperatures, Raspberry Pi power and thermal state, firmware, USB and serial devices with lens-hardware.">
+  <meta name="theme-color" content="#07100e">
+  <title>lens-hardware — Dataplicity Lens</title>
+  <link rel="icon" href="assets/dataplicity-square.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="styles-1.css"><link rel="stylesheet" href="styles-2.css"><link rel="stylesheet" href="styles-3.css"><link rel="stylesheet" href="styles-4.css">
+  <script>try{document.documentElement.dataset.theme=localStorage.getItem('lens-theme')||matchMedia('(prefers-color-scheme: light)').matches?'light':'dark'}catch{}</script>
+</head>
+<body>
+<a class="skip-link" href="#main">Skip to content</a>
+<header class="site-header"><div class="header-inner"><a class="brand" href="https://docs.dataplicity.com/" aria-label="Dataplicity documentation"><img src="assets/lens-mark.svg" alt=""><span class="brand-title">Dataplicity Lens<small>Linux + macOS</small></span></a><nav class="site-nav" data-nav aria-label="Primary navigation"><a href="index.html">Overview</a><a href="install.html">Install</a><a href="lens-suite.html" aria-current="page">Suite</a><a href="architecture.html">Architecture</a></nav><div class="header-actions"><a class="button button-quiet" href="https://github.com/wildfoundry/dataplicity-lens"><span class="github-label">GitHub</span></a><button class="icon-button" type="button" data-theme-toggle></button><button class="icon-button menu-button" type="button" data-menu-toggle aria-expanded="false" aria-label="Open navigation"><svg viewBox="0 0 24 24"><path d="M5 7h14M5 12h14M5 17h14" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg></button></div></div></header>
+<main id="main">
+  <section class="page-hero"><div class="container"><div class="breadcrumbs"><a href="lens-suite.html">Suite</a> / lens-hardware</div><span class="eyebrow">Hardware · Raspberry Pi · IoT</span><h1>See the device beneath the workload.</h1><p>Check identity, temperatures, Raspberry Pi power and thermal state, firmware, and attached USB or serial hardware from one view.</p></div></section>
+  <div class="container content-layout">
+    <aside class="toc" aria-label="On this page"><strong>On this page</strong><a href="#quick">Quick start</a><a href="#identity">Identity and firmware</a><a href="#temperature">Temperatures</a><a href="#raspberry-pi">Raspberry Pi</a><a href="#devices">USB and serial</a><a href="#output">Output and health</a></aside>
+    <article class="prose">
+      <section id="quick"><h2>Quick start</h2><div class="code-block"><div class="code-head">shell <button class="copy-button" data-copy type="button">Copy</button></div><pre><code><span class="token-command">lens-hardware</span>
+<span class="token-command">lens-hardware</span> <span class="token-flag">--plain</span>
+<span class="token-command">lens-hardware</span> <span class="token-flag">--filter</span> <span class="token-value">serial</span>
+<span class="token-command">lens-hardware</span> <span class="token-flag">--json</span></code></pre></div><p>Use the arrow keys to select a system, sensor or device row and press Enter for its source, identifiers and thresholds. The cockpit also shows sensor, USB and serial counts.</p></section>
+      <section id="identity"><h2>Hardware identity and firmware</h2><p>On Linux, Lens reads the device-tree and standard DMI sysfs fields for model, manufacturer, board, revision, serial number and firmware. On macOS it reads the native hardware profile for model, Apple silicon or CPU type, serial number and system firmware.</p><p>These fields are useful when a fleet contains several board revisions or when a support case depends on the exact gateway, firmware build or physical unit.</p></section>
+      <section id="temperature"><h2>Temperatures and limits</h2><p>Linux sensors come from thermal zones and hwmon. Lens displays the kernel sensor name, current temperature, source path, and maximum or critical thresholds exposed by the driver. Raspberry Pi SoC temperature is also read through <code>vcgencmd</code>.</p><p>Health raises an attention or critical finding when a sensor reaches its reported limit, with practical fallback thresholds for drivers that publish only a current temperature.</p></section>
+      <section id="raspberry-pi"><h2>Raspberry Pi power and thermal status</h2><p>On Raspberry Pi, Lens decodes the firmware throttling flags into current and recorded conditions: under-voltage, frequency capping, throttling and the soft temperature limit. Current under-voltage or throttling appears as a critical health finding; recorded events remain visible for intermittent power and cooling investigations.</p><p>The raw hexadecimal firmware value is retained in the detail view and JSON, alongside the decoded conditions.</p></section>
+      <section id="devices"><h2>USB and serial inventory</h2><p>Linux USB inventory comes from sysfs and includes product name, manufacturer, vendor/product IDs and serial number where the device exposes them. Serial inventory includes stable <code>/dev/serial/by-id</code> links and common USB, ACM and Raspberry Pi UART devices. macOS uses the native USB profile and lists <code>/dev/cu.*</code> serial endpoints.</p><p>Stable serial paths and USB identifiers help distinguish a modem, sensor or adapter from another unit after reboot or re-enumeration.</p></section>
+      <section id="output"><h2>Structured output and health checks</h2><p>JSON adds <code>hardware</code>, <code>temperatures</code> and <code>hardware_devices</code> to the shared snapshot. Use <code>--filter</code> for a sensor name, source, device type, path, manufacturer or serial number. Use <code>--limit 0</code> when an inventory must include every matching device.</p><p>Machine and peripheral serial numbers are inventory data. Review a snapshot before attaching it to a public issue.</p><p><code>lens-health</code> includes high-temperature and Raspberry Pi power or throttling findings, so these conditions appear in the main cockpit as well as the specialist view.</p></section>
+    </article>
+  </div>
+</main>
+<footer class="site-footer"><div class="container footer-grid"><div class="footer-copy"><strong>Dataplicity Lens</strong>Copyright 2026 WildFoundry Ltd. Apache License 2.0.</div><div class="footer-links"><a href="lens-suite.html">Suite</a><a href="install.html">Install</a><a href="https://github.com/wildfoundry/dataplicity-lens">GitHub</a></div></div></footer><script src="app.js"></script>
+</body></html>
