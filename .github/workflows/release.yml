@@ -223,7 +223,7 @@ jobs:
           cp "dist/${GNU_TARGET}/dataplicity-lens_${VERSION}_${DEB_ARCH}.deb" release-assets/
           cp "dist/${GNU_TARGET}/dataplicity-lens-${VERSION}-1.${RPM_ARCH}.rpm" release-assets/
           cp dist/sbom-${{ matrix.name }}/*.json release-assets/
-      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: release-${{ matrix.name }}
           path: release-assets/*
@@ -276,7 +276,7 @@ jobs:
         run: |
           mkdir -p release-assets
           cp "dist/${TARGET}/dataplicity-lens-v${VERSION}-${TARGET}.tar.gz" release-assets/
-      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: release-macos-${{ matrix.arch }}
           path: release-assets/*
@@ -304,7 +304,7 @@ jobs:
       - name: Record dry-run result
         if: needs.prepare.outputs.dry_run == 'true'
         run: echo "Release dry-run succeeded for ${{ needs.prepare.outputs.tag }} at ${{ github.sha }}." > dist/release/DRY-RUN.txt
-      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: dataplicity-lens-${{ needs.prepare.outputs.tag }}-release-bundle
           path: dist/release/*
