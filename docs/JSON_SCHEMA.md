@@ -46,6 +46,9 @@ Durations are seconds. CPU and memory are percentages. Process CPU can exceed 10
 `hardware` contains machine, board, firmware and Raspberry Pi firmware state. `temperatures` records
 degrees Celsius with optional driver-provided maximum and critical limits. `hardware_devices` contains
 USB and serial inventory with stable paths and identifiers where the operating system exposes them.
+Each interface can include cumulative `rx_bytes` and `tx_bytes` counters. The interactive network
+view derives current rates and history charts from successive samples; one-shot JSON keeps the source
+counters so consumers can calculate deltas over their own sampling interval.
 
 ## Nullable and unavailable data
 

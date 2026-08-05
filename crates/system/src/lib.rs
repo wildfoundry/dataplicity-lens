@@ -4,6 +4,7 @@ mod hardware;
 
 use std::{
     cmp::Ordering,
+    collections::{BTreeMap, VecDeque},
     env,
     io::{self, IsTerminal, Read, Seek, SeekFrom, Write},
     path::{Path, PathBuf},
@@ -509,11 +510,11 @@ fn cockpit_loop(
     let mut loading = true;
     let mut search_query: Option<String> = None;
     let mut diagnostic = DiagnosticShell::new();
-    let mut next_clock = Instant::now() + Duration::from_secs(1);
+    let mut next_clock = Instant::now() + Duration::from_secs(60);
     let mut redraw = true;
     loop {
         if Instant::now() >= next_clock {
-            next_clock = Instant::now() + Duration::from_secs(1);
+            next_clock = Instant::now() + Duration::from_secs(60);
             redraw = true;
         }
         if diagnostic.poll() {
@@ -654,6 +655,101 @@ struct SpecialistUpdate {
     snapshot: SystemSnapshot,
     loading_more: bool,
     status: &'static str,
+}
+
+#[derive(Debug, Default)]
+struct NetworkActivity {
+    previous: BTreeMap<String, (u64, u64)>,
+    rates: BTreeMap<String, (u64, u64)>,
+    rx_history: VecDeque<u64>,
+    tx_history: VecDeque<u64>,
+    last_sample: Option<Instant>,
+}
+
+impl NetworkActivity {
+    fn observe(&mut self, interfaces: &[Interface], now: Instant) {
+        let current: BTreeMap<_, _> = interfaces
+            .iter()
+            .filter_map(|interface| {
+                Some((
+                    interface.name.clone(),
+                    (interface.rx_bytes?, interface.tx_bytes?),
+                ))
+            })
+            .collect();
+        let Some(previous_at) = self.last_sample else {
+            self.previous = current;
+            self.last_sample = Some(now);
+            return;
+        };
+        let elapsed = now.saturating_duration_since(previous_at).as_secs_f64();
+        if elapsed < 0.25 {
+            return;
+        }
+        self.rates.clear();
+        let mut total_rx = 0u64;
+        let mut total_tx = 0u64;
+        for (name, (rx, tx)) in &current {
+            let Some((previous_rx, previous_tx)) = self.previous.get(name) else {
+                continue;
+            };
+            let rx_rate = (rx.saturating_sub(*previous_rx) as f64 / elapsed) as u64;
+            let tx_rate = (tx.saturating_sub(*previous_tx) as f64 / elapsed) as u64;
+            self.rates.insert(name.clone(), (rx_rate, tx_rate));
+            if name != "lo" && !name.starts_with("lo0") {
+                total_rx = total_rx.saturating_add(rx_rate);
+                total_tx = total_tx.saturating_add(tx_rate);
+            }
+        }
+        push_bounded(&mut self.rx_history, total_rx, 60);
+        push_bounded(&mut self.tx_history, total_tx, 60);
+        self.previous = current;
+        self.last_sample = Some(now);
+    }
+
+    fn interface_rate(&self, name: &str) -> Option<(u64, u64)> {
+        self.rates.get(name).copied()
+    }
+
+    fn current(&self) -> Option<(u64, u64)> {
+        Some((
+            *self.rx_history.back()?,
+            *self.tx_history.back().unwrap_or(&0),
+        ))
+    }
+}
+
+fn push_bounded(values: &mut VecDeque<u64>, value: u64, capacity: usize) {
+    if values.len() == capacity {
+        values.pop_front();
+    }
+    values.push_back(value);
+}
+
+fn activity_sparkline(values: &VecDeque<u64>, width: usize) -> String {
+    const BARS: [char; 8] = ['▁', '▂', '▃', '▄', '▅', '▆', '▇', '█'];
+    let start = values.len().saturating_sub(width);
+    let visible = values.iter().skip(start);
+    let maximum = visible.clone().copied().max().unwrap_or(0);
+    visible
+        .map(|value| {
+            if maximum == 0 {
+                BARS[0]
+            } else {
+                let index = ((*value as u128 * 7) / maximum as u128) as usize;
+                BARS[index]
+            }
+        })
+        .collect()
+}
+
+fn spawn_interface_counter_collection() -> Receiver<Vec<(String, u64, u64)>> {
+    let (sender, receiver) = mpsc::channel();
+    thread::spawn(move || {
+        let mut warnings = Vec::new();
+        let _ = sender.send(collect_interface_counters(&mut warnings));
+    });
+    receiver
 }
 
 fn send_specialist_update(
@@ -852,18 +948,24 @@ fn render_cockpit(
     rows: u16,
     stdout: &mut impl Write,
 ) -> Result<()> {
-    execute!(
-        stdout,
-        cursor::MoveTo(0, 0),
-        terminal::Clear(ClearType::All)
-    )?;
+    let mut frame = Vec::new();
+    render_cockpit_content(snapshot, selected, loading, rows, &mut frame)?;
+    present_frame(stdout, &frame)
+}
+
+fn render_cockpit_content(
+    snapshot: &SystemSnapshot,
+    selected: usize,
+    loading: bool,
+    rows: u16,
+    stdout: &mut impl Write,
+) -> Result<()> {
     let host = &snapshot.host;
     let columns = terminal::size().map_or(88, |(width, _)| width);
     if columns < 36 || rows < 10 {
         writeln!(stdout, "LENS")?;
         writeln!(stdout, "Terminal too small ({columns}x{rows}).")?;
         writeln!(stdout, "Resize to at least 36x10 or press q to quit.")?;
-        stdout.flush()?;
         return Ok(());
     }
     let width = usize::from(columns);
@@ -1180,8 +1282,23 @@ fn render_cockpit(
         )?;
     }
     if rows >= 22 {
-        writeln!(stdout, "{}", ink(&format!("╰{rule}╯"), Ink::Border, colour))?;
+        write!(stdout, "{}", ink(&format!("╰{rule}╯"), Ink::Border, colour))?;
     }
+    Ok(())
+}
+
+fn present_frame(stdout: &mut impl Write, frame: &[u8]) -> Result<()> {
+    let mut update = Vec::with_capacity(frame.len().saturating_add(256));
+    execute!(update, cursor::MoveTo(0, 0))?;
+    execute!(update, terminal::Clear(ClearType::CurrentLine))?;
+    for byte in frame {
+        update.push(*byte);
+        if *byte == b'\n' {
+            execute!(update, terminal::Clear(ClearType::CurrentLine))?;
+        }
+    }
+    execute!(update, terminal::Clear(ClearType::FromCursorDown))?;
+    stdout.write_all(&update)?;
     stdout.flush()?;
     Ok(())
 }
@@ -1300,23 +1417,17 @@ fn terminal_has_light_background() -> bool {
 impl Ink {
     const fn foreground(self, light: bool) -> &'static str {
         match (self, light) {
-            (Self::Bright, true) => "1;38;2;16;31;35",
-            (Self::Brand, true) => "1;38;2;105;40;160",
-            (Self::Info, true) => "1;38;2;0;103;148",
-            (Self::Success, true) => "1;38;2;0;110;79",
-            (Self::Attention, true) => "1;38;2;145;79;0",
-            (Self::Critical, true) => "1;38;2;185;30;55",
-            (Self::Label, true) => "1;38;2;70;85;105",
-            (Self::Muted, true) => "38;2;78;94;112",
-            (Self::Border, true) => "38;2;148;160;174",
-            (Self::Bright, false) => "1;38;2;238;243;252",
-            (Self::Brand, false) => "1;38;2;190;125;255",
-            (Self::Info, false) => "1;38;2;91;215;255",
-            (Self::Success, false) => "1;38;2;88;224;166",
-            (Self::Attention, false) => "1;38;2;255;190;92",
-            (Self::Critical, false) => "1;38;2;255;105;125",
-            (Self::Label, false) => "1;38;2;139;155;180",
-            (Self::Muted, false) => "38;2;125;140;165",
+            (Self::Bright, _) => "1;39",
+            (Self::Brand, _) => "1;38;2;143;91;215",
+            (Self::Info, _) => "1;38;2;0;126;163",
+            (Self::Success, _) => "1;38;2;0;137;94",
+            (Self::Attention, _) => "1;38;2;166;95;0",
+            (Self::Critical, _) => "1;38;2;199;51;80",
+            (Self::Label, true) => "1;38;2;65;78;96",
+            (Self::Muted, true) => "38;2;72;85;102",
+            (Self::Border, true) => "38;2;105;116;132",
+            (Self::Label, false) => "1;38;2;105;116;132",
+            (Self::Muted, false) => "38;2;105;116;132",
             (Self::Border, false) => "38;2;48;62;84",
         }
     }
@@ -1486,6 +1597,7 @@ fn log_ink(priority: Option<&str>) -> Ink {
 fn render_specialist(
     view: View,
     snapshot: &SystemSnapshot,
+    network_activity: &NetworkActivity,
     selected: usize,
     inspecting: bool,
     loading: bool,
@@ -1493,17 +1605,38 @@ fn render_specialist(
     rows: u16,
     stdout: &mut impl Write,
 ) -> Result<()> {
-    execute!(
-        stdout,
-        cursor::MoveTo(0, 0),
-        terminal::Clear(ClearType::All)
+    let mut frame = Vec::new();
+    render_specialist_content(
+        view,
+        snapshot,
+        network_activity,
+        selected,
+        inspecting,
+        loading,
+        status,
+        rows,
+        &mut frame,
     )?;
+    present_frame(stdout, &frame)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn render_specialist_content(
+    view: View,
+    snapshot: &SystemSnapshot,
+    network_activity: &NetworkActivity,
+    selected: usize,
+    inspecting: bool,
+    loading: bool,
+    status: &str,
+    rows: u16,
+    stdout: &mut impl Write,
+) -> Result<()> {
     let columns = terminal::size().map_or(100, |(width, _)| width);
     if columns < 36 || rows < 10 {
         writeln!(stdout, "LENS / {}", view.title().to_ascii_uppercase())?;
         writeln!(stdout, "Terminal too small ({columns}x{rows}).")?;
         writeln!(stdout, "Resize to at least 36x10 or press q to quit.")?;
-        stdout.flush()?;
         return Ok(());
     }
     let width = usize::from(columns);
@@ -1576,7 +1709,15 @@ fn render_specialist(
         }
         View::Logs => render_log_specialist(snapshot, selected, inspecting, rows, width, stdout)?,
         View::Disk => render_disk_specialist(snapshot, selected, inspecting, rows, width, stdout)?,
-        View::Net => render_net_specialist(snapshot, selected, inspecting, rows, width, stdout)?,
+        View::Net => render_net_specialist(
+            snapshot,
+            network_activity,
+            selected,
+            inspecting,
+            rows,
+            width,
+            stdout,
+        )?,
         View::Hardware => {
             render_hardware_specialist(snapshot, selected, inspecting, rows, width, stdout)?
         }
@@ -1667,8 +1808,7 @@ fn render_specialist(
             ink("quit", Ink::Muted, colour),
         )?;
     }
-    writeln!(stdout, "{}", ink(&format!("╰{rule}╯"), Ink::Border, colour))?;
-    stdout.flush()?;
+    write!(stdout, "{}", ink(&format!("╰{rule}╯"), Ink::Border, colour))?;
     Ok(())
 }
 
@@ -2106,6 +2246,7 @@ fn render_disk_specialist(
 
 fn render_net_specialist(
     snapshot: &SystemSnapshot,
+    activity: &NetworkActivity,
     selected: usize,
     inspecting: bool,
     rows: u16,
@@ -2152,6 +2293,21 @@ fn render_net_specialist(
                     interface.addresses.join(", ")
                 }
             )?;
+            if let Some((rx, tx)) = activity.interface_rate(&interface.name) {
+                writeln!(
+                    out,
+                    "  {} ↓ {}/s  ↑ {}/s",
+                    ink("ACTIVITY", Ink::Label, colour),
+                    human_bytes(rx),
+                    human_bytes(tx)
+                )?;
+            } else if interface.rx_bytes.is_some() {
+                writeln!(
+                    out,
+                    "  {} collecting the next sample…",
+                    ink("ACTIVITY", Ink::Label, colour)
+                )?;
+            }
         } else if selected < route_end {
             let route = &snapshot.routes[selected - interface_end];
             writeln!(out, "\n  {}", ink("ROUTE", Ink::Label, colour))?;
@@ -2242,6 +2398,49 @@ fn render_net_specialist(
         }
         return Ok(());
     }
+    let has_activity = activity.current().is_some();
+    if let Some((rx, tx)) = activity.current() {
+        writeln!(
+            out,
+            "  {}  ↓ {}/s  ↑ {}/s",
+            ink("ACTIVITY", Ink::Label, colour),
+            human_bytes(rx),
+            human_bytes(tx)
+        )?;
+        if width >= 70 {
+            let chart_width = width.saturating_sub(13).min(60);
+            writeln!(
+                out,
+                "  {} {}",
+                ink("RX", Ink::Info, colour),
+                ink(
+                    &activity_sparkline(&activity.rx_history, chart_width),
+                    Ink::Info,
+                    colour
+                )
+            )?;
+            writeln!(
+                out,
+                "  {} {}",
+                ink("TX", Ink::Attention, colour),
+                ink(
+                    &activity_sparkline(&activity.tx_history, chart_width),
+                    Ink::Attention,
+                    colour
+                )
+            )?;
+        }
+    } else if snapshot
+        .interfaces
+        .iter()
+        .any(|interface| interface.rx_bytes.is_some())
+    {
+        writeln!(
+            out,
+            "  {} collecting the next sample…",
+            ink("ACTIVITY", Ink::Label, colour)
+        )?;
+    }
     if width >= 70 {
         writeln!(
             out,
@@ -2261,7 +2460,8 @@ fn render_net_specialist(
             name_width = width.saturating_sub(25)
         )?;
     }
-    let capacity = usize::from(rows.saturating_sub(9)).max(1);
+    let activity_rows = if has_activity && width >= 70 { 3 } else { 1 };
+    let capacity = usize::from(rows.saturating_sub(9 + activity_rows)).max(1);
     let start = viewport_start(selected, count, capacity);
     for index in start..(start + capacity).min(count) {
         let row = if width < 70 {
@@ -2650,7 +2850,7 @@ fn render_hardware_specialist(
     }
     writeln!(
         out,
-        "  Identity, temperatures, Raspberry Pi status and attached devices\n"
+        "  Identity, temperatures, firmware status and attached devices\n"
     )?;
     let capacity = usize::from(rows.saturating_sub(11)).max(1);
     let start = viewport_start(selected, items.len(), capacity);
@@ -2823,11 +3023,15 @@ fn specialist_loop(view: View, args: &ViewArgs, stdout: &mut impl Write) -> Resu
     let mut search_query: Option<String> = None;
     let mut diagnostic = DiagnosticShell::new();
     let mut service_action: Option<ServiceActionDialog> = None;
-    let mut next_clock = Instant::now() + Duration::from_secs(1);
+    let mut network_activity = NetworkActivity::default();
+    let mut activity_receiver: Option<Receiver<Vec<(String, u64, u64)>>> = None;
+    let mut next_network_sample = Instant::now() + Duration::from_secs(1);
+    let clock_interval = if view == View::Net { 1 } else { 60 };
+    let mut next_clock = Instant::now() + Duration::from_secs(clock_interval);
     let mut redraw = true;
     loop {
         if Instant::now() >= next_clock {
-            next_clock = Instant::now() + Duration::from_secs(1);
+            next_clock = Instant::now() + Duration::from_secs(clock_interval);
             redraw = true;
         }
         if diagnostic.poll() {
@@ -2839,11 +3043,40 @@ fn specialist_loop(view: View, args: &ViewArgs, stdout: &mut impl Write) -> Resu
         {
             redraw = true;
         }
+        if let Some(counter_updates) = activity_receiver
+            .as_ref()
+            .and_then(|receiver| receiver.try_recv().ok())
+        {
+            let counter_updates: BTreeMap<_, _> = counter_updates
+                .into_iter()
+                .map(|(name, rx, tx)| (name, (rx, tx)))
+                .collect();
+            for interface in &mut snapshot.interfaces {
+                if let Some((rx, tx)) = counter_updates.get(&interface.name) {
+                    interface.rx_bytes = Some(*rx);
+                    interface.tx_bytes = Some(*tx);
+                }
+            }
+            network_activity.observe(&snapshot.interfaces, Instant::now());
+            activity_receiver = None;
+            next_network_sample = Instant::now() + Duration::from_secs(1);
+            redraw = true;
+        }
+        if view == View::Net
+            && !snapshot.interfaces.is_empty()
+            && activity_receiver.is_none()
+            && Instant::now() >= next_network_sample
+        {
+            activity_receiver = Some(spawn_interface_counter_collection());
+        }
         match receiver.try_recv() {
             Ok(update) => {
                 selected =
                     preserve_specialist_selection(view, &snapshot, &update.snapshot, selected);
                 snapshot = update.snapshot;
+                if view == View::Net && network_activity.last_sample.is_none() {
+                    network_activity.observe(&snapshot.interfaces, Instant::now());
+                }
                 loading = update.loading_more;
                 status = update.status.to_owned();
                 redraw = true;
@@ -2861,7 +3094,15 @@ fn specialist_loop(view: View, args: &ViewArgs, stdout: &mut impl Write) -> Resu
         if redraw {
             let (_, rows) = terminal::size().unwrap_or((100, 30));
             render_specialist(
-                view, &snapshot, selected, inspecting, loading, &status, rows, stdout,
+                view,
+                &snapshot,
+                &network_activity,
+                selected,
+                inspecting,
+                loading,
+                &status,
+                rows,
+                stdout,
             )?;
             if let Some(query) = search_query.as_deref() {
                 render_search_overlay(stdout, &format!("Search {}", view.title()), query)?;
@@ -2890,6 +3131,8 @@ fn specialist_loop(view: View, args: &ViewArgs, stdout: &mut impl Write) -> Resu
                     service_action = None;
                     if completed {
                         snapshot = SystemSnapshot::empty(hostname());
+                        network_activity = NetworkActivity::default();
+                        activity_receiver = None;
                         receiver = spawn_specialist_collection(view, active_args.clone());
                         loading = true;
                         status = "Refreshing service state after action…".into();
@@ -2910,6 +3153,8 @@ fn specialist_loop(view: View, args: &ViewArgs, stdout: &mut impl Write) -> Resu
                         let query = search_query.take().unwrap_or_default();
                         active_args.filter = Some(query.clone());
                         snapshot = SystemSnapshot::empty(hostname());
+                        network_activity = NetworkActivity::default();
+                        activity_receiver = None;
                         receiver = spawn_specialist_collection(view, active_args.clone());
                         loading = true;
                         status = format!(
@@ -2988,6 +3233,8 @@ fn specialist_loop(view: View, args: &ViewArgs, stdout: &mut impl Write) -> Resu
                 }
                 KeyCode::Char('r') => {
                     snapshot = SystemSnapshot::empty(hostname());
+                    network_activity = NetworkActivity::default();
+                    activity_receiver = None;
                     receiver = spawn_specialist_collection(view, active_args.clone());
                     loading = true;
                     status = format!("Loading {} data…", view.title().to_ascii_lowercase());
@@ -3318,8 +3565,8 @@ fn sanitise_terminal_output(text: &str) -> String {
 
 fn local_clock() -> String {
     let now = OffsetDateTime::now_local().unwrap_or_else(|_| OffsetDateTime::now_utc());
-    now.format(format_description!("[hour]:[minute]:[second]"))
-        .unwrap_or_else(|_| "--:--:--".to_owned())
+    now.format(format_description!("[hour]:[minute]"))
+        .unwrap_or_else(|_| "--:--".to_owned())
 }
 
 fn render_diagnostic_overlay(stdout: &mut impl Write, shell: &DiagnosticShell) -> Result<()> {
@@ -4402,10 +4649,14 @@ fn parse_block_device(line: &str) -> Option<BlockDevice> {
 
 #[cfg(target_os = "linux")]
 fn collect_interfaces(warnings: &mut Vec<String>) -> Vec<Interface> {
-    if let Some(text) = command("ip", &["-brief", "address", "show"], warnings) {
-        return text.lines().filter_map(parse_interface).collect();
-    }
-    collect_linux_sysfs_interfaces(warnings)
+    let mut interfaces = if let Some(text) = command("ip", &["-brief", "address", "show"], warnings)
+    {
+        text.lines().filter_map(parse_interface).collect()
+    } else {
+        collect_linux_sysfs_interfaces(warnings)
+    };
+    apply_interface_counters(&mut interfaces, collect_interface_counters(warnings));
+    interfaces
 }
 
 #[cfg(target_os = "linux")]
@@ -4422,6 +4673,9 @@ fn collect_linux_sysfs_interfaces(warnings: &mut Vec<String>) -> Vec<Interface> 
     let mut interfaces: Vec<_> = entries
         .filter_map(Result::ok)
         .filter_map(|entry| {
+            if !entry.path().join("statistics").is_dir() {
+                return None;
+            }
             let name = entry.file_name().into_string().ok()?;
             let state = std::fs::read_to_string(entry.path().join("operstate"))
                 .map(|value| value.trim().to_ascii_uppercase())
@@ -4430,6 +4684,8 @@ fn collect_linux_sysfs_interfaces(warnings: &mut Vec<String>) -> Vec<Interface> 
                 name,
                 state,
                 addresses: Vec::new(),
+                rx_bytes: None,
+                tx_bytes: None,
             })
         })
         .collect();
@@ -4439,9 +4695,11 @@ fn collect_linux_sysfs_interfaces(warnings: &mut Vec<String>) -> Vec<Interface> 
 
 #[cfg(target_os = "macos")]
 fn collect_interfaces(warnings: &mut Vec<String>) -> Vec<Interface> {
-    command("ifconfig", &["-a"], warnings)
+    let mut interfaces = command("ifconfig", &["-a"], warnings)
         .map(|text| parse_ifconfig(&text))
-        .unwrap_or_default()
+        .unwrap_or_default();
+    apply_interface_counters(&mut interfaces, collect_interface_counters(warnings));
+    interfaces
 }
 
 #[cfg(target_os = "macos")]
@@ -4459,6 +4717,8 @@ fn parse_ifconfig(text: &str) -> Vec<Interface> {
                     }
                     .into(),
                     addresses: Vec::new(),
+                    rx_bytes: None,
+                    tx_bytes: None,
                 });
             }
         } else if let Some(interface) = interfaces.last_mut() {
@@ -4480,7 +4740,90 @@ fn parse_interface(line: &str) -> Option<Interface> {
         name: fields.next()?.to_owned(),
         state: fields.next()?.to_owned(),
         addresses: fields.map(str::to_owned).collect(),
+        rx_bytes: None,
+        tx_bytes: None,
     })
+}
+
+fn apply_interface_counters(interfaces: &mut [Interface], counters: Vec<(String, u64, u64)>) {
+    let counters: BTreeMap<_, _> = counters
+        .into_iter()
+        .map(|(name, rx, tx)| (name, (rx, tx)))
+        .collect();
+    for interface in interfaces {
+        if let Some((rx, tx)) = counters.get(&interface.name) {
+            interface.rx_bytes = Some(*rx);
+            interface.tx_bytes = Some(*tx);
+        }
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn collect_interface_counters(warnings: &mut Vec<String>) -> Vec<(String, u64, u64)> {
+    let entries = match std::fs::read_dir("/sys/class/net") {
+        Ok(entries) => entries,
+        Err(error) => {
+            warnings.push(format!("network activity unavailable from sysfs: {error}"));
+            return Vec::new();
+        }
+    };
+    let mut counters: Vec<_> = entries
+        .filter_map(Result::ok)
+        .filter_map(|entry| {
+            let name = entry.file_name().into_string().ok()?;
+            let statistics = entry.path().join("statistics");
+            let rx = read_interface_counter(&statistics.join("rx_bytes"))?;
+            let tx = read_interface_counter(&statistics.join("tx_bytes"))?;
+            Some((name, rx, tx))
+        })
+        .collect();
+    counters.sort_by(|left, right| left.0.cmp(&right.0));
+    counters
+}
+
+#[cfg(target_os = "linux")]
+fn read_interface_counter(path: &Path) -> Option<u64> {
+    std::fs::read_to_string(path).ok()?.trim().parse().ok()
+}
+
+#[cfg(target_os = "macos")]
+fn collect_interface_counters(warnings: &mut Vec<String>) -> Vec<(String, u64, u64)> {
+    command("netstat", &["-ibn"], warnings)
+        .map(|text| parse_netstat_counters(&text))
+        .unwrap_or_default()
+}
+
+#[cfg(any(target_os = "macos", test))]
+fn parse_netstat_counters(text: &str) -> Vec<(String, u64, u64)> {
+    let mut lines = text.lines().filter(|line| !line.trim().is_empty());
+    let Some(header) = lines.next() else {
+        return Vec::new();
+    };
+    let columns: Vec<_> = header.split_whitespace().collect();
+    let Some(rx_column) = columns.iter().position(|column| *column == "Ibytes") else {
+        return Vec::new();
+    };
+    let Some(tx_column) = columns.iter().position(|column| *column == "Obytes") else {
+        return Vec::new();
+    };
+    let mut counters = BTreeMap::<String, (u64, u64)>::new();
+    for line in lines {
+        let fields: Vec<_> = line.split_whitespace().collect();
+        let (Some(name), Some(rx), Some(tx)) = (
+            fields.first(),
+            fields.get(rx_column).and_then(|value| value.parse().ok()),
+            fields.get(tx_column).and_then(|value| value.parse().ok()),
+        ) else {
+            continue;
+        };
+        let entry = counters.entry((*name).to_owned()).or_default();
+        entry.0 = entry.0.max(rx);
+        entry.1 = entry.1.max(tx);
+    }
+    counters
+        .into_iter()
+        .map(|(name, (rx, tx))| (name, rx, tx))
+        .collect()
 }
 
 #[cfg(target_os = "linux")]
@@ -5884,6 +6227,8 @@ pub fn demo_snapshot() -> SystemSnapshot {
         name: "eth0".into(),
         state: "UP".into(),
         addresses: vec!["192.0.2.40/24".into()],
+        rx_bytes: Some(1_000_000),
+        tx_bytes: Some(250_000),
     }];
     snapshot.routes = vec![Route {
         id: "default".into(),
@@ -6221,7 +6566,7 @@ mod tests {
         render_cockpit(&snapshot, 0, true, 20, &mut compact_output).expect("compact cockpit");
         let compact_output = String::from_utf8(compact_output).expect("UTF-8");
         assert!(!compact_output.contains("BUSIEST PROCESSES"));
-        assert!(compact_output.lines().count() <= 20);
+        assert!(compact_output.matches('\n').count() <= 20);
 
         let mut complete_output = Vec::new();
         render_cockpit(&snapshot, 3, false, 30, &mut complete_output).expect("complete cockpit");
@@ -6381,6 +6726,8 @@ mod tests {
             name: "gif0".into(),
             state: "DOWN".into(),
             addresses: Vec::new(),
+            rx_bytes: Some(0),
+            tx_bytes: Some(0),
         });
         let findings = diagnose(&snapshot);
         assert!(
@@ -6423,14 +6770,18 @@ mod tests {
     #[test]
     fn every_specialist_domain_has_list_and_detail_rendering() {
         let snapshot = demo_snapshot();
+        let activity = NetworkActivity::default();
         for renderer in [View::Services, View::Disk, View::Net, View::Hardware] {
             let mut list = Vec::new();
-            render_specialist(renderer, &snapshot, 0, false, false, "Ready", 30, &mut list)
-                .expect("list");
+            render_specialist(
+                renderer, &snapshot, &activity, 0, false, false, "Ready", 30, &mut list,
+            )
+            .expect("list");
             let mut detail = Vec::new();
             render_specialist(
                 renderer,
                 &snapshot,
+                &activity,
                 0,
                 true,
                 false,
@@ -6445,6 +6796,28 @@ mod tests {
     }
 
     #[test]
+    fn specialist_frames_do_not_blank_the_terminal_before_drawing() {
+        let snapshot = demo_snapshot();
+        let mut output = Vec::new();
+        render_specialist(
+            View::Hardware,
+            &snapshot,
+            &NetworkActivity::default(),
+            0,
+            false,
+            false,
+            "Ready",
+            30,
+            &mut output,
+        )
+        .expect("hardware frame");
+        let output = String::from_utf8(output).expect("UTF-8");
+        assert!(!output.contains("\u{1b}[2J"));
+        assert!(output.contains("\u{1b}[J"));
+        assert!(output.matches("\u{1b}[2K").count() > 4);
+    }
+
+    #[test]
     fn specialist_lists_reflow_at_compact_width() {
         let snapshot = demo_snapshot();
         let mut output = Vec::new();
@@ -6452,7 +6825,16 @@ mod tests {
             .expect("compact services");
         render_log_specialist(&snapshot, 0, false, 16, 50, &mut output).expect("compact logs");
         render_disk_specialist(&snapshot, 0, false, 16, 50, &mut output).expect("compact storage");
-        render_net_specialist(&snapshot, 0, false, 16, 50, &mut output).expect("compact network");
+        render_net_specialist(
+            &snapshot,
+            &NetworkActivity::default(),
+            0,
+            false,
+            16,
+            50,
+            &mut output,
+        )
+        .expect("compact network");
         render_hardware_specialist(&snapshot, 0, false, 16, 50, &mut output)
             .expect("compact hardware");
         render_health_specialist(&snapshot, 0, false, 16, 50, &mut output).expect("compact health");
@@ -6503,6 +6885,38 @@ mod tests {
         )));
         assert_eq!(dialog.stage, ServiceActionStage::Choose);
         assert_eq!(ServiceAction::ALL[0], ServiceAction::Restart);
+    }
+
+    #[test]
+    fn network_activity_uses_counter_deltas_and_renders_charts() {
+        let mut snapshot = demo_snapshot();
+        let started = Instant::now();
+        let mut activity = NetworkActivity::default();
+        activity.observe(&snapshot.interfaces, started);
+        snapshot.interfaces[0].rx_bytes = Some(1_002_048);
+        snapshot.interfaces[0].tx_bytes = Some(251_024);
+        activity.observe(&snapshot.interfaces, started + Duration::from_secs(1));
+        assert_eq!(activity.interface_rate("eth0"), Some((2_048, 1_024)));
+        assert_eq!(activity.current(), Some((2_048, 1_024)));
+
+        let mut output = Vec::new();
+        render_net_specialist(&snapshot, &activity, 0, false, 30, 120, &mut output)
+            .expect("network activity");
+        let output = String::from_utf8(output).expect("UTF-8");
+        assert!(output.contains("ACTIVITY"));
+        assert!(output.contains("RX"));
+        assert!(output.contains("TX"));
+        assert!(output.contains('█'));
+    }
+
+    #[test]
+    fn parses_macos_network_byte_counters() {
+        let counters = parse_netstat_counters(
+            "Name Mtu Network Address Ipkts Ierrs Ibytes Opkts Oerrs Obytes Coll\n\
+             en0 1500 <Link#4> aa:bb:cc 12 0 4096 8 0 2048 0\n\
+             en0 1500 192.0.2 192.0.2.8 12 - 4096 8 - 2048 -\n",
+        );
+        assert_eq!(counters, vec![("en0".into(), 4_096, 2_048)]);
     }
 
     #[test]

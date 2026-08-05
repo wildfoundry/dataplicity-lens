@@ -22,6 +22,7 @@ versioning once the first public release is tagged.
   public certificate files visible to the invoking user.
 - A `lens-hardware` view for device identity, firmware, Linux thermal/hwmon sensors, Raspberry Pi
   power and throttling status, and USB/serial inventory on Linux and macOS.
+- Live RX/TX rate charts in `lens-net`, with per-interface activity and responsive compact output.
 
 ### Changed
 
@@ -29,6 +30,10 @@ versioning once the first public release is tagged.
   the public open-source release.
 - Interactive commands now choose contrasting colours for light and dark terminal backgrounds, with
   explicit `--theme` and `LENS_THEME` overrides for terminals that do not report their background.
+- Primary text now follows the terminal's own foreground and automatic accent colours retain
+  contrast when browser terminals omit their light-background metadata.
+- Cockpit and specialist frames now overwrite in place before clearing trailing cells; static views
+  avoid one-second clock repaints that caused flashing on slower remote terminals.
 - Direct Rust dependencies are updated to their current Rust-1.88-compatible releases.
 - Terminal refreshes are emitted as synchronized frames, process views respect the terminal's own
   background colour, and the fixed-width updating badge no longer shifts the header.
@@ -62,6 +67,8 @@ versioning once the first public release is tagged.
   supported secondary path.
 - User documentation now describes shipped behavior only; roadmap and unimplemented-feature copy
   has been removed from the product site.
+- Debian and RPM packages now use statically linked binaries so Raspberry Pi OS and Debian installs
+  do not inherit the build runner's glibc version.
 
 ## [0.2.0] - unreleased
 

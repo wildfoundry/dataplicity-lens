@@ -274,6 +274,10 @@ pub struct Interface {
     pub name: String,
     pub state: String,
     pub addresses: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rx_bytes: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tx_bytes: Option<u64>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
