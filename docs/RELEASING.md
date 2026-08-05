@@ -15,18 +15,21 @@ To reproduce package assembly after building both targets and generating the `le
 completions:
 
 ```sh
-VERSION=0.3.0 TARGET=x86_64-unknown-linux-gnu DEB_ARCH=amd64 RPM_ARCH=x86_64 scripts/package-suite.sh
-VERSION=0.3.0 TARGET=x86_64-unknown-linux-musl PACKAGE_NATIVE=false scripts/package-suite.sh
-scripts/smoke-suite.sh target/x86_64-unknown-linux-gnu/release
+VERSION=0.3.0 TARGET=x86_64-unknown-linux-gnu PACKAGE_NATIVE=false scripts/package-suite.sh
+VERSION=0.3.0 TARGET=x86_64-unknown-linux-musl DEB_ARCH=amd64 RPM_ARCH=x86_64 \
+  NATIVE_OUTPUT_DIR=dist/x86_64-unknown-linux-gnu scripts/package-suite.sh
+scripts/smoke-suite.sh target/x86_64-unknown-linux-musl/release
 # Raspberry Pi OS 32-bit builds use cross:
-cross build --release --locked --target arm-unknown-linux-gnueabihf --workspace
-VERSION=0.3.0 TARGET=arm-unknown-linux-gnueabihf DEB_ARCH=armhf RPM_ARCH=armv6hl scripts/package-suite.sh
+cross build --release --locked --target arm-unknown-linux-musleabihf --workspace
+VERSION=0.3.0 TARGET=arm-unknown-linux-musleabihf DEB_ARCH=armhf RPM_ARCH=armv6hl \
+  NATIVE_OUTPUT_DIR=dist/arm-unknown-linux-gnueabihf scripts/package-suite.sh
 scripts/verify-release.sh dist/release
 ```
 
 Every archive and native package contains `lens`, `lens-top`, `lens-services`, `lens-logs`,
 `lens-disk`, `lens-net`, `lens-hardware`, `lens-system` and `lens-health`. Archive verification also checks the generated man page,
-completions, licences, checksums and CycloneDX output.
+completions, licences, checksums and CycloneDX output. Debian and RPM packages use the musl target's
+statically linked binaries so the package does not inherit the build runner's glibc requirement.
 
 `workflow_dispatch` runs the complete machinery in dry-run mode without publishing a GitHub Release.
 Pull requests run the parallel CI target matrix but do not assemble the same release bundle a second

@@ -41,8 +41,9 @@ lens
 ```
 
 Use `armhf` for 32-bit Raspberry Pi OS, `arm64` for 64-bit Raspberry Pi OS and ARM gateways, and
-`amd64` for Intel/AMD Debian or Ubuntu. The release also contains checksummed GNU and musl archives
-and RPM packages for other Linux systems.
+`amd64` for Intel/AMD Debian or Ubuntu. Debian and RPM packages contain statically linked binaries,
+so they do not depend on the build machine's glibc version. The release also contains checksummed GNU
+and musl archives for other Linux systems.
 
 ### macOS with Homebrew
 
