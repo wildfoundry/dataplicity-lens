@@ -34,6 +34,12 @@ versioning once the first public release is tagged.
   contrast when browser terminals omit their light-background metadata.
 - Cockpit and specialist frames now overwrite in place before clearing trailing cells; static views
   avoid one-second clock repaints that caused flashing on slower remote terminals.
+- Browser terminals receive the contrast-tested RGB palette even when they omit colour capability
+  metadata, and every interactive command explicitly clears and resets the terminal on exit.
+- Cockpit log summaries report flagged errors and warnings instead of a capped row count. System
+  summaries report clock, DNS and login context instead of capped certificate totals.
+- System detail focuses on login-capable identities and locally managed certificates, with subject,
+  issuer, expiry and path metadata where OpenSSL is available; bulk root CA catalogues are omitted.
 - Direct Rust dependencies are updated to their current Rust-1.88-compatible releases.
 - Terminal refreshes are emitted as synchronized frames, process views respect the terminal's own
   background colour, and the fixed-width updating badge no longer shifts the header.

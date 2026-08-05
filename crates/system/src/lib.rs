@@ -23,6 +23,7 @@ use crossterm::{
     cursor,
     event::{self, Event, KeyCode, KeyModifiers},
     execute,
+    style::ResetColor,
     terminal::{self, ClearType},
 };
 use lens_model::{
@@ -447,7 +448,15 @@ impl CockpitTerminal {
 
 impl Drop for CockpitTerminal {
     fn drop(&mut self) {
-        let _ = execute!(self.stdout, cursor::Show, terminal::LeaveAlternateScreen);
+        let _ = execute!(
+            self.stdout,
+            ResetColor,
+            terminal::Clear(ClearType::All),
+            cursor::MoveTo(0, 0),
+            cursor::Show,
+            terminal::LeaveAlternateScreen
+        );
+        let _ = self.stdout.flush();
         let _ = terminal::disable_raw_mode();
     }
 }
@@ -1313,7 +1322,7 @@ fn cockpit_view_summary(view: View, snapshot: &SystemSnapshot, loading: bool) ->
         View::Logs if snapshot.logs.is_empty() && log_collection_failed(snapshot) => {
             "log collection unavailable".into()
         }
-        View::Logs => format!("{} recent entries", snapshot.logs.len()),
+        View::Logs => cockpit_log_summary(snapshot),
         View::Disk => snapshot
             .mounts
             .iter()
@@ -1342,14 +1351,54 @@ fn cockpit_view_summary(view: View, snapshot: &SystemSnapshot, loading: bool) ->
                 .filter(|device| device.kind == "serial")
                 .count()
         ),
-        View::System => format!(
-            "{} users · {} groups · {} certificates",
-            snapshot.accounts.len(),
-            snapshot.groups.len(),
-            snapshot.certificates.len()
-        ),
+        View::System => {
+            let clock = match snapshot.clock.ntp_synchronized {
+                Some(true) => "clock synced",
+                Some(false) => "clock not synced",
+                None => "clock status unknown",
+            };
+            format!(
+                "{} · {} DNS · {} login users",
+                clock,
+                snapshot.dns.nameservers.len(),
+                interactive_accounts(snapshot).count()
+            )
+        }
         View::Health => format!("{} findings", snapshot.findings.len()),
     }
+}
+
+fn cockpit_log_summary(snapshot: &SystemSnapshot) -> String {
+    let mut errors = 0usize;
+    let mut warnings = 0usize;
+    for entry in &snapshot.logs {
+        match entry
+            .priority
+            .as_deref()
+            .unwrap_or_default()
+            .to_ascii_lowercase()
+            .as_str()
+        {
+            "emerg" | "alert" | "crit" | "critical" | "err" | "error" => errors += 1,
+            "warning" | "warn" => warnings += 1,
+            _ => {}
+        }
+    }
+    match (errors, warnings, snapshot.logs.is_empty()) {
+        (0, 0, true) => "no matching log entries".into(),
+        (0, 0, false) => "no flagged log entries".into(),
+        (errors, 0, _) => format!("{errors} errors"),
+        (0, warnings, _) => format!("{warnings} warnings"),
+        (errors, warnings, _) => format!("{errors} errors · {warnings} warnings"),
+    }
+}
+
+fn interactive_accounts(snapshot: &SystemSnapshot) -> impl Iterator<Item = &AccountInfo> {
+    snapshot.accounts.iter().filter(|account| {
+        !account.shell.is_empty()
+            && !account.shell.ends_with("/false")
+            && !account.shell.ends_with("/nologin")
+    })
 }
 
 fn log_collection_failed(snapshot: &SystemSnapshot) -> bool {
@@ -2911,7 +2960,8 @@ fn system_rows(snapshot: &SystemSnapshot) -> Vec<(String, String)> {
             .cloned()
             .map(|value| ("DNS SEARCH".into(), value)),
     );
-    rows.extend(snapshot.accounts.iter().map(|item| {
+    let visible_accounts = interactive_accounts(snapshot).collect::<Vec<_>>();
+    rows.extend(visible_accounts.iter().map(|item| {
         (
             "USER".into(),
             format!(
@@ -2920,28 +2970,51 @@ fn system_rows(snapshot: &SystemSnapshot) -> Vec<(String, String)> {
             ),
         )
     }));
-    rows.extend(snapshot.groups.iter().map(|item| {
-        (
-            "GROUP".into(),
-            format!(
-                "{} · gid {}{}",
-                item.name,
-                item.gid,
-                if item.members.is_empty() {
-                    String::new()
-                } else {
-                    format!(" · {}", item.members.join(","))
-                }
-            ),
-        )
-    }));
+    rows.extend(
+        snapshot
+            .groups
+            .iter()
+            .filter(|group| {
+                !group.members.is_empty()
+                    || visible_accounts
+                        .iter()
+                        .any(|account| account.gid == group.gid)
+            })
+            .map(|item| {
+                (
+                    "GROUP".into(),
+                    format!(
+                        "{} · gid {}{}",
+                        item.name,
+                        item.gid,
+                        if item.members.is_empty() {
+                            String::new()
+                        } else {
+                            format!(" · {}", item.members.join(","))
+                        }
+                    ),
+                )
+            }),
+    );
     rows.extend(
         snapshot
             .certificates
             .iter()
-            .map(|item| ("CERTIFICATE".into(), item.path.clone())),
+            .map(|item| ("CERTIFICATE".into(), certificate_summary(item))),
     );
     rows
+}
+
+fn certificate_summary(item: &CertificateInfo) -> String {
+    let identity = item
+        .subject
+        .as_deref()
+        .filter(|value| !value.is_empty())
+        .unwrap_or(&item.path);
+    item.not_after.as_deref().map_or_else(
+        || identity.to_owned(),
+        |expiry| format!("{identity} · expires {expiry}"),
+    )
 }
 
 fn render_system_specialist(
@@ -2978,12 +3051,27 @@ fn render_system_specialist(
                 colour
             )
         )?;
-        if kind == "CERTIFICATE" {
+        if kind == "CERTIFICATE"
+            && let Some(certificate) = snapshot
+                .certificates
+                .iter()
+                .find(|item| certificate_summary(item) == *value)
+        {
+            if let Some(subject) = &certificate.subject {
+                writeln!(out, "\n  {:<10} {}", "SUBJECT", subject)?;
+            }
+            if let Some(issuer) = &certificate.issuer {
+                writeln!(out, "  {:<10} {}", "ISSUER", issuer)?;
+            }
+            if let Some(expiry) = &certificate.not_after {
+                writeln!(out, "  {:<10} {}", "EXPIRES", expiry)?;
+            }
+            writeln!(out, "  {:<10} {}", "PATH", certificate.path)?;
             writeln!(
                 out,
                 "\n  {}",
                 ink(
-                    "Public certificate file visible to the invoking user; private keys are never read.",
+                    "Public certificate metadata only; private keys are never opened.",
                     Ink::Muted,
                     colour
                 )
@@ -2993,7 +3081,7 @@ fn render_system_specialist(
     }
     writeln!(
         out,
-        "  Clock, DNS, accounts, groups and visible public certificates\n"
+        "  Clock and DNS status, login-capable users, relevant groups and local certificates\n"
     )?;
     let capacity = usize::from(rows.saturating_sub(11)).max(1);
     let start = viewport_start(selected, items.len(), capacity);
@@ -3955,64 +4043,142 @@ fn collect_dns_context(warnings: &mut Vec<String>) -> DnsContext {
 fn collect_certificates(warnings: &mut Vec<String>) -> Vec<CertificateInfo> {
     #[cfg(target_os = "macos")]
     {
-        let keychain = "/System/Library/Keychains/SystemRootCertificates.keychain";
-        let Some(text) = command(
-            "/usr/bin/security",
-            &["find-certificate", "-a", keychain],
-            warnings,
-        ) else {
+        let Some(text) = command("/usr/bin/security", &["find-certificate", "-a"], warnings) else {
             return Vec::new();
         };
-        text.lines()
-            .filter_map(|line| {
-                line.trim()
-                    .strip_prefix("\"alis\"<blob>=\"")
-                    .and_then(|value| value.strip_suffix('"'))
-            })
-            .take(100)
-            .map(|label| CertificateInfo {
-                path: format!("{keychain} :: {label}"),
-                subject: Some(label.to_owned()),
-                issuer: None,
-                not_after: None,
-            })
-            .collect()
+        let mut keychain = "default keychains".to_owned();
+        let mut values = Vec::new();
+        for line in text.lines().map(str::trim) {
+            if let Some(value) = line
+                .strip_prefix("keychain: \"")
+                .and_then(|value| value.strip_suffix('"'))
+            {
+                keychain = value.to_owned();
+            } else if let Some(label) = line
+                .strip_prefix("\"alis\"<blob>=\"")
+                .and_then(|value| value.strip_suffix('"'))
+            {
+                values.push(CertificateInfo {
+                    path: keychain.clone(),
+                    subject: Some(label.to_owned()),
+                    issuer: None,
+                    not_after: None,
+                });
+            }
+            if values.len() >= 64 {
+                break;
+            }
+        }
+        values
     }
     #[cfg(target_os = "linux")]
     {
-        let candidates = ["/etc/ssl/certs", "/usr/local/share/ca-certificates"];
-        let mut values = Vec::new();
-        for directory in candidates {
-            let entries = match std::fs::read_dir(directory) {
-                Ok(entries) => entries,
-                Err(error) => {
-                    if directory == "/etc/ssl/certs" {
-                        warnings.push(format!(
-                            "certificate store {directory} unavailable: {error}"
-                        ));
-                    }
-                    continue;
-                }
-            };
-            for entry in entries.filter_map(Result::ok) {
-                if values.len() >= 100 {
-                    break;
-                }
-                let path = entry.path();
-                if path.is_file() || path.is_symlink() {
-                    values.push(CertificateInfo {
-                        path: path.display().to_string(),
-                        subject: None,
-                        issuer: None,
-                        not_after: None,
-                    });
-                }
-            }
+        // Root CA stores contain hundreds of distribution-managed certificates and drown out the
+        // certificates an operator can act on. Inventory locally managed certificate locations,
+        // plus non-symlink certificate files placed directly in /etc/ssl/certs.
+        let roots = [
+            ("/etc/letsencrypt/live", 3, true),
+            ("/etc/ssl/localcerts", 2, true),
+            ("/usr/local/share/ca-certificates", 3, false),
+            ("/etc/ssl/certs", 0, false),
+        ];
+        let mut paths = Vec::new();
+        for (directory, depth, allow_symlinks) in roots {
+            collect_certificate_paths(Path::new(directory), depth, allow_symlinks, &mut paths);
         }
-        values.sort_by(|left, right| left.path.cmp(&right.path));
-        values.dedup_by(|left, right| left.path == right.path);
+        paths.sort();
+        paths.dedup();
+        paths.truncate(64);
+
+        let openssl_available = Command::new("openssl")
+            .arg("version")
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status()
+            .is_ok_and(|status| status.success());
+        if !openssl_available && !paths.is_empty() {
+            warnings.push("openssl unavailable: certificate metadata was not inspected".into());
+        }
+        let values = paths
+            .into_iter()
+            .map(|path| certificate_info(&path, openssl_available, warnings))
+            .collect();
         values
     }
+}
+
+#[cfg(target_os = "linux")]
+fn collect_certificate_paths(
+    directory: &Path,
+    depth: usize,
+    allow_symlinks: bool,
+    paths: &mut Vec<PathBuf>,
+) {
+    let Ok(entries) = std::fs::read_dir(directory) else {
+        return;
+    };
+    for entry in entries.filter_map(Result::ok) {
+        let path = entry.path();
+        if path.is_dir() && depth > 0 {
+            collect_certificate_paths(&path, depth - 1, allow_symlinks, paths);
+            continue;
+        }
+        let Ok(file_type) = entry.file_type() else {
+            continue;
+        };
+        if file_type.is_symlink() && !allow_symlinks {
+            continue;
+        }
+        let Some(name) = path.file_name().and_then(|value| value.to_str()) else {
+            continue;
+        };
+        let extension = path.extension().and_then(|value| value.to_str());
+        let is_certificate = matches!(extension, Some("crt" | "pem"))
+            && name != "ca-certificates.crt"
+            && (!directory.starts_with("/etc/letsencrypt") || name == "cert.pem");
+        if is_certificate && (path.is_file() || file_type.is_symlink()) {
+            paths.push(path);
+        }
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn certificate_info(
+    path: &Path,
+    openssl_available: bool,
+    warnings: &mut Vec<String>,
+) -> CertificateInfo {
+    let mut info = CertificateInfo {
+        path: path.display().to_string(),
+        subject: None,
+        issuer: None,
+        not_after: None,
+    };
+    if !openssl_available {
+        return info;
+    }
+    let path_text = path.to_string_lossy();
+    let Some(metadata) = command_with_timeout(
+        "openssl",
+        &[
+            "x509", "-noout", "-subject", "-issuer", "-enddate", "-in", &path_text,
+        ],
+        warnings,
+        Duration::from_secs(2),
+    ) else {
+        return info;
+    };
+    for line in metadata.lines().map(str::trim) {
+        if let Some(value) = line.strip_prefix("subject=") {
+            info.subject = Some(value.trim().to_owned());
+        } else if let Some(value) = line.strip_prefix("issuer=") {
+            info.issuer = Some(value.trim().to_owned());
+        } else if let Some(value) = line.strip_prefix("notAfter=") {
+            info.not_after = Some(value.trim().to_owned());
+        }
+    }
+    info
 }
 
 fn collect_accounts(path: &str, warnings: &mut Vec<String>) -> Vec<AccountInfo> {
@@ -5679,7 +5845,15 @@ fn filter_snapshot(
             item.members.join(" ")
         ))
     });
-    snapshot.certificates.retain(|item| matches(&item.path));
+    snapshot.certificates.retain(|item| {
+        matches(&format!(
+            "{} {} {} {}",
+            item.path,
+            item.subject.as_deref().unwrap_or(""),
+            item.issuer.as_deref().unwrap_or(""),
+            item.not_after.as_deref().unwrap_or("")
+        ))
+    });
     snapshot
         .findings
         .retain(|item| matches(&format!("{} {} {}", item.id, item.title, item.summary)));
@@ -5996,13 +6170,13 @@ fn render_plain(view: View, snapshot: &SystemSnapshot, out: &mut dyn Write) -> R
                     item.members.join(",")
                 )?;
             }
-            writeln!(
-                out,
-                "\nVISIBLE CERTIFICATE FILES ({})",
-                snapshot.certificates.len()
-            )?;
+            writeln!(out, "\nLOCAL CERTIFICATES")?;
             for item in &snapshot.certificates {
-                writeln!(out, "{}", item.path)?;
+                writeln!(out, "{}", certificate_summary(item))?;
+                writeln!(out, "  {}", item.path)?;
+                if let Some(issuer) = &item.issuer {
+                    writeln!(out, "  issuer: {issuer}")?;
+                }
             }
         }
         View::Health => render_findings(snapshot, out)?,
@@ -6581,6 +6755,17 @@ mod tests {
         assert_eq!(human_duration(90), "1m");
         assert_eq!(human_duration(7_500), "2h 5m");
         assert_eq!(human_duration(183_600), "2d 3h");
+    }
+
+    #[test]
+    fn cockpit_summaries_do_not_present_collector_caps_as_inventory_totals() {
+        let snapshot = demo_snapshot();
+        let logs = cockpit_view_summary(View::Logs, &snapshot, false);
+        let system = cockpit_view_summary(View::System, &snapshot, false);
+        assert!(!logs.contains("recent entries"));
+        assert!(logs.contains("errors"));
+        assert!(!system.contains("certificates"));
+        assert!(system.contains("DNS"));
     }
 
     #[test]
