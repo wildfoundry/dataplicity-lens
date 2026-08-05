@@ -264,8 +264,8 @@ SBOMs, checksums and package smoke tests. See [`SECURITY.md`](SECURITY.md) and
 - `lens-services` — navigable service state, restart loops and related processes
 - `lens-logs` — a navigable recent-message view, repeated-message folding and service/severity/time filters
 - `lens-disk` — navigable block devices, filesystems, mounts, inodes and deleted-open files
-- `lens-net` — navigable interfaces, routes and listener ownership
-- `lens-hardware` — temperatures, Raspberry Pi firmware status and USB/serial inventory
+- `lens-net` — live receive/transmit charts, navigable interfaces, routes and listener ownership
+- `lens-hardware` — identity, temperatures, firmware status and USB/serial inventory
 - `lens-system` — clock/NTP, resolver, local identities and visible public certificate files
 - `lens-health` — selectable findings with the evidence and suggested checks behind each warning
 

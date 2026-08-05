@@ -100,7 +100,8 @@ lens-disk --json | jq '{filesystems, warnings: .collection_warnings}'
 
 Run `lens-net` and check in this order:
 
-1. Is the expected interface up and does it have the expected address?
+1. Is the expected interface up, does it have the expected address, and do the RX/TX charts show
+   traffic when the application is active?
 2. Is there a default route, and does it use the intended interface and gateway?
 3. Is the application listening on the intended address and port?
 

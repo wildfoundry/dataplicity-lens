@@ -1128,18 +1128,11 @@ fn theme_rgb(
 }
 
 fn canvas_style(capabilities: TerminalCapabilities) -> Style {
-    if capabilities.color {
-        // Respect the terminal's configured background. This avoids a conspicuous grey canvas in
-        // browser and serial terminals while retaining Lens foreground colours.
-        Style::default().fg(theme_rgb(
-            capabilities,
-            (207, 216, 230),
-            (25, 39, 44),
-            Color::White,
-        ))
-    } else {
-        Style::default()
-    }
+    let _ = capabilities;
+    // Keep both foreground and background under terminal control. Browser and serial terminals do
+    // not consistently expose their background metadata, but their configured default foreground
+    // is already chosen for legibility.
+    Style::default()
 }
 
 fn brand_style(capabilities: TerminalCapabilities) -> Style {
@@ -1147,7 +1140,7 @@ fn brand_style(capabilities: TerminalCapabilities) -> Style {
         Style::default()
             .fg(theme_rgb(
                 capabilities,
-                (190, 125, 255),
+                (143, 91, 215),
                 (105, 40, 160),
                 Color::Magenta,
             ))
@@ -1158,16 +1151,8 @@ fn brand_style(capabilities: TerminalCapabilities) -> Style {
 }
 
 fn title_style(capabilities: TerminalCapabilities) -> Style {
-    if capabilities.color {
-        Style::default().fg(theme_rgb(
-            capabilities,
-            (238, 243, 252),
-            (16, 31, 35),
-            Color::White,
-        ))
-    } else {
-        Style::default()
-    }
+    let _ = capabilities;
+    Style::default().add_modifier(Modifier::BOLD)
 }
 
 fn label_style(capabilities: TerminalCapabilities) -> Style {
@@ -1175,7 +1160,7 @@ fn label_style(capabilities: TerminalCapabilities) -> Style {
         Style::default()
             .fg(theme_rgb(
                 capabilities,
-                (139, 155, 180),
+                (105, 116, 132),
                 (70, 85, 105),
                 Color::Gray,
             ))
@@ -1189,7 +1174,7 @@ fn muted_style(capabilities: TerminalCapabilities) -> Style {
     if capabilities.color {
         Style::default().fg(theme_rgb(
             capabilities,
-            (125, 140, 165),
+            (105, 116, 132),
             (78, 94, 112),
             Color::Gray,
         ))
@@ -1229,7 +1214,7 @@ fn metric_style(capabilities: TerminalCapabilities) -> Style {
         Style::default()
             .fg(theme_rgb(
                 capabilities,
-                (91, 215, 255),
+                (0, 126, 163),
                 (0, 103, 148),
                 Color::Cyan,
             ))
@@ -1243,7 +1228,7 @@ fn info_style(capabilities: TerminalCapabilities) -> Style {
     if capabilities.color {
         Style::default().fg(theme_rgb(
             capabilities,
-            (91, 215, 255),
+            (0, 126, 163),
             (0, 103, 148),
             Color::Blue,
         ))
@@ -1256,7 +1241,7 @@ fn attention_style(capabilities: TerminalCapabilities) -> Style {
     if capabilities.color {
         Style::default().fg(theme_rgb(
             capabilities,
-            (255, 190, 92),
+            (166, 95, 0),
             (145, 79, 0),
             Color::Yellow,
         ))
@@ -1270,7 +1255,7 @@ fn critical_style(capabilities: TerminalCapabilities) -> Style {
         Style::default()
             .fg(theme_rgb(
                 capabilities,
-                (255, 105, 125),
+                (199, 51, 80),
                 (185, 30, 55),
                 Color::Red,
             ))
@@ -1299,7 +1284,7 @@ fn success_style(capabilities: TerminalCapabilities) -> Style {
     if capabilities.color {
         Style::default().fg(theme_rgb(
             capabilities,
-            (88, 224, 166),
+            (0, 137, 94),
             (0, 110, 79),
             Color::Green,
         ))
@@ -1375,7 +1360,7 @@ fn table_header_style(capabilities: TerminalCapabilities) -> Style {
         Style::default()
             .fg(theme_rgb(
                 capabilities,
-                (158, 176, 204),
+                (105, 116, 132),
                 (56, 72, 92),
                 Color::Gray,
             ))
@@ -1594,9 +1579,27 @@ mod tests {
             light_background: true,
         };
 
-        assert_eq!(canvas_style(capabilities).fg, Some(Color::Rgb(25, 39, 44)));
-        assert_eq!(title_style(capabilities).fg, Some(Color::Rgb(16, 31, 35)));
+        assert_eq!(canvas_style(capabilities).fg, None);
+        assert_eq!(title_style(capabilities).fg, None);
         assert_eq!(muted_style(capabilities).fg, Some(Color::Rgb(78, 94, 112)));
+    }
+
+    #[test]
+    fn automatic_palette_stays_legible_when_background_metadata_is_missing() {
+        let capabilities = TerminalCapabilities {
+            color: true,
+            true_color: true,
+            unicode: true,
+            light_background: false,
+        };
+
+        assert_eq!(canvas_style(capabilities).fg, None);
+        assert_eq!(title_style(capabilities).fg, None);
+        assert_eq!(metric_style(capabilities).fg, Some(Color::Rgb(0, 126, 163)));
+        assert_eq!(
+            muted_style(capabilities).fg,
+            Some(Color::Rgb(105, 116, 132))
+        );
     }
 
     #[test]
