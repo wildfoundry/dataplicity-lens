@@ -9,6 +9,7 @@ fi
 version="$1"
 checksums="$2"
 output="$3"
+tap_repository="${HOMEBREW_TAP_REPOSITORY:-wildfoundry/homebrew-tap}"
 release="dataplicity-lens-v${version}"
 arm_archive="${release}-aarch64-apple-darwin.tar.gz"
 intel_archive="${release}-x86_64-apple-darwin.tar.gz"
@@ -19,6 +20,10 @@ intel_archive="${release}-x86_64-apple-darwin.tar.gz"
 }
 [[ -f "$checksums" ]] || {
   echo "checksum manifest not found: $checksums" >&2
+  exit 1
+}
+[[ "$tap_repository" =~ ^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$ ]] || {
+  echo "invalid Homebrew tap repository: $tap_repository" >&2
   exit 1
 }
 
@@ -56,11 +61,11 @@ mkdir -p "$(dirname "$output")"
   printf '\n'
   printf '%s\n' '  on_macos do'
   printf '%s\n' '    on_arm do'
-  printf '      url "https://github.com/wildfoundry/homebrew-tap/releases/download/%s/%s"\n' "$release" "$arm_archive"
+  printf '      url "https://github.com/%s/releases/download/%s/%s"\n' "$tap_repository" "$release" "$arm_archive"
   printf '      sha256 "%s"\n' "$arm_sha"
   printf '%s\n' '    end'
   printf '%s\n' '    on_intel do'
-  printf '      url "https://github.com/wildfoundry/homebrew-tap/releases/download/%s/%s"\n' "$release" "$intel_archive"
+  printf '      url "https://github.com/%s/releases/download/%s/%s"\n' "$tap_repository" "$release" "$intel_archive"
   printf '      sha256 "%s"\n' "$intel_sha"
   printf '%s\n' '    end'
   printf '%s\n' '  end'

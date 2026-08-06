@@ -22,6 +22,10 @@ grep -q "$intel_sha" "$formula"
 grep -q 'bin.install Dir\["bin/\*"\]' "$formula"
 grep -q 'assert_match version.to_s' "$formula"
 
+HOMEBREW_TAP_REPOSITORY=example/custom-tap \
+  "$repo/scripts/generate-homebrew-formula.sh" 0.3.0 "$manifest" "$work/custom.rb"
+grep -q 'github.com/example/custom-tap/releases/download' "$work/custom.rb"
+
 if "$repo/scripts/generate-homebrew-formula.sh" 0.3.0 /dev/null "$work/invalid.rb" 2>/dev/null; then
   echo "formula generation accepted a manifest without release archives" >&2
   exit 1
