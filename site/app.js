@@ -52,4 +52,97 @@
       window.setTimeout(() => { button.textContent = original; }, 1600);
     });
   });
+
+  const VISITOR_STORAGE_KEY = 'dp-lens-visitor-id';
+  const USAGE_ENDPOINT = 'https://api.dataplicity.com/api/public/lens-usage/';
+
+  function prefersNoTracking() {
+    try {
+      const nav = navigator;
+      const flag = nav.doNotTrack || nav.msDoNotTrack || window.doNotTrack;
+      return flag === '1' || flag === 'yes';
+    } catch {
+      return false;
+    }
+  }
+
+  function getVisitorId() {
+    try {
+      const existing = window.localStorage.getItem(VISITOR_STORAGE_KEY);
+      if (existing && /^[A-Za-z0-9_-]+$/.test(existing) && existing.length <= 64) {
+        return existing;
+      }
+      const generated = typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function'
+        ? crypto.randomUUID().replace(/-/g, '')
+        : `v${Date.now().toString(36)}${Math.random().toString(36).slice(2, 12)}`;
+      window.localStorage.setItem(VISITOR_STORAGE_KEY, generated);
+      return generated;
+    } catch {
+      return null;
+    }
+  }
+
+  function normalizePath(rawPath) {
+    try {
+      const url = new URL(rawPath, window.location.origin);
+      let path = url.pathname || '/';
+      if (!path.startsWith('/')) path = `/${path}`;
+      path = path.replace(/\/+/g, '/');
+      if (path.length > 1) path = path.replace(/\/$/, '');
+      const lowered = path.toLowerCase();
+      if (
+        lowered.startsWith('/assets/') ||
+        lowered.startsWith('/robots') ||
+        lowered.startsWith('/sitemap') ||
+        lowered.startsWith('/favicon')
+      ) {
+        return null;
+      }
+      if (/\.(?:js|css|map|png|jpe?g|gif|svg|ico|webp|woff2?|ttf|eot|txt|json)$/i.test(path)) {
+        return null;
+      }
+      if (lowered.endsWith('.html')) {
+        path = path.slice(0, -5) || '/';
+      }
+      if (path === '/index') path = '/';
+      return path;
+    } catch {
+      return null;
+    }
+  }
+
+  function trackLensPageview(rawPath = window.location.pathname) {
+    if (prefersNoTracking()) return;
+    const path = normalizePath(rawPath);
+    const visitorId = getVisitorId();
+    if (!path || !visitorId) return;
+    const body = JSON.stringify({
+      path,
+      visitor_id: visitorId,
+      referrer: document.referrer || '',
+      ts: new Date().toISOString(),
+    });
+    try {
+      if (typeof navigator.sendBeacon === 'function') {
+        const blob = new Blob([body], { type: 'application/json' });
+        if (navigator.sendBeacon(USAGE_ENDPOINT, blob)) return;
+      }
+    } catch {
+      // fall through
+    }
+    try {
+      void fetch(USAGE_ENDPOINT, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body,
+        mode: 'cors',
+        credentials: 'omit',
+        keepalive: true,
+      });
+    } catch {
+      // Best-effort telemetry must never break browsing.
+    }
+  }
+
+  trackLensPageview();
 })();
