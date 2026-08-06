@@ -5,6 +5,8 @@ versioning once the first public release is tagged.
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-08-06
+
 ### Added
 
 - The 1.x platform/support policy and a threat model covering local data, actions, hostile input,
