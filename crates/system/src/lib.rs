@@ -3358,15 +3358,10 @@ fn render_system_specialist(
     )?;
     let reserved = 12usize.saturating_add(section_lines);
     let capacity = usize::from(rows).saturating_sub(reserved).max(1);
-    let section_start = items
-        .iter()
-        .position(|candidate| candidate.section == item.section)
-        .unwrap_or(0);
-    let start = if selected == section_start {
-        selected
-    } else {
-        viewport_start(selected, items.len(), capacity)
-    };
+    // Keep context above and below the cursor when crossing a section boundary.
+    // Section jumps remain obvious in the navigation strip without forcing the
+    // selected row to the top of the viewport.
+    let start = viewport_start(selected, items.len(), capacity);
     for (index, item) in items.iter().enumerate().skip(start).take(capacity) {
         let row = format!(
             "  {:<12} {}",
@@ -7196,7 +7191,15 @@ mod tests {
         .expect("certificate section");
         let certificate_output = String::from_utf8(certificate_output).expect("UTF-8");
         assert!(certificate_output.contains(">  CERTIFICATE"));
-        assert!(!certificate_output.contains("  GROUP        "));
+        assert!(certificate_output.contains("  GROUP"));
+
+        let users = system_section_start(&snapshot, SystemSection::Users);
+        let mut transition_output = Vec::new();
+        render_system_specialist(&snapshot, users, false, 18, 80, &mut transition_output)
+            .expect("system section transition");
+        let transition_output = String::from_utf8(transition_output).expect("UTF-8");
+        assert!(transition_output.contains(">  USER"));
+        assert!(transition_output.contains("  DNS SEARCH"));
     }
 
     #[test]

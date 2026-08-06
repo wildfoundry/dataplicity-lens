@@ -71,27 +71,23 @@ binaries together during an upgrade.
 
 ## macOS with Homebrew
 
-The repository contains a Homebrew formula and a test installer that builds all nine applications,
-installs their man pages and shell completions, then checks sample output and native macOS collection.
+The WildFoundry tap installs all nine applications, their manual pages and shell completions from a
+signed and notarized release archive. Apple Silicon and Intel Macs receive their native build.
 
 Prerequisites:
 
 - macOS on Apple Silicon or Intel
 - [Homebrew](https://brew.sh/)
-- Apple's command-line tools (`xcode-select --install` if they are missing)
-- Git
 
-Clone the repository and keep the tested installation:
+Install and open Lens:
 
 ```sh
-git clone https://github.com/wildfoundry/dataplicity-lens.git
-cd dataplicity-lens
-scripts/test-homebrew-local.sh --keep
+brew install wildfoundry/tap/dataplicity-lens
+lens
 ```
 
-Homebrew installs Rust as a build-only dependency. The first build can take several minutes. The
-script refuses to replace an existing `dataplicity-lens` formula or an existing
-`local/dataplicity-lens-test` tap.
+Homebrew verifies the archive digest before installing it. Rust and Apple's developer tools are not
+required for this binary installation.
 
 Open the overview, then check the local machine:
 
@@ -109,23 +105,12 @@ macOS privacy controls can hide some unified-log or per-process details. Lens pr
 permissions and reports unavailable information as warnings instead of requiring `sudo` or failing
 the entire snapshot.
 
-Remove the retained test installation and temporary tap with:
+Upgrade to the newest published version or remove the suite with:
 
 ```sh
-brew uninstall dataplicity-lens
-brew untap local/dataplicity-lens-test
-```
-
-Run `scripts/test-homebrew-local.sh` without `--keep` when you only want a clean verification; it
-automatically removes the package and tap after its tests pass.
-
-To refresh a retained source installation, pull the intended revision and rerun the installer. It
-builds and tests the complete suite before leaving the replacement linked:
-
-```sh
-git pull --ff-only
-scripts/test-homebrew-local.sh --keep
+brew upgrade dataplicity-lens
 lens-top --version
+brew uninstall dataplicity-lens
 ```
 
 ## Build directly from source
@@ -143,6 +128,9 @@ The executables are written to `target/release/`.
 
 Source builds are primarily for contributors. Operators should prefer a release package so the exact
 build can be identified and cleanly upgraded or removed.
+
+Contributors can test the source-build formula without publishing it by running
+`scripts/test-homebrew-local.sh`; pass `--keep` to retain that temporary local installation.
 
 See [`COMPATIBILITY.md`](COMPATIBILITY.md) for platform coverage and
 [`TROUBLESHOOTING.md`](TROUBLESHOOTING.md) when a native facility is unavailable.

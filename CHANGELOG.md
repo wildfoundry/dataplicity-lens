@@ -27,6 +27,8 @@ versioning once the first public release is tagged.
 - A `lens-hardware` view for device identity, firmware, Linux thermal/hwmon sensors, Raspberry Pi
   power and throttling status, and USB/serial inventory on Linux and macOS.
 - Live RX/TX rate charts in `lens-net`, with per-interface activity and responsive compact output.
+- CI-only Developer ID signing, Apple notarization and protected Homebrew tap publication for native
+  Apple Silicon and Intel release archives.
 
 ### Changed
 
@@ -86,6 +88,8 @@ versioning once the first public release is tagged.
   has been removed from the product site.
 - Debian and RPM packages now use statically linked binaries so Raspberry Pi OS and Debian installs
   do not inherit the build runner's glibc version.
+- System-section navigation keeps rows above and below the selection visible when the cursor crosses
+  a section boundary instead of jumping the selected row to the top of the terminal.
 
 ## [0.2.0] - unreleased
 
