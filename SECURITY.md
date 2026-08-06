@@ -38,3 +38,5 @@ Pull-request workflows use read-only tokens. Release permissions are granted onl
 explicitly dispatched release jobs. No release secrets are exposed to pull-request code.
 
 See `docs/RELEASING.md` for the full release procedure.
+The reviewed assets, trust boundaries, threats and controls are recorded in
+`docs/THREAT_MODEL.md`.

@@ -81,6 +81,8 @@ or elevate the complete application.
 
 ## Stability
 
-Command names, common flags and schema version `2` are the compatibility surface for `0.3.x`.
+Command names, common flags and schema version `2` are the release-candidate compatibility surface
+for `0.3.x` and become the supported 1.x contract at 1.0.0.
 Additional optional JSON fields may be added without changing the schema version. Removing a field,
 changing its meaning or changing a unit requires a new schema version and release note.
+The complete support and deprecation policy is in [`SUPPORT_POLICY.md`](SUPPORT_POLICY.md).
