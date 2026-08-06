@@ -46,19 +46,16 @@ and musl archives for other Linux systems.
 
 ### macOS with Homebrew
 
-Install Homebrew and Apple's command-line tools if they are not already present, then build, install
-and test the full suite from the repository:
+Install Homebrew if it is not already present, then install the signed release from WildFoundry's
+tap:
 
 ```sh
-git clone https://github.com/wildfoundry/dataplicity-lens.git
-cd dataplicity-lens
-scripts/test-homebrew-local.sh --keep
+brew install wildfoundry/tap/dataplicity-lens
+lens
 ```
 
-The script creates a local source archive, installs the committed formula from source, and checks both
-the sample output and native macOS process collection. `--keep` leaves the
-formula installed so you can run `lens`, `lens-top --once`, or any specialist command. Omit it for a
-clean verification run that uninstalls its temporary tap and package automatically.
+The formula selects the notarized Apple Silicon or Intel archive for the Mac; it does not compile
+Rust locally. Homebrew verifies the published SHA-256 digest before installation.
 
 Run Lens as your normal account; it does not need `sudo`. Start with the overview, then open the
 specialist view you need:
@@ -75,11 +72,11 @@ lens-system --filter ntp
 lens-health --json
 ```
 
-To remove the retained local test installation:
+Upgrade or remove the complete suite through Homebrew:
 
 ```sh
+brew upgrade dataplicity-lens
 brew uninstall dataplicity-lens
-brew untap local/dataplicity-lens-test
 ```
 
 See [`docs/INSTALLING.md`](docs/INSTALLING.md) for the package matrix, checksum verification, macOS

@@ -233,6 +233,7 @@ jobs:
   build-macos:
     name: Build and package macOS ${{ matrix.arch }}
     needs: [prepare, validate]
+    environment: release
     strategy:
       fail-fast: false
       matrix:
@@ -257,6 +258,39 @@ jobs:
           rustup show active-toolchain
           cargo clean
           cargo build --release --locked --target "${{ matrix.target }}" --workspace
+      - name: Import Developer ID certificate
+        if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+        env:
+          MACOS_CERTIFICATE_P12_BASE64: ${{ secrets.MACOS_CERTIFICATE_P12_BASE64 }}
+          MACOS_CERTIFICATE_PASSWORD: ${{ secrets.MACOS_CERTIFICATE_PASSWORD }}
+        run: |
+          set -euo pipefail
+          [[ -n "$MACOS_CERTIFICATE_P12_BASE64" ]]
+          [[ -n "$MACOS_CERTIFICATE_PASSWORD" ]]
+          certificate="$RUNNER_TEMP/developer-id.p12"
+          keychain="$RUNNER_TEMP/lens-signing.keychain-db"
+          keychain_password="$(openssl rand -hex 24)"
+          printf '%s' "$MACOS_CERTIFICATE_P12_BASE64" | base64 -D > "$certificate"
+          security create-keychain -p "$keychain_password" "$keychain"
+          security set-keychain-settings -lut 21600 "$keychain"
+          security unlock-keychain -p "$keychain_password" "$keychain"
+          security import "$certificate" -k "$keychain" -P "$MACOS_CERTIFICATE_PASSWORD" -T /usr/bin/codesign
+          security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$keychain_password" "$keychain"
+          security list-keychains -d user -s "$keychain" login.keychain-db
+          identity="$(security find-identity -v -p codesigning "$keychain" | sed -n 's/.*"\(Developer ID Application:.*\)"/\1/p')"
+          [[ "$(printf '%s\n' "$identity" | sed '/^$/d' | wc -l | tr -d ' ')" == 1 ]]
+          echo "MACOS_SIGNING_IDENTITY=$identity" >> "$GITHUB_ENV"
+          echo "MACOS_SIGNING_KEYCHAIN=$keychain" >> "$GITHUB_ENV"
+          rm -f "$certificate"
+      - name: Sign and verify macOS executables
+        if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+        run: |
+          set -euo pipefail
+          for binary in lens lens-top lens-services lens-logs lens-disk lens-net lens-hardware lens-system lens-health; do
+            path="target/${{ matrix.target }}/release/$binary"
+            codesign --force --options runtime --timestamp --keychain "$MACOS_SIGNING_KEYCHAIN" --sign "$MACOS_SIGNING_IDENTITY" "$path"
+            codesign --verify --strict --verbose=2 "$path"
+          done
       - name: Generate man pages and completions
         run: scripts/generate-assets.sh "target/${{ matrix.target }}/release/lens-top" dist/generated
       - name: Build and smoke-test macOS archive
@@ -269,6 +303,38 @@ jobs:
           scripts/smoke-suite.sh "target/${TARGET}/release"
           "target/${TARGET}/release/lens-top" --once --json > /tmp/lens-macos.json
           grep -q '"hostname"' /tmp/lens-macos.json
+      - name: Notarize signed macOS archive
+        if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+        env:
+          VERSION: ${{ needs.prepare.outputs.version }}
+          TARGET: ${{ matrix.target }}
+          APPLE_NOTARY_KEY_P8_BASE64: ${{ secrets.APPLE_NOTARY_KEY_P8_BASE64 }}
+          APPLE_NOTARY_KEY_ID: ${{ secrets.APPLE_NOTARY_KEY_ID }}
+          APPLE_NOTARY_ISSUER_ID: ${{ secrets.APPLE_NOTARY_ISSUER_ID }}
+        run: |
+          set -euo pipefail
+          [[ -n "$APPLE_NOTARY_KEY_P8_BASE64" ]]
+          [[ -n "$APPLE_NOTARY_KEY_ID" ]]
+          [[ -n "$APPLE_NOTARY_ISSUER_ID" ]]
+          archive="dist/${TARGET}/dataplicity-lens-v${VERSION}-${TARGET}.tar.gz"
+          notary_root="$RUNNER_TEMP/notary-${TARGET}"
+          key="$RUNNER_TEMP/AuthKey_${APPLE_NOTARY_KEY_ID}.p8"
+          mkdir -p "$notary_root"
+          tar -xzf "$archive" -C "$notary_root"
+          ditto -c -k --keepParent "$notary_root/dataplicity-lens-v${VERSION}-${TARGET}" "$RUNNER_TEMP/dataplicity-lens-${TARGET}.zip"
+          printf '%s' "$APPLE_NOTARY_KEY_P8_BASE64" | base64 -D > "$key"
+          xcrun notarytool submit "$RUNNER_TEMP/dataplicity-lens-${TARGET}.zip" \
+            --key "$key" \
+            --key-id "$APPLE_NOTARY_KEY_ID" \
+            --issuer "$APPLE_NOTARY_ISSUER_ID" \
+            --wait
+          rm -f "$key"
+      - name: Remove signing keychain
+        if: always() && github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+        run: |
+          if [[ -n "${MACOS_SIGNING_KEYCHAIN:-}" ]]; then
+            security delete-keychain "$MACOS_SIGNING_KEYCHAIN" || true
+          fi
       - name: Gather release asset
         env:
           VERSION: ${{ needs.prepare.outputs.version }}
@@ -339,3 +405,71 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           RELEASE_TAG: ${{ needs.prepare.outputs.tag }}
         run: gh release create "$RELEASE_TAG" dist/release/* --title "Dataplicity Lens $RELEASE_TAG" --generate-notes
+
+  publish-homebrew:
+    name: Publish Homebrew archives and formula
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+    needs: [prepare, assemble, publish]
+    runs-on: ubuntu-24.04
+    environment: release
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: dataplicity-lens-${{ needs.prepare.outputs.tag }}-release-bundle
+          path: dist/release
+      - name: Verify release bundle and Homebrew credentials
+        env:
+          HOMEBREW_TAP_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+        run: |
+          set -euo pipefail
+          [[ -n "$HOMEBREW_TAP_TOKEN" ]]
+          scripts/verify-release.sh dist/release
+      - name: Publish public macOS archives
+        env:
+          GH_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+          VERSION: ${{ needs.prepare.outputs.version }}
+        run: |
+          set -euo pipefail
+          tap_tag="dataplicity-lens-v${VERSION}"
+          assets=(
+            "dist/release/dataplicity-lens-v${VERSION}-aarch64-apple-darwin.tar.gz"
+            "dist/release/dataplicity-lens-v${VERSION}-x86_64-apple-darwin.tar.gz"
+          )
+          if gh release view "$tap_tag" --repo wildfoundry/homebrew-tap >/dev/null 2>&1; then
+            gh release upload "$tap_tag" "${assets[@]}" --clobber --repo wildfoundry/homebrew-tap
+          else
+            gh release create "$tap_tag" "${assets[@]}" \
+              --repo wildfoundry/homebrew-tap \
+              --title "Dataplicity Lens v${VERSION}" \
+              --notes "Signed and notarized macOS archives for the Dataplicity Lens Homebrew formula."
+          fi
+      - name: Generate and propose formula update
+        env:
+          GH_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+          VERSION: ${{ needs.prepare.outputs.version }}
+        run: |
+          set -euo pipefail
+          scripts/generate-homebrew-formula.sh "$VERSION" dist/release/SHA256SUMS "$RUNNER_TEMP/dataplicity-lens.rb"
+          ruby -c "$RUNNER_TEMP/dataplicity-lens.rb"
+          gh repo clone wildfoundry/homebrew-tap "$RUNNER_TEMP/homebrew-tap"
+          cd "$RUNNER_TEMP/homebrew-tap"
+          branch="release/dataplicity-lens-v${VERSION}-${GITHUB_RUN_ID}"
+          git switch -c "$branch"
+          install -m 0644 "$RUNNER_TEMP/dataplicity-lens.rb" Formula/dataplicity-lens.rb
+          git add Formula/dataplicity-lens.rb
+          git -c user.name="github-actions[bot]" \
+            -c user.email="41898282+github-actions[bot]@users.noreply.github.com" \
+            commit -m "Publish Dataplicity Lens v${VERSION}"
+          git push origin "$branch"
+          pr_url="$(gh pr create \
+            --repo wildfoundry/homebrew-tap \
+            --base main \
+            --head "$branch" \
+            --title "Publish Dataplicity Lens v${VERSION}" \
+            --body "Publishes the verified, signed and notarized macOS archives produced by the Dataplicity Lens v${VERSION} release workflow.")"
+          gh pr merge "$pr_url" --auto --squash --delete-branch

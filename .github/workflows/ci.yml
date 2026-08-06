@@ -126,3 +126,6 @@ jobs:
       - name: Install and test through Homebrew
         if: matrix.arch == 'Apple-Silicon'
         run: scripts/test-homebrew-local.sh
+      - name: Verify published Homebrew formula generation
+        if: matrix.arch == 'Apple-Silicon'
+        run: scripts/test-homebrew-formula-generation.sh
