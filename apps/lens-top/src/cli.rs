@@ -110,7 +110,7 @@ pub struct Args {
     #[arg(long, conflicts_with_all = ["plain", "json"])]
     pub jsonl: bool,
 
-    /// Collect a snapshot once and exit instead of opening the TUI.
+    /// Sample briefly, print one snapshot and exit instead of opening the TUI.
     #[arg(long)]
     pub once: bool,
 
@@ -187,7 +187,7 @@ pub struct Args {
     pub ascii: bool,
 
     /// Run against deterministic committed demo data.
-    #[arg(long)]
+    #[arg(long, hide = true)]
     pub demo: bool,
 
     /// Load configuration from this path instead of the XDG default.

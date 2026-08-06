@@ -87,7 +87,7 @@
 
 <span class="token-comment"># Structured data for a check or collector</span>
 <span class="token-command">lens-health</span> <span class="token-flag">--json</span> | <span class="token-command">jq</span> <span class="token-value">'.findings'</span></code></pre></div>
-        <p>When output is redirected, commands emit one plain snapshot automatically. Pass <code>--json</code> for the shared schema-versioned system snapshot. Common specialist options include <code>--filter</code> and <code>--limit</code>; the log and process tools provide additional domain-specific filters. Each command page documents the exact fields and options.</p>
+        <p>Pass <code>--once</code> to print one readable snapshot instead of opening an interactive screen. <code>--plain</code> explicitly selects human-readable output, while <code>--json</code> emits the shared schema-versioned snapshot. Redirected output is plain automatically. Common specialist options include <code>--filter</code> and <code>--limit</code>; domain-specific flags fail clearly when used with the wrong command.</p>
         <p>Use <code>--limit 0</code> deliberately: it removes the row cap and can produce a large result on a busy host. The normal default is 1,000 rows.</p>
       </section>
 

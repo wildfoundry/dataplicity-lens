@@ -158,7 +158,9 @@ every check ran. Review collection warnings when completeness matters.
 
 ## Capture a result for support or automation
 
-Use `--plain` for a readable snapshot and `--json` for the shared schema-versioned document. JSON
+Use `--once` when you want the same command to print one readable snapshot instead of opening its
+interactive screen. Use `--plain` when you want to explicitly select human-readable output, and
+`--json` for the shared schema-versioned document. Redirected output defaults to plain text. JSON
 preserves entities, findings, relationships and collection warnings so scripts do not have to parse
 the terminal layout.
 

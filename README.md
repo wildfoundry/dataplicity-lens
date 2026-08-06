@@ -94,10 +94,13 @@ cargo build --release --locked --workspace
 
 ## Use
 
-Start with `lens` for a cockpit, or run a specialist directly. Each specialist supports `--plain`,
-`--json`, `--filter` and `--limit`; logs additionally support `--service`, `--severity` and
-`--since`. The default limit is 1,000 rows. Pass `--limit 0` when you explicitly want every row in
-the selected time range or file.
+Start with `lens` for a cockpit, or run a specialist directly. Each specialist supports `--once`,
+`--plain`, `--json`, `--filter` and `--limit`; logs additionally support `--service`, `--process`,
+`--severity`, `--since` and repeatable `--log-file`. `--once` prints one human-readable snapshot in
+a terminal; `--plain` explicitly selects that output format and also exits after one snapshot.
+Redirected output is plain automatically. The default limit is 1,000 rows per result type; pass
+`--limit 0` when you explicitly want every available row. Flags that do not apply to a specialist
+are rejected instead of being silently ignored.
 
 For practical fault-finding sequences, field interpretation and platform-specific behaviour, use
 the [operations guide](docs/OPERATIONS_GUIDE.md). The command pages on the documentation site cover
@@ -114,6 +117,7 @@ diagnostic command in a responsive panel without leaving the live view.
 
 ```sh
 lens
+lens --once
 lens-services --service nginx
 lens-logs --since "1 hour ago" --severity error
 lens-logs --log-file /var/log/my-app.log --process worker
@@ -124,9 +128,10 @@ lens-system --json
 lens-health --json
 ```
 
-When stdout is a terminal, running `lens-top` starts the interactive interface. When stdout is not a
-terminal, it automatically emits one plain snapshot, which makes pipes and scheduled collection
-unsurprising.
+When stdout is a terminal, running `lens-top` starts the interactive interface. `--once` suppresses
+the TUI and defaults to plain text; `--plain`, `--json` and `--jsonl` each select a one-shot format
+directly. Redirected output is plain automatically. An explicit `--interval` is honoured as the CPU
+measurement window for one-shot output as well as the refresh interval for the TUI.
 
 ```sh
 lens-top
