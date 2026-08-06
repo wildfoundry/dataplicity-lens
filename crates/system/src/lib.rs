@@ -18,7 +18,7 @@ use std::{
 };
 
 use anyhow::{Context, Result, bail};
-use clap::{CommandFactory, Parser, ValueEnum};
+use clap::{CommandFactory, FromArgMatches, Parser, ValueEnum};
 use crossterm::{
     cursor,
     event::{self, Event, KeyCode, KeyModifiers},
@@ -158,11 +158,14 @@ pub struct ViewArgs {
     /// Emit stable plain text explicitly (the default outside an interactive terminal).
     #[arg(long, conflicts_with = "json")]
     pub plain: bool,
+    /// Print one snapshot and exit instead of opening the interactive view.
+    #[arg(long)]
+    pub once: bool,
     /// Choose colours for an auto-detected, dark or light terminal background.
     #[arg(long, value_enum, default_value_t = ThemeMode::Auto)]
     pub theme: ThemeMode,
     /// Use deterministic committed sample data.
-    #[arg(long)]
+    #[arg(long, hide = true)]
     pub demo: bool,
     /// Case-insensitive filter applied to rows and findings.
     #[arg(long)]
@@ -170,7 +173,7 @@ pub struct ViewArgs {
     /// Restrict log records and services to a unit name.
     #[arg(long)]
     pub service: Option<String>,
-    /// Restrict log records to text associated with a process name or PID.
+    /// Restrict log records to a matching source, unit or message.
     #[arg(long)]
     pub process: Option<String>,
     /// Restrict log records to a journal priority label.
@@ -183,15 +186,20 @@ pub struct ViewArgs {
     #[arg(long, value_name = "PATH")]
     pub log_file: Vec<PathBuf>,
     /// Generate a manual page and exit.
-    #[arg(long, value_name = "PATH")]
+    #[arg(long, value_name = "PATH", hide = true)]
     pub generate_man: Option<PathBuf>,
     /// Generate shell completion and exit.
-    #[arg(long, value_enum)]
+    #[arg(long, value_enum, hide = true)]
     pub generate_completion: Option<CompletionShell>,
     /// Output path used with --generate-completion.
-    #[arg(long, value_name = "PATH", requires = "generate_completion")]
+    #[arg(
+        long,
+        value_name = "PATH",
+        requires = "generate_completion",
+        hide = true
+    )]
     pub generate_output: Option<PathBuf>,
-    /// Maximum rows to collect and emit; use 0 for every available row.
+    /// Maximum rows per result type; use 0 for every available row.
     #[arg(long, default_value_t = 1000)]
     pub limit: usize,
     /// Change a service state (lens-services on Linux only).
@@ -224,7 +232,8 @@ pub fn is_broken_pipe(error: &anyhow::Error) -> bool {
 }
 
 pub fn run_view(view: View) -> Result<()> {
-    let args = ViewArgs::parse();
+    let args = parse_view_args(view.binary());
+    validate_view_args(view, &args)?;
     set_terminal_theme(args.theme);
     if generate_assets(view.binary(), &args)? {
         return Ok(());
@@ -232,7 +241,7 @@ pub fn run_view(view: View) -> Result<()> {
     if args.action.is_some() {
         return run_service_action(view, &args);
     }
-    if !args.json && !args.plain && !args.demo && io::stdout().is_terminal() {
+    if !args.json && !args.plain && !args.once && !args.demo && io::stdout().is_terminal() {
         let mut terminal = CockpitTerminal::enter()?;
         specialist_loop(view, &args, &mut terminal.stdout)?;
         return Ok(());
@@ -253,14 +262,14 @@ pub fn run_view(view: View) -> Result<()> {
     if args.json {
         serde_json::to_writer_pretty(io::stdout().lock(), &filtered).context("write JSON")?;
         println!();
-    } else if args.plain || args.demo || !io::stdout().is_terminal() {
+    } else if args.plain || args.once || args.demo || !io::stdout().is_terminal() {
         render_plain(view, &filtered, &mut io::stdout().lock())?;
     }
     Ok(())
 }
 
 pub fn run_cockpit() -> Result<()> {
-    let args = ViewArgs::parse();
+    let args = parse_view_args("lens");
     set_terminal_theme(args.theme);
     if generate_assets("lens", &args)? {
         return Ok(());
@@ -268,7 +277,7 @@ pub fn run_cockpit() -> Result<()> {
     if args.action.is_some() {
         bail!("service actions are available through lens-services");
     }
-    if args.json || args.plain || args.demo || !io::stdout().is_terminal() {
+    if args.json || args.plain || args.once || args.demo || !io::stdout().is_terminal() {
         let snapshot = if args.demo {
             demo_snapshot()
         } else {
@@ -297,6 +306,53 @@ pub fn run_cockpit() -> Result<()> {
         args.since.clone(),
         args.log_file.clone(),
     )
+}
+
+fn parse_view_args(name: &'static str) -> ViewArgs {
+    let matches = view_command(name).get_matches();
+    ViewArgs::from_arg_matches(&matches).unwrap_or_else(|error| error.exit())
+}
+
+fn view_command(name: &'static str) -> clap::Command {
+    let mut command = ViewArgs::command().name(name);
+    let supports_service = matches!(name, "lens" | "lens-services" | "lens-logs");
+    let supports_log_filters = matches!(name, "lens" | "lens-logs");
+    let supports_log_source = matches!(name, "lens" | "lens-logs" | "lens-health");
+    let supports_actions = name == "lens-services";
+    for (argument, visible) in [
+        ("service", supports_service),
+        ("process", supports_log_filters),
+        ("severity", supports_log_filters),
+        ("since", supports_log_source),
+        ("log_file", supports_log_source),
+        ("action", supports_actions),
+        ("target", supports_actions),
+        ("yes", supports_actions),
+        ("dry_run", supports_actions),
+    ] {
+        if !visible {
+            command = command.mut_arg(argument, |arg| arg.hide(true));
+        }
+    }
+    command
+}
+
+fn validate_view_args(view: View, args: &ViewArgs) -> Result<()> {
+    if args.service.is_some() && !matches!(view, View::Services | View::Logs) {
+        bail!("--service is only available in lens-services and lens-logs");
+    }
+    if args.process.is_some() && view != View::Logs {
+        bail!("--process is only available in lens-logs");
+    }
+    if args.severity.is_some() && view != View::Logs {
+        bail!("--severity is only available in lens-logs");
+    }
+    if (args.since.is_some() || !args.log_file.is_empty())
+        && !matches!(view, View::Logs | View::Health)
+    {
+        bail!("--since and --log-file are only available in lens-logs and lens-health");
+    }
+    Ok(())
 }
 
 #[derive(Debug, Serialize)]
@@ -392,7 +448,7 @@ fn write_action_outcome(args: &ViewArgs, outcome: &ActionOutcome<'_>) -> Result<
 
 fn generate_assets(name: &'static str, args: &ViewArgs) -> Result<bool> {
     if let Some(path) = &args.generate_man {
-        let command = ViewArgs::command().name(name);
+        let command = view_command(name);
         let mut output =
             std::fs::File::create(path).with_context(|| format!("create {}", path.display()))?;
         clap_mangen::Man::new(command).render(&mut output)?;
@@ -403,7 +459,7 @@ fn generate_assets(name: &'static str, args: &ViewArgs) -> Result<bool> {
             .generate_output
             .as_ref()
             .context("--generate-output is required")?;
-        let mut command = ViewArgs::command().name(name);
+        let mut command = view_command(name);
         let mut output =
             std::fs::File::create(path).with_context(|| format!("create {}", path.display()))?;
         match shell {
@@ -1823,6 +1879,27 @@ fn render_specialist_content(
             keycap("q", colour),
             ink("quit", Ink::Muted, colour)
         )?;
+    } else if width >= 80
+        && view == View::System
+        && !inspecting
+        && specialist_item_count(view, snapshot) > 0
+    {
+        writeln!(
+            stdout,
+            "  {} {}   {} {}   {} {}   {} {}   {} {}   {} {}",
+            keycap("↑↓", colour),
+            ink("move", Ink::Muted, colour),
+            keycap("Tab", colour),
+            ink("section", Ink::Muted, colour),
+            keycap("1-5", colour),
+            ink("jump", Ink::Muted, colour),
+            keycap("↵", colour),
+            ink("inspect", Ink::Muted, colour),
+            keycap("/", colour),
+            ink("search", Ink::Muted, colour),
+            keycap("q", colour),
+            ink("quit", Ink::Muted, colour),
+        )?;
     } else if width >= 80 && view != View::Processes && specialist_item_count(view, snapshot) > 0 {
         if inspecting {
             writeln!(
@@ -2936,91 +3013,244 @@ fn render_hardware_specialist(
     Ok(())
 }
 
-fn system_rows(snapshot: &SystemSnapshot) -> Vec<(String, String)> {
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SystemSection {
+    Clock,
+    Dns,
+    Users,
+    Groups,
+    Certificates,
+}
+
+impl SystemSection {
+    const ALL: [Self; 5] = [
+        Self::Clock,
+        Self::Dns,
+        Self::Users,
+        Self::Groups,
+        Self::Certificates,
+    ];
+
+    const fn label(self) -> &'static str {
+        match self {
+            Self::Clock => "CLOCK/NTP",
+            Self::Dns => "DNS",
+            Self::Users => "USERS",
+            Self::Groups => "GROUPS",
+            Self::Certificates => "CERTIFICATES",
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+struct SystemRow {
+    section: SystemSection,
+    kind: &'static str,
+    value: String,
+}
+
+fn system_rows(snapshot: &SystemSnapshot) -> Vec<SystemRow> {
     let mut rows = vec![
-        (
-            "TIMEZONE".into(),
-            snapshot
+        SystemRow {
+            section: SystemSection::Clock,
+            kind: "TIMEZONE",
+            value: snapshot
                 .clock
                 .timezone
                 .clone()
                 .unwrap_or_else(|| "unavailable".into()),
-        ),
-        (
-            "NTP SYNC".into(),
-            snapshot.clock.ntp_synchronized.map_or_else(
+        },
+        SystemRow {
+            section: SystemSection::Clock,
+            kind: "NTP SYNC",
+            value: snapshot.clock.ntp_synchronized.map_or_else(
                 || "unavailable".into(),
                 |value| if value { "yes".into() } else { "no".into() },
             ),
-        ),
-        (
-            "NTP SERVICE".into(),
-            snapshot
+        },
+        SystemRow {
+            section: SystemSection::Clock,
+            kind: "NTP SERVICE",
+            value: snapshot
                 .clock
                 .ntp_service
                 .clone()
                 .unwrap_or_else(|| "unavailable".into()),
-        ),
+        },
+        SystemRow {
+            section: SystemSection::Dns,
+            kind: "DNS SOURCE",
+            value: if snapshot.dns.source.is_empty() {
+                "unavailable".into()
+            } else {
+                snapshot.dns.source.clone()
+            },
+        },
     ];
-    rows.extend(
-        snapshot
-            .dns
-            .nameservers
-            .iter()
-            .cloned()
-            .map(|value| ("DNS SERVER".into(), value)),
-    );
-    rows.extend(
-        snapshot
-            .dns
-            .search_domains
-            .iter()
-            .cloned()
-            .map(|value| ("DNS SEARCH".into(), value)),
-    );
+    if snapshot.dns.nameservers.is_empty() {
+        rows.push(SystemRow {
+            section: SystemSection::Dns,
+            kind: "DNS SERVER",
+            value: "none visible".into(),
+        });
+    } else {
+        rows.extend(
+            snapshot
+                .dns
+                .nameservers
+                .iter()
+                .cloned()
+                .map(|value| SystemRow {
+                    section: SystemSection::Dns,
+                    kind: "DNS SERVER",
+                    value,
+                }),
+        );
+    }
+    if snapshot.dns.search_domains.is_empty() {
+        rows.push(SystemRow {
+            section: SystemSection::Dns,
+            kind: "DNS SEARCH",
+            value: "none configured".into(),
+        });
+    } else {
+        rows.extend(
+            snapshot
+                .dns
+                .search_domains
+                .iter()
+                .cloned()
+                .map(|value| SystemRow {
+                    section: SystemSection::Dns,
+                    kind: "DNS SEARCH",
+                    value,
+                }),
+        );
+    }
     let visible_accounts = interactive_accounts(snapshot).collect::<Vec<_>>();
-    rows.extend(visible_accounts.iter().map(|item| {
-        (
-            "USER".into(),
-            format!(
+    if visible_accounts.is_empty() {
+        rows.push(SystemRow {
+            section: SystemSection::Users,
+            kind: "USER",
+            value: "no login-capable users visible".into(),
+        });
+    } else {
+        rows.extend(visible_accounts.iter().map(|item| SystemRow {
+            section: SystemSection::Users,
+            kind: "USER",
+            value: format!(
                 "{} · uid {} · gid {} · {} · {}",
                 item.name, item.uid, item.gid, item.home, item.shell
             ),
-        )
-    }));
-    rows.extend(
-        snapshot
-            .groups
-            .iter()
-            .filter(|group| {
-                !group.members.is_empty()
-                    || visible_accounts
-                        .iter()
-                        .any(|account| account.gid == group.gid)
-            })
-            .map(|item| {
-                (
-                    "GROUP".into(),
-                    format!(
-                        "{} · gid {}{}",
-                        item.name,
-                        item.gid,
-                        if item.members.is_empty() {
-                            String::new()
-                        } else {
-                            format!(" · {}", item.members.join(","))
-                        }
-                    ),
-                )
-            }),
-    );
-    rows.extend(
-        snapshot
-            .certificates
-            .iter()
-            .map(|item| ("CERTIFICATE".into(), certificate_summary(item))),
-    );
+        }));
+    }
+    let visible_groups = snapshot
+        .groups
+        .iter()
+        .filter(|group| {
+            !group.members.is_empty()
+                || visible_accounts
+                    .iter()
+                    .any(|account| account.gid == group.gid)
+        })
+        .collect::<Vec<_>>();
+    if visible_groups.is_empty() {
+        rows.push(SystemRow {
+            section: SystemSection::Groups,
+            kind: "GROUP",
+            value: "no groups relevant to login-capable users".into(),
+        });
+    } else {
+        rows.extend(visible_groups.into_iter().map(|item| SystemRow {
+            section: SystemSection::Groups,
+            kind: "GROUP",
+            value: format!(
+                "{} · gid {}{}",
+                item.name,
+                item.gid,
+                if item.members.is_empty() {
+                    String::new()
+                } else {
+                    format!(" · {}", item.members.join(","))
+                }
+            ),
+        }));
+    }
+    if snapshot.certificates.is_empty() {
+        rows.push(SystemRow {
+            section: SystemSection::Certificates,
+            kind: "CERTIFICATE",
+            value: "no locally managed certificates visible".into(),
+        });
+    } else {
+        rows.extend(snapshot.certificates.iter().map(|item| SystemRow {
+            section: SystemSection::Certificates,
+            kind: "CERTIFICATE",
+            value: certificate_summary(item),
+        }));
+    }
     rows
+}
+
+fn system_section_start(snapshot: &SystemSnapshot, section: SystemSection) -> usize {
+    system_rows(snapshot)
+        .iter()
+        .position(|row| row.section == section)
+        .unwrap_or(0)
+}
+
+fn move_system_section(snapshot: &SystemSnapshot, selected: usize, delta: isize) -> usize {
+    let rows = system_rows(snapshot);
+    let current = rows
+        .get(selected)
+        .map_or(SystemSection::Clock, |row| row.section);
+    let index = SystemSection::ALL
+        .iter()
+        .position(|section| *section == current)
+        .unwrap_or(0)
+        .saturating_add_signed(delta)
+        .min(SystemSection::ALL.len() - 1);
+    system_section_start(snapshot, SystemSection::ALL[index])
+}
+
+fn render_system_section_nav(
+    active: SystemSection,
+    width: usize,
+    colour: bool,
+    out: &mut impl Write,
+) -> Result<usize> {
+    write!(out, "  {}", ink("SECTIONS", Ink::Label, colour))?;
+    let mut line_width = 10usize;
+    let mut line_count = 1usize;
+    for (index, section) in SystemSection::ALL.iter().enumerate() {
+        let label = format!("{} {}", index + 1, section.label());
+        let separator = if line_width <= 2 { "" } else { "  " };
+        if line_width + separator.len() + label.len() > width.saturating_sub(2) {
+            writeln!(out)?;
+            write!(out, "  ")?;
+            line_width = 2;
+            line_count += 1;
+        } else {
+            write!(out, "{separator}")?;
+            line_width += separator.len();
+        }
+        write!(
+            out,
+            "{}",
+            ink(
+                &label,
+                if *section == active {
+                    Ink::Bright
+                } else {
+                    Ink::Muted
+                },
+                colour
+            )
+        )?;
+        line_width += label.len();
+    }
+    writeln!(out)?;
+    Ok(line_count)
 }
 
 fn certificate_summary(item: &CertificateInfo) -> String {
@@ -3057,7 +3287,9 @@ fn render_system_specialist(
         )?;
         return Ok(());
     }
-    let (kind, value) = &items[selected.min(items.len() - 1)];
+    let item = &items[selected.min(items.len() - 1)];
+    let kind = item.kind;
+    let value = &item.value;
     if inspecting {
         writeln!(out, "\n  {}", ink(kind, Ink::Label, colour))?;
         writeln!(
@@ -3097,17 +3329,28 @@ fn render_system_specialist(
         }
         return Ok(());
     }
+    let section_lines = render_system_section_nav(item.section, width, colour, out)?;
     writeln!(
         out,
-        "  Clock and DNS status, login-capable users, relevant groups and local certificates\n"
+        "  {}\n",
+        ink("Tab changes section", Ink::Muted, colour)
     )?;
-    let capacity = usize::from(rows.saturating_sub(11)).max(1);
-    let start = viewport_start(selected, items.len(), capacity);
-    for (index, (kind, value)) in items.iter().enumerate().skip(start).take(capacity) {
+    let reserved = 12usize.saturating_add(section_lines);
+    let capacity = usize::from(rows).saturating_sub(reserved).max(1);
+    let section_start = items
+        .iter()
+        .position(|candidate| candidate.section == item.section)
+        .unwrap_or(0);
+    let start = if selected == section_start {
+        selected
+    } else {
+        viewport_start(selected, items.len(), capacity)
+    };
+    for (index, item) in items.iter().enumerate().skip(start).take(capacity) {
         let row = format!(
             "  {:<12} {}",
-            kind,
-            truncate_text(value, width.saturating_sub(17))
+            item.kind,
+            truncate_text(&item.value, width.saturating_sub(17))
         );
         if index == selected {
             writeln!(out, "{}", selected_row(&row, colour))?;
@@ -3289,6 +3532,19 @@ fn specialist_loop(view: View, args: &ViewArgs, stdout: &mut impl Write) -> Resu
                 KeyCode::Esc => return Ok(()),
                 KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => {
                     return Ok(());
+                }
+                KeyCode::Tab if view == View::System && !inspecting => {
+                    selected = move_system_section(&snapshot, selected, 1);
+                    redraw = true;
+                }
+                KeyCode::BackTab if view == View::System && !inspecting => {
+                    selected = move_system_section(&snapshot, selected, -1);
+                    redraw = true;
+                }
+                KeyCode::Char(section @ '1'..='5') if view == View::System && !inspecting => {
+                    let index = section.to_digit(10).unwrap_or(1) as usize - 1;
+                    selected = system_section_start(&snapshot, SystemSection::ALL[index]);
+                    redraw = true;
                 }
                 KeyCode::Up | KeyCode::Char('k') if !inspecting => {
                     selected = move_selection(selected, -1, specialist_item_count(view, &snapshot));
@@ -5789,11 +6045,27 @@ fn filter_snapshot(
     }
     if let Some(process) = process {
         let process = process.to_ascii_lowercase();
-        snapshot
-            .logs
-            .retain(|item| item.message.to_ascii_lowercase().contains(&process));
+        snapshot.logs.retain(|item| {
+            format!(
+                "{} {} {}",
+                item.source,
+                item.unit.as_deref().unwrap_or(""),
+                item.message
+            )
+            .to_ascii_lowercase()
+            .contains(&process)
+        });
     }
-    snapshot.logs.retain(|item| matches(&item.message));
+    snapshot.logs.retain(|item| {
+        matches(&format!(
+            "{} {} {} {} {}",
+            item.timestamp,
+            item.source,
+            item.unit.as_deref().unwrap_or(""),
+            item.priority.as_deref().unwrap_or(""),
+            item.message
+        ))
+    });
     snapshot.mounts.retain(|item| {
         matches(&format!(
             "{} {} {}",
@@ -6170,7 +6442,8 @@ fn render_plain(view: View, snapshot: &SystemSnapshot, out: &mut dyn Write) -> R
                 }
             )?;
             writeln!(out, "\nACCOUNTS")?;
-            for item in &snapshot.accounts {
+            let visible_accounts = interactive_accounts(snapshot).collect::<Vec<_>>();
+            for item in &visible_accounts {
                 writeln!(
                     out,
                     "{:<20} uid {:<7} gid {:<7} {:<24} {}",
@@ -6178,7 +6451,12 @@ fn render_plain(view: View, snapshot: &SystemSnapshot, out: &mut dyn Write) -> R
                 )?;
             }
             writeln!(out, "\nGROUPS")?;
-            for item in &snapshot.groups {
+            for item in snapshot.groups.iter().filter(|group| {
+                !group.members.is_empty()
+                    || visible_accounts
+                        .iter()
+                        .any(|account| account.gid == group.gid)
+            }) {
                 writeln!(
                     out,
                     "{:<20} gid {:<7} {}",
@@ -6783,6 +7061,74 @@ mod tests {
         assert!(logs.contains("errors"));
         assert!(!system.contains("certificates"));
         assert!(system.contains("DNS"));
+    }
+
+    #[test]
+    fn system_view_exposes_sections_and_supports_direct_jumps() {
+        let snapshot = demo_snapshot();
+        let mut output = Vec::new();
+        render_system_specialist(&snapshot, 0, false, 30, 124, &mut output).expect("system list");
+        let output = String::from_utf8(output).expect("UTF-8");
+        assert!(output.contains("1 CLOCK/NTP"));
+        assert!(output.contains("2 DNS"));
+        assert!(output.contains("5 CERTIFICATES"));
+        assert!(output.contains("Tab changes section"));
+
+        let dns = system_section_start(&snapshot, SystemSection::Dns);
+        let certificates = system_section_start(&snapshot, SystemSection::Certificates);
+        assert_eq!(move_system_section(&snapshot, 0, 1), dns);
+        assert_eq!(move_system_section(&snapshot, dns, 3), certificates);
+        assert_eq!(
+            move_system_section(&snapshot, certificates, 1),
+            certificates
+        );
+
+        let mut certificate_output = Vec::new();
+        render_system_specialist(
+            &snapshot,
+            certificates,
+            false,
+            24,
+            80,
+            &mut certificate_output,
+        )
+        .expect("certificate section");
+        let certificate_output = String::from_utf8(certificate_output).expect("UTF-8");
+        assert!(certificate_output.contains(">  CERTIFICATE"));
+        assert!(!certificate_output.contains("  GROUP        "));
+    }
+
+    #[test]
+    fn specialist_ancillary_options_are_explicit_and_validated() {
+        let once = ViewArgs::try_parse_from(["lens-disk", "--once", "--limit", "0"]).expect("once");
+        assert!(once.once);
+        assert_eq!(once.limit, 0);
+        assert!(validate_view_args(View::Disk, &once).is_ok());
+
+        let invalid =
+            ViewArgs::try_parse_from(["lens-disk", "--severity", "error"]).expect("shared parser");
+        assert!(
+            validate_view_args(View::Disk, &invalid)
+                .expect_err("disk severity must fail")
+                .to_string()
+                .contains("lens-logs")
+        );
+        assert!(validate_view_args(View::Logs, &invalid).is_ok());
+
+        let disk_help = view_command("lens-disk");
+        assert!(
+            disk_help
+                .get_arguments()
+                .find(|argument| argument.get_id() == "severity")
+                .is_some_and(clap::Arg::is_hide_set)
+        );
+        let log_help = view_command("lens-logs");
+        assert!(
+            log_help
+                .get_arguments()
+                .find(|argument| argument.get_id() == "severity")
+                .is_some_and(|argument| !argument.is_hide_set())
+        );
     }
 
     #[test]

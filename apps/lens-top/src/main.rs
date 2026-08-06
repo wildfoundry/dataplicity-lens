@@ -112,7 +112,10 @@ fn run() -> Result<()> {
 
     let _initial = sampler.collect()?;
     if !args.demo {
-        thread::sleep(effective.interval.min(Duration::from_millis(250)));
+        // A requested interval is also the measurement window for a one-shot process sample.
+        // Keep the implicit default fast so plain output remains useful in shell pipelines.
+        let sampling_window = one_shot_sampling_window(args.interval.is_some(), effective.interval);
+        thread::sleep(sampling_window);
     }
     let mut snapshot = sampler.collect()?;
     apply_noninteractive_query(
@@ -140,6 +143,14 @@ fn run() -> Result<()> {
         Ok(()) => Ok(()),
         Err(error) if error.kind() == io::ErrorKind::BrokenPipe => Ok(()),
         Err(error) => Err(error).context("write output"),
+    }
+}
+
+fn one_shot_sampling_window(explicit_interval: bool, interval: Duration) -> Duration {
+    if explicit_interval {
+        interval
+    } else {
+        interval.min(Duration::from_millis(250))
     }
 }
 
@@ -456,4 +467,21 @@ fn init_tracing() {
         .with_writer(io::stderr)
         .finish();
     let _ = tracing::subscriber::set_global_default(subscriber);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn explicit_one_shot_interval_is_honoured() {
+        assert_eq!(
+            one_shot_sampling_window(true, Duration::from_secs(2)),
+            Duration::from_secs(2)
+        );
+        assert_eq!(
+            one_shot_sampling_window(false, Duration::from_secs(2)),
+            Duration::from_millis(250)
+        );
+    }
 }

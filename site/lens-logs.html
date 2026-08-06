@@ -27,6 +27,7 @@
         <h2>Quick start</h2>
         <p>Run the live command as your normal user; Lens reads the system in front of you.</p>
         <div class="code-block"><div class="code-head">shell <button class="copy-button" data-copy type="button">Copy</button></div><pre><code><span class="token-comment"># Read the logs available to your current account</span>
+<span class="token-command">lens-logs</span> <span class="token-flag">--once</span>
 <span class="token-command">lens-logs</span> <span class="token-flag">--plain</span>
 
 <span class="token-comment"># Linux: journalctl time expressions are accepted</span>
@@ -34,7 +35,7 @@
 
 <span class="token-comment"># macOS: use a `log show --last` duration</span>
 <span class="token-command">lens-logs</span> <span class="token-flag">--since</span> <span class="token-value">1h</span></code></pre></div>
-        <p>When stdout is a terminal, the command opens a navigable message list. Use the arrow keys and press Enter to inspect a message. On macOS, the latest minute appears first while the previous hour loads in the background. Redirect it or pass <code>--plain</code> or <code>--json</code> to take a single snapshot and exit.</p>
+        <p>When stdout is a terminal, the command opens a navigable message list. Use the arrow keys and press Enter to inspect a message. On macOS, the latest minute appears first while the previous hour loads in the background. Pass <code>--once</code> for one readable snapshot, choose <code>--plain</code> or <code>--json</code> explicitly, or redirect output to get plain text automatically.</p>
         <p>Lens reads the logs available to your current account and does not send them anywhere.</p>
       </section>
 

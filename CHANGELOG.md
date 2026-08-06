@@ -40,6 +40,13 @@ versioning once the first public release is tagged.
   summaries report clock, DNS and login context instead of capped certificate totals.
 - System detail focuses on login-capable identities and locally managed certificates, with subject,
   issuer, expiry and path metadata where OpenSSL is available; bulk root CA catalogues are omitted.
+- System context is split into visible Clock/NTP, DNS, Users, Groups and Certificates sections;
+  Tab, Shift+Tab and keys 1–5 jump directly between them.
+- `--once` now produces a plain snapshot consistently across the cockpit and every specialist;
+  irrelevant specialist flags fail clearly, visible log fields participate in filtering, and an
+  explicit `lens-top --interval` is honoured for one-shot measurement.
+- Anchored cockpit and specialist footers clear rows vacated by shorter detail screens, preventing
+  list content from remaining underneath storage, log and other drill-down views.
 - Direct Rust dependencies are updated to their current Rust-1.88-compatible releases.
 - Terminal refreshes are emitted as synchronized frames, process views respect the terminal's own
   background colour, and the fixed-width updating badge no longer shifts the header.
