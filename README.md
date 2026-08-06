@@ -50,12 +50,15 @@ Install Homebrew if it is not already present, then install the release from Wil
 tap:
 
 ```sh
-brew install wildfoundry/tap/dataplicity-lens
+brew tap wildfoundry/tap
+brew install dataplicity-lens
+lens --version
 lens
 ```
 
 The formula selects the native Apple Silicon or Intel archive for the Mac; it does not compile Rust
-locally. Homebrew verifies the published SHA-256 digest before installation.
+locally. Homebrew verifies the published SHA-256 digest before installation. The current published
+release reports `lens 0.3.0`.
 
 Run Lens as your normal account; it does not need `sudo`. Start with the overview, then open the
 specialist view you need:
@@ -75,7 +78,9 @@ lens-health --json
 Upgrade or remove the complete suite through Homebrew:
 
 ```sh
+brew update
 brew upgrade dataplicity-lens
+lens --version
 brew uninstall dataplicity-lens
 ```
 
