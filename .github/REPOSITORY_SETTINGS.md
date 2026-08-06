@@ -9,22 +9,49 @@ administrator action in GitHub.
 - Visibility: **public** (open-source Apache-2.0 project; documentation at `https://lens.dataplicity.com/`)
 - Description: `A fast terminal toolkit for understanding Linux and macOS systems.`
 - Homepage: `https://lens.dataplicity.com/`
-- Issues enabled; Discussions and wiki disabled
+- Issues enabled; Discussions, Projects and wiki disabled
 - Squash merge only, automatic head-branch deletion, auto-merge and branch updates enabled
 - Default workflow token permission: read-only
 - Dependabot alerts, security updates and automated fixes enabled
+- Secret scanning and push protection enabled
 - GitHub Pages: workflow-built from `site/`, custom domain `lens.dataplicity.com` (public with the repo)
 
-## Main branch
+## Branch rulesets
 
-`.github/ruleset-main.json` is the source for the `Protect main` repository ruleset. It requires pull
-requests, conversation resolution and the complete Linux/macOS CI matrix, and blocks force pushes and
-deletions. It can be applied by a repository administrator with:
+Aligned with `dataplicity-cli` / `dataplicity-prelude` public-repo practice: rulesets (not legacy
+branch-protection APIs), no admin bypass, required PRs into `main`, and Copilot review on the
+default branch.
+
+### Protect main
+
+`.github/ruleset-main.json` is the source for the `Protect main` repository ruleset. It requires
+pull requests (squash only), dismisses stale reviews on push, requires conversation resolution and
+the complete Linux/macOS CI matrix, enforces linear history, and blocks force pushes and deletions.
+
+Create or replace with:
+
+```sh
+# create
+gh api repos/wildfoundry/dataplicity-lens/rulesets \
+  --method POST \
+  --input .github/ruleset-main.json
+
+# update existing (replace RULESET_ID)
+gh api repos/wildfoundry/dataplicity-lens/rulesets/RULESET_ID \
+  --method PUT \
+  --input .github/ruleset-main.json
+```
+
+### Copilot code review
+
+`.github/ruleset-copilot.json` is the source for the `Code Quality Copilot review for default
+branch` ruleset (same pattern as `dataplicity-prelude` and `dataplicity-cli`). It requests Copilot
+review on push, including draft pull requests.
 
 ```sh
 gh api repos/wildfoundry/dataplicity-lens/rulesets \
   --method POST \
-  --input .github/ruleset-main.json
+  --input .github/ruleset-copilot.json
 ```
 
 Version tags are accepted by the release workflow only when their version matches the workspace and
