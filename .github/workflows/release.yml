@@ -337,4 +337,4 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           RELEASE_TAG: ${{ needs.prepare.outputs.tag }}
-        run: gh release create "$RELEASE_TAG" dist/release/* --title "Dataplicity Lens $RELEASE_TAG" --generate-notes
+        run: gh release create "$RELEASE_TAG" dist/release/* --repo "$GITHUB_REPOSITORY" --title "Dataplicity Lens $RELEASE_TAG" --generate-notes
