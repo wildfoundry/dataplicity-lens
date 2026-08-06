@@ -1,0 +1,33 @@
+name: Help using Lens
+description: Ask for help with installation, configuration or usage
+title: "[help] "
+labels: ["question"]
+body:
+  - type: textarea
+    id: goal
+    attributes:
+      label: What are you trying to do?
+      description: Tell us the result you need and where you became stuck.
+    validations:
+      required: true
+  - type: textarea
+    id: attempted
+    attributes:
+      label: What have you tried?
+      description: Include the commands you ran and the relevant result.
+    validations:
+      required: true
+  - type: textarea
+    id: environment
+    attributes:
+      label: Environment
+      description: Include `lens-top --version`, operating system, architecture and terminal application.
+      render: shell
+    validations:
+      required: true
+  - type: textarea
+    id: evidence
+    attributes:
+      label: Relevant output
+      description: Optional. Remove hostnames, usernames, addresses and other sensitive data before posting.
+      render: shell

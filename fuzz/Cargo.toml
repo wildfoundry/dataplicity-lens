@@ -1,0 +1,19 @@
+[package]
+name = "lens-fuzz"
+version = "0.0.0"
+publish = false
+edition = "2024"
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4"
+lens-platform-linux = { path = "../crates/platform-linux" }
+
+[[bin]]
+name = "pid_stat"
+path = "fuzz_targets/pid_stat.rs"
+test = false
+doc = false
+bench = false

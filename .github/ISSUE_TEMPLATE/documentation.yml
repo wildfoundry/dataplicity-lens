@@ -1,0 +1,25 @@
+name: Documentation problem
+description: Report instructions that are missing, incorrect or unclear
+title: "[docs] "
+labels: ["documentation"]
+body:
+  - type: input
+    id: location
+    attributes:
+      label: Page or section
+      description: Link to the page, or name the file and heading.
+      placeholder: https://lens.dataplicity.com/install.html
+    validations:
+      required: true
+  - type: textarea
+    id: problem
+    attributes:
+      label: What needs fixing?
+      description: Tell us what you expected to find and what was wrong or missing.
+    validations:
+      required: true
+  - type: textarea
+    id: suggestion
+    attributes:
+      label: Suggested wording or example
+      description: Optional. A rough suggestion is enough.

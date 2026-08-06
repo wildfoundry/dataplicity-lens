@@ -1,0 +1,119 @@
+<!doctype html>
+<html lang="en" data-theme="dark">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="description" content="Choose and use the Dataplicity Lens system tools for Linux and macOS.">
+  <meta name="theme-color" content="#07100e">
+  <title>Lens suite — Dataplicity Lens</title>
+  <link rel="icon" href="assets/dataplicity-square.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="styles-1.css">
+  <link rel="stylesheet" href="styles-2.css">
+  <link rel="stylesheet" href="styles-3.css">
+  <link rel="stylesheet" href="styles-4.css">
+  <script>try{document.documentElement.dataset.theme=localStorage.getItem('lens-theme')||matchMedia('(prefers-color-scheme: light)').matches?'light':'dark'}catch{}</script>
+</head>
+<body>
+<a class="skip-link" href="#main">Skip to content</a>
+<header class="site-header"><div class="header-inner"><a class="brand" href="https://docs.dataplicity.com/" aria-label="Dataplicity documentation"><img src="assets/lens-mark.svg" alt=""><span class="brand-title">Dataplicity Lens<small>Linux + macOS</small></span></a><nav class="site-nav" data-nav aria-label="Primary navigation"><a href="index.html">Overview</a><a href="install.html">Install</a><a href="lens-suite.html" aria-current="page">Suite</a><a href="architecture.html">Architecture</a></nav><div class="header-actions"><a class="button button-quiet" href="https://github.com/wildfoundry/dataplicity-lens"><span class="github-label">GitHub</span></a><button class="icon-button" type="button" data-theme-toggle></button><button class="icon-button menu-button" type="button" data-menu-toggle aria-expanded="false" aria-label="Open navigation"><svg viewBox="0 0 24 24"><path d="M5 7h14M5 12h14M5 17h14" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg></button></div></div></header>
+
+<main id="main">
+  <section class="page-hero"><div class="container"><div class="breadcrumbs"><a href="index.html">Lens</a> / Suite</div><span class="eyebrow">Nine commands · Linux + macOS</span><h1>Start broad. Follow the evidence.</h1><p>Use the cockpit for a quick reading of a device, then open the process, service, log, storage, network, hardware, system-context or health view that answers the next question.</p><div class="hero-actions"><a class="button button-primary" href="install.html">Install the suite</a><a class="button" href="#choose">Choose a command</a></div></div></section>
+
+  <div class="container content-layout">
+    <aside class="toc" aria-label="On this page"><strong>On this page</strong><a href="#choose">Choose a command</a><a href="#workflow">First-pass workflow</a><a href="#interaction">Shared controls</a><a href="#terminal-colours">Terminal colours</a><a href="#output">Plain text and JSON</a><a href="#actions">Actions</a><a href="#platforms">Platform coverage</a></aside>
+    <article class="prose">
+      <section id="choose">
+        <h2>Choose the view by the question</h2>
+        <div class="key-grid">
+          <div class="key-row"><span><a href="lens.html"><code>lens</code></a></span><span>What needs attention on this device? Host pulse, busiest processes, warnings and links into every specialist.</span></div>
+          <div class="key-row"><span><a href="lens-top.html"><code>lens-top</code></a></span><span>Which process is using CPU or memory, what is it, and is its behaviour changing?</span></div>
+          <div class="key-row"><span><a href="lens-services.html"><code>lens-services</code></a></span><span>Did a system service fail, restart repeatedly or stop when it should be running?</span></div>
+          <div class="key-row"><span><a href="lens-logs.html"><code>lens-logs</code></a></span><span>What happened around a failure, and which messages belong to the affected service or process?</span></div>
+          <div class="key-row"><span><a href="lens-disk.html"><code>lens-disk</code></a></span><span>Which filesystem is under pressure, are bytes or inodes exhausted, and is deleted data still open?</span></div>
+          <div class="key-row"><span><a href="lens-net.html"><code>lens-net</code></a></span><span>Does the device have the expected interface, address, route and listening sockets? Is a cellular modem registered?</span></div>
+          <div class="key-row"><span><a href="lens-hardware.html"><code>lens-hardware</code></a></span><span>Is the device too hot, throttled or under-voltage? Which board, firmware, USB and serial hardware is present?</span></div>
+          <div class="key-row"><span><a href="lens-system.html"><code>lens-system</code></a></span><span>Is the clock synchronized, which resolver is configured, and which local identities and certificate files are visible?</span></div>
+          <div class="key-row"><span><a href="lens-health.html"><code>lens-health</code></a></span><span>Which cross-domain warnings deserve attention, what evidence triggered each one, and what should I inspect next?</span></div>
+        </div>
+      </section>
+
+      <section id="workflow">
+        <h2>A practical first pass</h2>
+        <ol>
+          <li>Run <code>lens</code>. Confirm the hostname and clock so you know you are looking at the intended device and current data.</li>
+          <li>Check CPU, memory, load and the busiest processes. A high value is a lead, not a diagnosis.</li>
+          <li>Open a health finding and read its evidence. Follow the linked domain instead of scanning every screen.</li>
+          <li>For an application failure, inspect its service state, then look at logs from the same time window.</li>
+          <li>For intermittent connectivity, check interface state and the default route, then inspect listeners or cellular registration as appropriate.</li>
+          <li>Use the diagnostic shell for a focused native command while keeping the live Lens view visible.</li>
+        </ol>
+        <p>You can also bypass the cockpit and start a specialist directly. Each command collects only the domain it displays, so opening a process or storage view does not wait for an unrelated log scan.</p>
+      </section>
+
+      <section id="interaction">
+        <h2>Controls shared by the interactive views</h2>
+        <div class="key-grid">
+          <div class="key-row"><span><code>Up</code> / <code>Down</code> or <code>j</code> / <code>k</code></span><span>Move the selected row. Lists scroll around the selection when enough rows are available.</span></div>
+          <div class="key-row"><span><code>Enter</code></span><span>Open the selected process, service, message, filesystem, network item or finding.</span></div>
+          <div class="key-row"><span><code>Esc</code></span><span>Go back one level or close the current overlay.</span></div>
+          <div class="key-row"><span><code>/</code></span><span>Search the current view in a modal card.</span></div>
+          <div class="key-row"><span><code>r</code></span><span>Request an immediate refresh.</span></div>
+          <div class="key-row"><span><code>!</code></span><span>Open a one-shot local diagnostic shell without leaving Lens.</span></div>
+          <div class="key-row"><span><code>?</code></span><span>Show controls relevant to the current screen.</span></div>
+          <div class="key-row"><span><code>q</code> or <code>Ctrl+C</code></span><span>Quit.</span></div>
+        </div>
+        <p>The layout follows the terminal size. Wide windows add detail and can place the shell beside the live view; compact windows remove secondary columns before they remove primary values or navigation.</p>
+      </section>
+
+      <section id="terminal-colours">
+        <h2>Readable on light and dark terminals</h2>
+        <p>Lens keeps your terminal's configured background and chooses a contrasting foreground palette. Most terminals publish enough information for this to happen automatically. Browser consoles, serial links and some terminal multiplexers do not.</p>
+        <div class="code-block"><div class="code-head">shell <button class="copy-button" data-copy type="button">Copy</button></div><pre><code><span class="token-comment"># Override one command</span>
+<span class="token-command">lens</span> <span class="token-flag">--theme</span> <span class="token-value">light</span>
+
+<span class="token-comment"># Override the complete suite in this shell</span>
+<span class="token-command">export</span> <span class="token-value">LENS_THEME=light</span></code></pre></div>
+        <p>Accepted values are <code>auto</code>, <code>light</code> and <code>dark</code>. <code>--no-color</code> remains available when colour is unsuitable.</p>
+      </section>
+
+      <section id="output">
+        <h2>Use the same tools in a shell or script</h2>
+        <div class="code-block"><div class="code-head">shell <button class="copy-button" data-copy type="button">Copy</button></div><pre><code><span class="token-comment"># A readable snapshot for a support note</span>
+<span class="token-command">lens</span> <span class="token-flag">--plain</span>
+
+<span class="token-comment"># A focused specialist result</span>
+<span class="token-command">lens-logs</span> <span class="token-flag">--since</span> <span class="token-value">"30 minutes ago"</span> <span class="token-flag">--severity</span> <span class="token-value">error</span> <span class="token-flag">--plain</span>
+
+<span class="token-comment"># Structured data for a check or collector</span>
+<span class="token-command">lens-health</span> <span class="token-flag">--json</span> | <span class="token-command">jq</span> <span class="token-value">'.findings'</span></code></pre></div>
+        <p>Pass <code>--once</code> to print one readable snapshot instead of opening an interactive screen. <code>--plain</code> explicitly selects the same one-shot human-readable output, while <code>--json</code> emits the shared schema-versioned snapshot. Redirected output is plain automatically. Common specialist options include <code>--filter</code> and <code>--limit</code>; domain-specific flags fail clearly when used with the wrong command.</p>
+        <p>Use <code>--limit 0</code> deliberately: it removes the row cap and can produce a large result on a busy host. The normal default is 1,000 rows.</p>
+        <p>The <a href="reference.html">command reference</a> defines exit status, standard streams, structured fields and scheduled-check behaviour.</p>
+      </section>
+
+      <section id="actions">
+        <h2>Inspect first, then act on a pinned target</h2>
+        <p>Most Lens views inspect the machine. Two narrow action families are available: process signals in <code>lens-top</code> and systemd service actions in <code>lens-services</code>. Interactive actions show the exact target and ask for confirmation. CLI actions require <code>--yes</code>; use <code>--dry-run</code> first.</p>
+        <div class="code-block"><div class="code-head">shell <button class="copy-button" data-copy type="button">Copy</button></div><pre><code><span class="token-command">lens-top</span> <span class="token-flag">--signal</span> <span class="token-value">term</span> <span class="token-flag">--pid</span> <span class="token-value">4242</span> <span class="token-flag">--dry-run</span>
+<span class="token-command">lens-services</span> <span class="token-flag">--action</span> <span class="token-value">restart</span> <span class="token-flag">--target</span> <span class="token-value">nginx.service</span> <span class="token-flag">--dry-run</span></code></pre></div>
+        <p>Lens actions run as the current user under the operating system's normal policy. Review the <a href="lens-top.html#safety">process action guide</a> and <a href="lens-services.html#actions">service action guide</a> before acting on a live target.</p>
+      </section>
+
+      <section id="platforms">
+        <h2>Platform coverage and incomplete data</h2>
+        <div class="key-grid">
+          <div class="key-row"><span>Linux</span><span>Processes, procfs metrics, systemd services, the systemd journal, filesystems, routes, sockets, ModemManager cellular data, thermal/hwmon sensors, firmware state and USB/serial inventory.</span></div>
+          <div class="key-row"><span>macOS</span><span>Processes, launchd service state, the unified log, APFS and mounted filesystems, interfaces, routes, listeners, native hardware identity, firmware and USB/serial inventory.</span></div>
+        </div>
+        <p>Lens uses the commands, kernel interfaces and permissions available to the invoking account. A loading label means collection is still running. <em>Unavailable</em> or a collection warning means the source could not be read. A displayed zero is reserved for a source that completed successfully and returned no matching records.</p>
+        <p>Partial data remains useful: one timed-out command does not discard fields collected from the rest of the system. Inspect <code>collection_warnings</code> in JSON when a script must distinguish a healthy empty result from an incomplete one. The <a href="compatibility.html">compatibility matrix</a> identifies native sources by platform; <a href="troubleshooting.html">troubleshooting</a> covers common incomplete-data cases.</p>
+      </section>
+    </article>
+  </div>
+</main>
+
+<footer class="site-footer"><div class="container footer-grid"><div class="footer-copy"><strong>Dataplicity Lens</strong>Copyright 2026 WildFoundry Ltd. Apache License 2.0.</div><div class="footer-links"><a href="install.html">Install</a><a href="reference.html">Reference</a><a href="troubleshooting.html">Help</a><a href="https://github.com/wildfoundry/dataplicity-lens">GitHub</a><a href="https://www.dataplicity.com">Dataplicity</a></div></div></footer>
+<script src="app.js"></script>
+</body>
+</html>

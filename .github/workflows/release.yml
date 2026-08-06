@@ -1,0 +1,341 @@
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Version to validate, for example v0.3.0
+        required: true
+        default: v0.3.0
+        type: string
+      dry_run:
+        description: Build and validate without publishing
+        required: true
+        default: true
+        type: boolean
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: 1
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+
+jobs:
+  prepare:
+    name: Validate release source
+    runs-on: ubuntu-24.04
+    outputs:
+      version: ${{ steps.release.outputs.version }}
+      tag: ${{ steps.release.outputs.tag }}
+      dry_run: ${{ steps.release.outputs.dry_run }}
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Validate version and ancestry
+        id: release
+        shell: bash
+        run: |
+          set -euo pipefail
+          version="$(awk '/^\[workspace.package\]$/{p=1;next}/^\[/{p=0}p&&/^version = /{gsub(/[" ]/,"",$3);print $3;exit}' Cargo.toml)"
+          if [[ "${GITHUB_EVENT_NAME}" == "push" ]]; then
+            tag="${GITHUB_REF_NAME}"
+            dry_run=false
+            git fetch origin main
+            git merge-base --is-ancestor "${GITHUB_SHA}" origin/main
+          elif [[ "${GITHUB_EVENT_NAME}" == "workflow_dispatch" ]]; then
+            tag="${{ inputs.tag }}"
+            dry_run=true
+          else
+            tag="v${version}"
+            dry_run=true
+          fi
+          [[ "$tag" == "v${version}" ]]
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+          echo "dry_run=$dry_run" >> "$GITHUB_OUTPUT"
+
+  validate:
+    name: Complete test and security suite
+    needs: prepare
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+      - name: Activate pinned toolchain
+        run: rustup show active-toolchain
+      - run: cargo fmt --all -- --check
+      - run: cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
+      - run: cargo test --workspace --all-features --locked
+      - name: Build documentation
+        env:
+          RUSTDOCFLAGS: -D warnings
+        run: cargo doc --workspace --all-features --no-deps --locked
+      - name: Install security tools
+        uses: taiki-e/install-action@13608cbb45b01feb47ef444ab1a42dc41ad56f1a # v2.79.11
+        with:
+          tool: cargo-deny@0.20.2,cargo-audit@0.22.2
+      - run: cargo deny check
+      - run: cargo audit
+
+  build:
+    name: Build and package ${{ matrix.name }}
+    needs: [prepare, validate]
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: x86-64
+            runner: ubuntu-24.04
+            gnu_target: x86_64-unknown-linux-gnu
+            musl_target: x86_64-unknown-linux-musl
+            deb_arch: amd64
+            rpm_arch: x86_64
+            cross: false
+          - name: ARM64
+            runner: ubuntu-24.04-arm
+            gnu_target: aarch64-unknown-linux-gnu
+            musl_target: aarch64-unknown-linux-musl
+            deb_arch: arm64
+            rpm_arch: aarch64
+            cross: false
+          - name: Raspberry-Pi-OS-32-bit
+            runner: ubuntu-24.04
+            gnu_target: arm-unknown-linux-gnueabihf
+            musl_target: arm-unknown-linux-musleabihf
+            deb_arch: armhf
+            rpm_arch: armv6hl
+            cross: true
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Activate pinned toolchain and install package tools
+        run: |
+          rustup show active-toolchain
+          sudo apt-get update
+          sudo apt-get install --yes musl-tools rpm ruby-dev
+          sudo gem install --no-document fpm
+      - name: Install SBOM tool
+        uses: taiki-e/install-action@13608cbb45b01feb47ef444ab1a42dc41ad56f1a # v2.79.11
+        with:
+          tool: cargo-cyclonedx@0.5.7
+      - name: Install cross for Raspberry Pi builds
+        if: matrix.cross
+        uses: taiki-e/install-action@13608cbb45b01feb47ef444ab1a42dc41ad56f1a # v2.79.11
+        with:
+          tool: cross@0.2.5
+      - name: Build clean release binaries
+        env:
+          LENS_GIT_SHA: ${{ github.sha }}
+          LENS_BUILT_BY: GitHub Actions
+        run: |
+          cargo clean
+          if [[ "${{ matrix.cross }}" == "true" ]]; then
+            cross build --release --locked --target "${{ matrix.gnu_target }}" --workspace
+            cross build --release --locked --target "${{ matrix.musl_target }}" --workspace
+          else
+            cargo build --release --locked --target "${{ matrix.gnu_target }}" --workspace
+            cargo build --release --locked --target "${{ matrix.musl_target }}" --workspace
+          fi
+          find "target/${{ matrix.gnu_target }}/release" -maxdepth 1 -type f -perm -111 -exec strip {} \; || true
+          find "target/${{ matrix.musl_target }}/release" -maxdepth 1 -type f -perm -111 -exec strip {} \; || true
+      - name: Generate man page and completions
+        run: |
+          cargo build --release --locked --workspace
+          scripts/generate-assets.sh target/release/lens-top dist/generated
+      - name: Build GNU archive
+        env:
+          VERSION: ${{ needs.prepare.outputs.version }}
+          TARGET: ${{ matrix.gnu_target }}
+          PACKAGE_NATIVE: "false"
+        run: scripts/package-suite.sh
+      - name: Build portable musl archive, Debian and RPM packages
+        env:
+          VERSION: ${{ needs.prepare.outputs.version }}
+          TARGET: ${{ matrix.musl_target }}
+          DEB_ARCH: ${{ matrix.deb_arch }}
+          RPM_ARCH: ${{ matrix.rpm_arch }}
+          NATIVE_OUTPUT_DIR: dist/${{ matrix.gnu_target }}
+        run: scripts/package-suite.sh
+      - name: Install and smoke-test generated packages
+        if: ${{ !matrix.cross }}
+        env:
+          VERSION: ${{ needs.prepare.outputs.version }}
+          GNU_TARGET: ${{ matrix.gnu_target }}
+          MUSL_TARGET: ${{ matrix.musl_target }}
+          DEB_ARCH: ${{ matrix.deb_arch }}
+          RPM_ARCH: ${{ matrix.rpm_arch }}
+        run: |
+          scripts/smoke-suite.sh "target/${GNU_TARGET}/release"
+          scripts/smoke-suite.sh "target/${MUSL_TARGET}/release"
+          sudo apt-get install --yes "./dist/${GNU_TARGET}/dataplicity-lens_${VERSION}_${DEB_ARCH}.deb"
+          scripts/smoke-suite.sh /usr/bin
+          sudo apt-get remove --yes dataplicity-lens
+          sudo rpm --install --nodeps "dist/${GNU_TARGET}/dataplicity-lens-${VERSION}-1.${RPM_ARCH}.rpm"
+          scripts/smoke-suite.sh /usr/bin
+          sudo rpm --erase dataplicity-lens
+      - name: Smoke-test Raspberry Pi binaries and inspect packages
+        if: matrix.cross
+        env:
+          VERSION: ${{ needs.prepare.outputs.version }}
+          GNU_TARGET: ${{ matrix.gnu_target }}
+          MUSL_TARGET: ${{ matrix.musl_target }}
+          DEB_ARCH: ${{ matrix.deb_arch }}
+          RPM_ARCH: ${{ matrix.rpm_arch }}
+        run: |
+          for target in "$GNU_TARGET" "$MUSL_TARGET"; do
+            for binary in lens lens-top lens-services lens-logs lens-disk lens-net lens-hardware lens-system lens-health; do
+              cross run --release --locked --target "$target" --bin "$binary" -- --demo --json > smoke-output.json
+              grep -q '"schema_version": "2"' smoke-output.json
+            done
+          done
+          dpkg-deb --contents "./dist/${GNU_TARGET}/dataplicity-lens_${VERSION}_${DEB_ARCH}.deb" > deb-contents.txt
+          rpm --query --package --list "dist/${GNU_TARGET}/dataplicity-lens-${VERSION}-1.${RPM_ARCH}.rpm" > rpm-contents.txt
+          for binary in lens lens-top lens-services lens-logs lens-disk lens-net lens-hardware lens-system lens-health; do
+            grep -q "/usr/bin/${binary}$" deb-contents.txt
+            grep -q "/usr/bin/${binary}$" rpm-contents.txt
+          done
+      - name: Generate CycloneDX SBOM
+        run: scripts/generate-sbom.sh "dist/sbom-${{ matrix.name }}"
+      - name: Gather release assets
+        env:
+          VERSION: ${{ needs.prepare.outputs.version }}
+          GNU_TARGET: ${{ matrix.gnu_target }}
+          MUSL_TARGET: ${{ matrix.musl_target }}
+          DEB_ARCH: ${{ matrix.deb_arch }}
+          RPM_ARCH: ${{ matrix.rpm_arch }}
+        run: |
+          mkdir -p release-assets
+          cp "dist/${GNU_TARGET}/dataplicity-lens-v${VERSION}-${GNU_TARGET}.tar.gz" release-assets/
+          cp "dist/${MUSL_TARGET}/dataplicity-lens-v${VERSION}-${MUSL_TARGET}.tar.gz" release-assets/
+          cp "dist/${GNU_TARGET}/dataplicity-lens_${VERSION}_${DEB_ARCH}.deb" release-assets/
+          cp "dist/${GNU_TARGET}/dataplicity-lens-${VERSION}-1.${RPM_ARCH}.rpm" release-assets/
+          cp dist/sbom-${{ matrix.name }}/*.json release-assets/
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: release-${{ matrix.name }}
+          path: release-assets/*
+          retention-days: 14
+          if-no-files-found: error
+
+  build-macos:
+    name: Build and package macOS ${{ matrix.arch }}
+    needs: [prepare, validate]
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: Apple-Silicon
+            runner: macos-15
+            target: aarch64-apple-darwin
+          - arch: Intel
+            runner: macos-15-intel
+            target: x86_64-apple-darwin
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Build clean native release binaries
+        env:
+          LENS_GIT_SHA: ${{ github.sha }}
+          LENS_BUILT_BY: GitHub Actions macOS
+        run: |
+          rustup show active-toolchain
+          cargo clean
+          cargo build --release --locked --target "${{ matrix.target }}" --workspace
+      - name: Generate man pages and completions
+        run: scripts/generate-assets.sh "target/${{ matrix.target }}/release/lens-top" dist/generated
+      - name: Build and smoke-test macOS archive
+        env:
+          VERSION: ${{ needs.prepare.outputs.version }}
+          TARGET: ${{ matrix.target }}
+          PACKAGE_NATIVE: "false"
+        run: |
+          scripts/package-suite.sh
+          scripts/smoke-suite.sh "target/${TARGET}/release"
+          "target/${TARGET}/release/lens-top" --once --json > /tmp/lens-macos.json
+          grep -q '"hostname"' /tmp/lens-macos.json
+      - name: Gather release asset
+        env:
+          VERSION: ${{ needs.prepare.outputs.version }}
+          TARGET: ${{ matrix.target }}
+        run: |
+          mkdir -p release-assets
+          cp "dist/${TARGET}/dataplicity-lens-v${VERSION}-${TARGET}.tar.gz" release-assets/
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: release-macos-${{ matrix.arch }}
+          path: release-assets/*
+          retention-days: 14
+          if-no-files-found: error
+
+  assemble:
+    name: Assemble and verify release bundle
+    needs: [prepare, build, build-macos]
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          pattern: release-*
+          path: dist/release
+          merge-multiple: true
+      - name: Generate global checksums
+        run: |
+          cd dist/release
+          find . -maxdepth 1 -type f ! -name SHA256SUMS -printf '%f\0' | sort -z | xargs -0 sha256sum > SHA256SUMS
+      - run: scripts/verify-release.sh dist/release
+      - name: Record dry-run result
+        if: needs.prepare.outputs.dry_run == 'true'
+        run: echo "Release dry-run succeeded for ${{ needs.prepare.outputs.tag }} at ${{ github.sha }}." > dist/release/DRY-RUN.txt
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: dataplicity-lens-${{ needs.prepare.outputs.tag }}-release-bundle
+          path: dist/release/*
+          retention-days: 30
+          if-no-files-found: error
+
+  publish:
+    name: Attest and publish GitHub Release
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+    needs: [prepare, assemble]
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+      id-token: write
+      attestations: write
+    steps:
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: dataplicity-lens-${{ needs.prepare.outputs.tag }}-release-bundle
+          path: dist/release
+      - name: Create GitHub artifact attestations
+        id: attest
+        continue-on-error: true
+        uses: actions/attest-build-provenance@e8998f949152b193b063cb0ec769d69d929409be # v2.4.0
+        with:
+          subject-path: dist/release/*
+      - name: Record attestation fallback
+        if: steps.attest.outcome != 'success'
+        run: echo "GitHub artifact attestations were unavailable; verify SHA256SUMS and SBOMs." > dist/release/ATTESTATION-NOTICE.txt
+      - name: Publish GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ needs.prepare.outputs.tag }}
+        run: gh release create "$RELEASE_TAG" dist/release/* --title "Dataplicity Lens $RELEASE_TAG" --generate-notes
