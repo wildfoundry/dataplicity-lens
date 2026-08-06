@@ -21,8 +21,7 @@ logs, storage and networking while working on real systems.
 
 Lens is not a new service or a commercial add-on. Dataplicity remains our core product, and Lens works
 independently of it. We are publishing Lens because it is already useful to us, and making it available
-may also save time for Dataplicity customers and anyone else looking after Linux or macOS systems. That
-is the whole idea.
+may also save time for Dataplicity customers and anyone else looking after Linux or macOS systems.
 
 > **Making Linux make sense.**
 
