@@ -172,5 +172,8 @@ lens-health --json > lens-health.json
 Review output before sharing it. Process commands, user names, host names, addresses, log messages
 and SIM identifiers can contain operationally sensitive information.
 
-The precise output contract is in [JSON schema](JSON_SCHEMA.md). Guardrails for process and service
-changes are in [Operational actions](ACTIONS.md).
+The precise output contract is in [JSON schema](JSON_SCHEMA.md). Exit status, standard streams and
+one-shot semantics are in the [command-line contract](CLI_CONTRACT.md). Guardrails for process and
+service changes are in [Operational actions](ACTIONS.md). For platform-specific availability and
+common failure modes, see [Compatibility](COMPATIBILITY.md) and
+[Troubleshooting](TROUBLESHOOTING.md).

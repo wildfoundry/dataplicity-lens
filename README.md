@@ -29,8 +29,8 @@ may also save time for Dataplicity customers and anyone else looking after Linux
 
 ### Raspberry Pi OS, Debian and Ubuntu
 
-Download the package matching `dpkg --print-architecture` from the
-[latest release](https://github.com/wildfoundry/dataplicity-lens/releases/latest), then install it
+Download the package matching `dpkg --print-architecture` from
+[GitHub Releases](https://github.com/wildfoundry/dataplicity-lens/releases), then install it
 through `apt`:
 
 ```sh
@@ -204,7 +204,9 @@ per second; percentages use a `0..100` host scale and may exceed `100` for a mul
 using more than one logical CPU. Missing permission-limited fields are `null` or listed under
 `unavailable_fields`; they do not abort collection.
 
-The schema and stability policy are documented in [`docs/JSON_SCHEMA.md`](docs/JSON_SCHEMA.md).
+The schema and stability policy are documented in [`docs/JSON_SCHEMA.md`](docs/JSON_SCHEMA.md). The
+one-shot, stream, exit-status and action rules are in
+[`docs/CLI_CONTRACT.md`](docs/CLI_CONTRACT.md).
 
 ## Configuration
 
@@ -245,6 +247,10 @@ Collection, diagnostics and rendering do not duplicate one another. A process id
 PID and start ticks so PID reuse cannot silently join unrelated histories. See
 [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md).
 
+Platform and namespace differences are summarized in
+[`docs/COMPATIBILITY.md`](docs/COMPATIBILITY.md). Practical failure modes and the information to
+include in a useful issue are in [`docs/TROUBLESHOOTING.md`](docs/TROUBLESHOOTING.md).
+
 ## Performance
 
 Lens bounds every history buffer, caches UID lookups, avoids environment-variable reads, does not scan
@@ -276,10 +282,22 @@ SBOMs, checksums and package smoke tests. See [`SECURITY.md`](SECURITY.md) and
 Each specialist is documented on the [Lens documentation site](https://lens.dataplicity.com/lens-suite.html),
 including its data sources, controls, filters and structured output fields.
 
+## Documentation
+
+- [Install, upgrade and remove](docs/INSTALLING.md)
+- [Practical operations guide](docs/OPERATIONS_GUIDE.md)
+- [Platform compatibility](docs/COMPATIBILITY.md)
+- [Command-line and automation contract](docs/CLI_CONTRACT.md)
+- [Structured output reference](docs/JSON_SCHEMA.md)
+- [Troubleshooting and support information](docs/TROUBLESHOOTING.md)
+- [Architecture](docs/ARCHITECTURE.md)
+- [Release procedure](docs/RELEASING.md)
+
 ## Contribute
 
 Read [`CONTRIBUTING.md`](CONTRIBUTING.md), run the full local check suite, and preserve the shared
-interaction and data contracts. Security reports must follow [`SECURITY.md`](SECURITY.md).
+interaction and data contracts. Usage support goes through [GitHub Issues](SUPPORT.md); security
+reports must follow [`SECURITY.md`](SECURITY.md).
 
 ## Licence
 

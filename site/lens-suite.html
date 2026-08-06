@@ -87,8 +87,9 @@
 
 <span class="token-comment"># Structured data for a check or collector</span>
 <span class="token-command">lens-health</span> <span class="token-flag">--json</span> | <span class="token-command">jq</span> <span class="token-value">'.findings'</span></code></pre></div>
-        <p>Pass <code>--once</code> to print one readable snapshot instead of opening an interactive screen. <code>--plain</code> explicitly selects human-readable output, while <code>--json</code> emits the shared schema-versioned snapshot. Redirected output is plain automatically. Common specialist options include <code>--filter</code> and <code>--limit</code>; domain-specific flags fail clearly when used with the wrong command.</p>
+        <p>Pass <code>--once</code> to print one readable snapshot instead of opening an interactive screen. <code>--plain</code> explicitly selects the same one-shot human-readable output, while <code>--json</code> emits the shared schema-versioned snapshot. Redirected output is plain automatically. Common specialist options include <code>--filter</code> and <code>--limit</code>; domain-specific flags fail clearly when used with the wrong command.</p>
         <p>Use <code>--limit 0</code> deliberately: it removes the row cap and can produce a large result on a busy host. The normal default is 1,000 rows.</p>
+        <p>The <a href="reference.html">command reference</a> defines exit status, standard streams, structured fields and scheduled-check behaviour.</p>
       </section>
 
       <section id="actions">
@@ -106,13 +107,13 @@
           <div class="key-row"><span>macOS</span><span>Processes, launchd service state, the unified log, APFS and mounted filesystems, interfaces, routes, listeners, native hardware identity, firmware and USB/serial inventory.</span></div>
         </div>
         <p>Lens uses the commands, kernel interfaces and permissions available to the invoking account. A loading label means collection is still running. <em>Unavailable</em> or a collection warning means the source could not be read. A displayed zero is reserved for a source that completed successfully and returned no matching records.</p>
-        <p>Partial data remains useful: one timed-out command does not discard fields collected from the rest of the system. Inspect <code>collection_warnings</code> in JSON when a script must distinguish a healthy empty result from an incomplete one.</p>
+        <p>Partial data remains useful: one timed-out command does not discard fields collected from the rest of the system. Inspect <code>collection_warnings</code> in JSON when a script must distinguish a healthy empty result from an incomplete one. The <a href="compatibility.html">compatibility matrix</a> identifies native sources by platform; <a href="troubleshooting.html">troubleshooting</a> covers common incomplete-data cases.</p>
       </section>
     </article>
   </div>
 </main>
 
-<footer class="site-footer"><div class="container footer-grid"><div class="footer-copy"><strong>Dataplicity Lens</strong>Copyright 2026 WildFoundry Ltd. Apache License 2.0.</div><div class="footer-links"><a href="https://github.com/wildfoundry/dataplicity-lens">GitHub</a><a href="install.html">Install</a><a href="architecture.html">Architecture</a><a href="https://www.dataplicity.com">Dataplicity</a></div></div></footer>
+<footer class="site-footer"><div class="container footer-grid"><div class="footer-copy"><strong>Dataplicity Lens</strong>Copyright 2026 WildFoundry Ltd. Apache License 2.0.</div><div class="footer-links"><a href="install.html">Install</a><a href="reference.html">Reference</a><a href="troubleshooting.html">Help</a><a href="https://github.com/wildfoundry/dataplicity-lens">GitHub</a><a href="https://www.dataplicity.com">Dataplicity</a></div></div></footer>
 <script src="app.js"></script>
 </body>
 </html>

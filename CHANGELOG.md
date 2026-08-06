@@ -7,6 +7,8 @@ versioning once the first public release is tagged.
 
 ### Added
 
+- Operator documentation for platform compatibility, the command-line and exit-status contract,
+  structured-output fields, package verification and upgrades, and practical troubleshooting.
 - Shared Linux process, history, diagnostics, terminal UI and output architecture.
 - A production-safe `lens-top` process explorer with TUI, plain, JSON and JSON Lines output.
 - Deterministic demo mode, fixture tests, packaging and release automation.

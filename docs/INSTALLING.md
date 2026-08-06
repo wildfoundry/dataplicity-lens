@@ -6,8 +6,8 @@ specific systemd action may ask for authorisation under the machine's existing p
 
 ## Raspberry Pi OS, Debian and Ubuntu
 
-Download the Debian package for the machine from the
-[latest GitHub release](https://github.com/wildfoundry/dataplicity-lens/releases/latest). Check the
+Download the Debian package for the machine from
+[GitHub Releases](https://github.com/wildfoundry/dataplicity-lens/releases). Check the
 architecture on the target itself:
 
 ```sh
@@ -29,6 +29,15 @@ sudo apt install ./dataplicity-lens_<version>_<architecture>.deb
 lens
 ```
 
+Verify the download before installation. `SHA256SUMS` is published beside every release artifact:
+
+```sh
+sha256sum --check --ignore-missing SHA256SUMS
+```
+
+On macOS use `shasum -a 256 -c SHA256SUMS`. The manifest must report the selected package or archive
+as `OK`; do not install a file that is absent from the manifest or has a different digest.
+
 This is a local package install through `apt`; it resolves package requirements and registers Lens
 with the system package database. The `armhf` build targets the hard-float ABI used by 32-bit
 Raspberry Pi OS. All nine commands and their manual pages are installed under `/usr`.
@@ -40,14 +49,25 @@ lens-top --once
 lens-health --json
 ```
 
-Remove it with `sudo apt remove dataplicity-lens`.
+Upgrade by downloading the newer package for the same architecture and installing it through `apt`:
+
+```sh
+sudo apt install ./dataplicity-lens_<new-version>_<architecture>.deb
+lens-top --version
+```
+
+The package replaces all nine commands together so mixed command versions cannot remain installed.
+Remove it with `sudo apt remove dataplicity-lens`. Lens does not create a daemon or persistent data
+store; removing the package removes the installed binaries, manual pages and completions.
 
 ## Other Linux systems
 
 Debian and RPM packages use statically linked binaries so they also work on systems with an older
 glibc, including current Raspberry Pi OS and Debian releases. Releases additionally include GNU and
 statically linked musl archives for x86-64, ARM64 and ARM hard-float. Verify the selected artifact with
-`SHA256SUMS`, unpack it, and install the binaries in `/usr/local/bin`.
+`SHA256SUMS`, unpack it, and install the binaries in `/usr/local/bin`. Archive installations are not
+registered with a package manager, so record the installed version and remove or replace all nine
+binaries together during an upgrade.
 
 ## macOS with Homebrew
 
@@ -99,6 +119,15 @@ brew untap local/dataplicity-lens-test
 Run `scripts/test-homebrew-local.sh` without `--keep` when you only want a clean verification; it
 automatically removes the package and tap after its tests pass.
 
+To refresh a retained source installation, pull the intended revision and rerun the installer. It
+builds and tests the complete suite before leaving the replacement linked:
+
+```sh
+git pull --ff-only
+scripts/test-homebrew-local.sh --keep
+lens-top --version
+```
+
 ## Build directly from source
 
 The workspace pins its Rust toolchain. Build every command with:
@@ -114,3 +143,6 @@ The executables are written to `target/release/`.
 
 Source builds are primarily for contributors. Operators should prefer a release package so the exact
 build can be identified and cleanly upgraded or removed.
+
+See [`COMPATIBILITY.md`](COMPATIBILITY.md) for platform coverage and
+[`TROUBLESHOOTING.md`](TROUBLESHOOTING.md) when a native facility is unavailable.
