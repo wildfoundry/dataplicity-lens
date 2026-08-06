@@ -4,8 +4,12 @@ use std::{
 };
 
 use crossterm::{
-    execute,
-    terminal::{EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode},
+    cursor, execute,
+    style::ResetColor,
+    terminal::{
+        Clear, ClearType, EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode,
+        enable_raw_mode,
+    },
 };
 use ratatui::{Terminal, backend::CrosstermBackend};
 
@@ -114,9 +118,18 @@ impl TerminalSession {
 
 impl Drop for TerminalSession {
     fn drop(&mut self) {
+        // Some browser terminals only partially implement the alternate screen. Clear and reset
+        // explicitly before leaving it so the restored shell prompt never inherits Lens cells,
+        // colours or a hidden cursor.
+        let _ = execute!(
+            self.terminal.backend_mut(),
+            ResetColor,
+            Clear(ClearType::All),
+            cursor::MoveTo(0, 0),
+            cursor::Show,
+            LeaveAlternateScreen
+        );
         let _ = disable_raw_mode();
-        let _ = execute!(self.terminal.backend_mut(), LeaveAlternateScreen);
-        let _ = self.terminal.show_cursor();
     }
 }
 

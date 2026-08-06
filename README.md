@@ -265,7 +265,7 @@ SBOMs, checksums and package smoke tests. See [`SECURITY.md`](SECURITY.md) and
 - `lens-disk` — navigable block devices, filesystems, mounts, inodes and deleted-open files
 - `lens-net` — live receive/transmit charts, navigable interfaces, routes and listener ownership
 - `lens-hardware` — identity, temperatures, firmware status and USB/serial inventory
-- `lens-system` — clock/NTP, resolver, local identities and visible public certificate files
+- `lens-system` — clock/NTP, resolver, login identities and locally managed certificate metadata
 - `lens-health` — selectable findings with the evidence and suggested checks behind each warning
 
 Each specialist is documented on the [Lens documentation site](https://lens.dataplicity.com/lens-suite.html),
