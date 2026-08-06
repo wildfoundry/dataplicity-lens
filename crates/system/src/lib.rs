@@ -573,6 +573,13 @@ fn cockpit_loop(
     let mut snapshot = SystemSnapshot::empty(hostname());
     let mut receiver = spawn_cockpit_collection(since.clone(), log_files.clone());
     let mut loading = true;
+    let mut cpu_activity = CpuActivity::default();
+    let mut network_activity = NetworkActivity::default();
+    let (live_request, live_receiver) = spawn_cockpit_live_sampler();
+    let mut live_sample_in_flight = live_request.send(()).is_ok();
+    let mut next_live_sample = Instant::now() + Duration::from_secs(1);
+    let mut latest_live_snapshot: Option<SystemSnapshot> = None;
+    let mut live_error_reported = false;
     let mut search_query: Option<String> = None;
     let mut diagnostic = DiagnosticShell::new();
     let mut next_clock = Instant::now() + Duration::from_secs(60);
@@ -585,9 +592,57 @@ fn cockpit_loop(
         if diagnostic.poll() {
             redraw = true;
         }
+        if live_sample_in_flight {
+            match live_receiver.try_recv() {
+                Ok(Ok(mut sample)) => {
+                    cpu_activity.observe(&mut sample.snapshot);
+                    let counters: BTreeMap<_, _> = sample
+                        .interface_counters
+                        .into_iter()
+                        .map(|(name, rx, tx)| (name, (rx, tx)))
+                        .collect();
+                    for interface in &mut snapshot.interfaces {
+                        if let Some((rx, tx)) = counters.get(&interface.name) {
+                            interface.rx_bytes = Some(*rx);
+                            interface.tx_bytes = Some(*tx);
+                        }
+                    }
+                    network_activity.observe(&snapshot.interfaces, Instant::now());
+                    snapshot.host = sample.snapshot.host.clone();
+                    snapshot.processes.clone_from(&sample.snapshot.processes);
+                    latest_live_snapshot = Some(sample.snapshot);
+                    live_error_reported = false;
+                    live_sample_in_flight = false;
+                    next_live_sample = Instant::now() + Duration::from_secs(1);
+                    redraw = true;
+                }
+                Ok(Err(error)) => {
+                    if !live_error_reported {
+                        snapshot
+                            .collection_warnings
+                            .push(format!("live activity unavailable: {error}"));
+                        live_error_reported = true;
+                    }
+                    live_sample_in_flight = false;
+                    next_live_sample = Instant::now() + Duration::from_secs(1);
+                    redraw = true;
+                }
+                Err(TryRecvError::Disconnected) => {
+                    live_sample_in_flight = false;
+                }
+                Err(TryRecvError::Empty) => {}
+            }
+        }
+        if !live_sample_in_flight && Instant::now() >= next_live_sample {
+            live_sample_in_flight = live_request.send(()).is_ok();
+        }
         match receiver.try_recv() {
             Ok(update) => {
                 snapshot = update.snapshot;
+                if let Some(live) = &latest_live_snapshot {
+                    snapshot.host = live.host.clone();
+                    snapshot.processes.clone_from(&live.processes);
+                }
                 loading = update.loading;
                 redraw = true;
             }
@@ -603,7 +658,15 @@ fn cockpit_loop(
 
         if redraw {
             let rows = terminal::size().map_or(24, |(_, rows)| rows);
-            render_cockpit(&snapshot, selected, loading, rows, stdout)?;
+            render_cockpit(
+                &snapshot,
+                &cpu_activity,
+                &network_activity,
+                selected,
+                loading,
+                rows,
+                stdout,
+            )?;
             if let Some(query) = search_query.as_deref() {
                 render_search_overlay(stdout, "Search selected view", query)?;
             }
@@ -716,6 +779,102 @@ fn spawn_cockpit_collection(
     receiver
 }
 
+struct CockpitLiveSample {
+    snapshot: SystemSnapshot,
+    interface_counters: Vec<(String, u64, u64)>,
+}
+
+fn spawn_cockpit_live_sampler() -> (
+    mpsc::Sender<()>,
+    Receiver<std::result::Result<CockpitLiveSample, String>>,
+) {
+    let (request_sender, request_receiver) = mpsc::channel();
+    let (sample_sender, sample_receiver) = mpsc::channel();
+    thread::spawn(move || {
+        #[cfg(target_os = "linux")]
+        let mut collector = LinuxCollector::default();
+        #[cfg(target_os = "macos")]
+        let mut collector = MacOsCollector::default();
+        collector.set_refresh_interval(Duration::from_secs(1));
+
+        while request_receiver.recv().is_ok() {
+            let sample = collector
+                .collect()
+                .map(|snapshot| {
+                    let mut warnings = Vec::new();
+                    let interface_counters = collect_interface_counters(&mut warnings);
+                    CockpitLiveSample {
+                        snapshot,
+                        interface_counters,
+                    }
+                })
+                .map_err(|error| error.to_string());
+            if sample_sender.send(sample).is_err() {
+                break;
+            }
+        }
+    });
+    (request_sender, sample_receiver)
+}
+
+#[derive(Debug, Default)]
+struct CpuActivity {
+    previous_total_ticks: Option<u64>,
+    previous_idle_ticks: u64,
+    previous_process_ticks: BTreeMap<(u32, u64), u64>,
+    history: VecDeque<u64>,
+}
+
+impl CpuActivity {
+    fn observe(&mut self, snapshot: &mut SystemSnapshot) {
+        let total_ticks = snapshot.host.total_cpu_ticks;
+        let idle_ticks = snapshot.host.idle_cpu_ticks;
+        if let Some(previous_total) = self.previous_total_ticks {
+            let total_delta = total_ticks.saturating_sub(previous_total);
+            let idle_delta = idle_ticks.saturating_sub(self.previous_idle_ticks);
+            snapshot.host.cpu_percent = if total_delta == 0 {
+                0.0
+            } else {
+                (total_delta.saturating_sub(idle_delta) as f64 / total_delta as f64) * 100.0
+            };
+            push_bounded(
+                &mut self.history,
+                snapshot.host.cpu_percent.clamp(0.0, 100.0).round() as u64,
+                60,
+            );
+
+            #[cfg(target_os = "linux")]
+            {
+                for process in &mut snapshot.processes {
+                    let key = (process.pid.0, process.start_time_ticks);
+                    if let Some(previous_ticks) = self.previous_process_ticks.get(&key) {
+                        let process_delta = process.cpu_time_ticks.saturating_sub(*previous_ticks);
+                        process.cpu_percent = if total_delta == 0 {
+                            0.0
+                        } else {
+                            (process_delta as f64 / total_delta as f64)
+                                * snapshot.host.cpu_count.max(1) as f64
+                                * 100.0
+                        };
+                    }
+                }
+            }
+        }
+        self.previous_total_ticks = Some(total_ticks);
+        self.previous_idle_ticks = idle_ticks;
+        self.previous_process_ticks = snapshot
+            .processes
+            .iter()
+            .map(|process| {
+                (
+                    (process.pid.0, process.start_time_ticks),
+                    process.cpu_time_ticks,
+                )
+            })
+            .collect();
+    }
+}
+
 struct SpecialistUpdate {
     snapshot: SystemSnapshot,
     loading_more: bool,
@@ -804,6 +963,19 @@ fn activity_sparkline(values: &VecDeque<u64>, width: usize) -> String {
                 let index = ((*value as u128 * 7) / maximum as u128) as usize;
                 BARS[index]
             }
+        })
+        .collect()
+}
+
+fn percentage_sparkline(values: &VecDeque<u64>, width: usize) -> String {
+    const BARS: [char; 8] = ['▁', '▂', '▃', '▄', '▅', '▆', '▇', '█'];
+    let start = values.len().saturating_sub(width);
+    values
+        .iter()
+        .skip(start)
+        .map(|value| {
+            let index = ((*value).min(100) as usize * 7) / 100;
+            BARS[index]
         })
         .collect()
 }
@@ -1008,18 +1180,30 @@ fn spawn_specialist_collection(view: View, args: ViewArgs) -> Receiver<Specialis
 
 fn render_cockpit(
     snapshot: &SystemSnapshot,
+    cpu_activity: &CpuActivity,
+    network_activity: &NetworkActivity,
     selected: usize,
     loading: bool,
     rows: u16,
     stdout: &mut impl Write,
 ) -> Result<()> {
     let mut frame = Vec::new();
-    render_cockpit_content(snapshot, selected, loading, rows, &mut frame)?;
+    render_cockpit_content(
+        snapshot,
+        cpu_activity,
+        network_activity,
+        selected,
+        loading,
+        rows,
+        &mut frame,
+    )?;
     present_frame(stdout, &frame)
 }
 
 fn render_cockpit_content(
     snapshot: &SystemSnapshot,
+    cpu_activity: &CpuActivity,
+    network_activity: &NetworkActivity,
     selected: usize,
     loading: bool,
     rows: u16,
@@ -1170,6 +1354,17 @@ fn render_cockpit_content(
         )?;
     }
 
+    if rows >= 24 {
+        render_cockpit_activity(
+            snapshot,
+            cpu_activity,
+            network_activity,
+            width,
+            rows,
+            stdout,
+        )?;
+    }
+
     if rows >= 32 {
         let mut processes: Vec<_> = snapshot.processes.iter().collect();
         processes.sort_by(|left, right| {
@@ -1293,22 +1488,50 @@ fn render_cockpit_content(
     }
 
     writeln!(stdout, "\n  {}", ink("EXPLORE", Ink::Label, colour))?;
-    for (index, view) in View::ALL.iter().enumerate() {
-        let marker = if index == selected { "▶" } else { " " };
-        let summary = cockpit_view_summary(*view, snapshot, loading);
-        let row = if width >= 48 {
-            format!(
-                "{marker} {:<12} {}",
-                view.title(),
-                truncate_text(&summary, width.saturating_sub(18))
-            )
-        } else {
-            format!("{marker} {}", view.title())
-        };
-        if index == selected {
-            writeln!(stdout, "{}", selected_row(&row, colour))?;
-        } else {
-            writeln!(stdout, "{}", ink(&row, Ink::Muted, colour))?;
+    if width >= 110 && rows >= 26 {
+        let gap = 2usize;
+        let available = width.saturating_sub(4 + gap);
+        let left_width = available / 2;
+        let right_width = available.saturating_sub(left_width);
+        for row_index in 0..4 {
+            let left_index = row_index;
+            let right_index = row_index + 4;
+            let left = cockpit_explore_cell(
+                View::ALL[left_index],
+                left_index == selected,
+                snapshot,
+                loading,
+                left_width,
+            );
+            let right = cockpit_explore_cell(
+                View::ALL[right_index],
+                right_index == selected,
+                snapshot,
+                loading,
+                right_width,
+            );
+            let left = if left_index == selected {
+                selected_row(&left, colour)
+            } else {
+                ink(&left, Ink::Muted, colour)
+            };
+            let right = if right_index == selected {
+                selected_row(&right, colour)
+            } else {
+                ink(&right, Ink::Muted, colour)
+            };
+            writeln!(stdout, "  {left}  {right}")?;
+        }
+    } else {
+        for (index, view) in View::ALL.iter().enumerate() {
+            let row = cockpit_explore_cell(*view, index == selected, snapshot, loading, width)
+                .trim_end()
+                .to_owned();
+            if index == selected {
+                writeln!(stdout, "{}", selected_row(&row, colour))?;
+            } else {
+                writeln!(stdout, "{}", ink(&row, Ink::Muted, colour))?;
+            }
         }
     }
     if rows >= 30 {
@@ -1350,6 +1573,288 @@ fn render_cockpit_content(
         write!(stdout, "{}", ink(&format!("╰{rule}╯"), Ink::Border, colour))?;
     }
     Ok(())
+}
+
+fn cockpit_explore_cell(
+    view: View,
+    selected: bool,
+    snapshot: &SystemSnapshot,
+    loading: bool,
+    width: usize,
+) -> String {
+    let marker = if selected { "▶" } else { " " };
+    let summary = cockpit_view_summary(view, snapshot, loading);
+    let row = if width >= 48 {
+        format!(
+            "{marker} {:<12} {}",
+            view.title(),
+            truncate_text(&summary, width.saturating_sub(18))
+        )
+    } else {
+        format!("{marker} {}", view.title())
+    };
+    let row = truncate_text(&row, width);
+    format!(
+        "{row}{}",
+        " ".repeat(width.saturating_sub(row.chars().count()))
+    )
+}
+
+fn render_cockpit_activity(
+    snapshot: &SystemSnapshot,
+    cpu_activity: &CpuActivity,
+    network_activity: &NetworkActivity,
+    width: usize,
+    rows: u16,
+    stdout: &mut impl Write,
+) -> Result<()> {
+    if width >= 140 && rows >= 28 {
+        return render_wide_cockpit_activity(
+            snapshot,
+            cpu_activity,
+            network_activity,
+            width,
+            stdout,
+        );
+    }
+    let colour = terminal_colour_enabled();
+    let chart_width = width.saturating_sub(44).div_ceil(2).clamp(8, 32);
+    let cpu_chart = percentage_sparkline(&cpu_activity.history, chart_width);
+    let cpu_chart = if cpu_chart.is_empty() {
+        "waiting".to_owned()
+    } else {
+        cpu_chart
+    };
+    let cpu_chart = fixed_chart_cell(&cpu_chart, chart_width);
+    writeln!(
+        stdout,
+        "\n  {}",
+        ink("LIVE ACTIVITY · 60s", Ink::Label, colour)
+    )?;
+    if snapshot.host.cpu_count == 0 {
+        writeln!(
+            stdout,
+            "  {} collecting host counters…",
+            ink("CPU", Ink::Label, colour)
+        )?;
+    } else if width >= 64 {
+        writeln!(
+            stdout,
+            "  {} {:>5.1}%  {}  {} logical CPU{}",
+            ink("CPU", Ink::Label, colour),
+            snapshot.host.cpu_percent,
+            ink(&cpu_chart, Ink::Info, colour),
+            snapshot.host.cpu_count,
+            if snapshot.host.cpu_count == 1 {
+                ""
+            } else {
+                "s"
+            }
+        )?;
+    } else {
+        writeln!(
+            stdout,
+            "  {} {:>5.1}%  {}  {} CPU{}",
+            ink("CPU", Ink::Label, colour),
+            snapshot.host.cpu_percent,
+            ink(&cpu_chart, Ink::Info, colour),
+            snapshot.host.cpu_count,
+            if snapshot.host.cpu_count == 1 {
+                ""
+            } else {
+                "s"
+            }
+        )?;
+    }
+    if let Some((rx, tx)) = network_activity.current() {
+        let rx_chart = fixed_chart_cell(
+            &activity_sparkline(&network_activity.rx_history, chart_width),
+            chart_width,
+        );
+        let tx_chart = fixed_chart_cell(
+            &activity_sparkline(&network_activity.tx_history, chart_width),
+            chart_width,
+        );
+        if width >= 64 {
+            writeln!(
+                stdout,
+                "  {} ↓ {:>8}/s {}  ↑ {:>8}/s {}",
+                ink("NET", Ink::Label, colour),
+                human_bytes(rx),
+                ink(&rx_chart, Ink::Info, colour),
+                human_bytes(tx),
+                ink(&tx_chart, Ink::Attention, colour),
+            )?;
+        } else {
+            writeln!(
+                stdout,
+                "  {} ↓ {}/s  ↑ {}/s",
+                ink("NET", Ink::Label, colour),
+                human_bytes(rx),
+                human_bytes(tx),
+            )?;
+        }
+    } else {
+        writeln!(
+            stdout,
+            "  {} collecting interface counters…",
+            ink("NET", Ink::Label, colour)
+        )?;
+    }
+    Ok(())
+}
+
+fn render_wide_cockpit_activity(
+    snapshot: &SystemSnapshot,
+    cpu_activity: &CpuActivity,
+    network_activity: &NetworkActivity,
+    width: usize,
+    stdout: &mut impl Write,
+) -> Result<()> {
+    let colour = terminal_colour_enabled();
+    let gap = 2usize;
+    let available = width.saturating_sub(4 + gap);
+    let cpu_width = available / 2;
+    let network_width = available.saturating_sub(cpu_width);
+    let cpu_graph_width = cpu_width.saturating_sub(11);
+    let network_graph_width = network_width.saturating_sub(12);
+
+    let cpu_peak = cpu_activity.history.iter().copied().max().unwrap_or(0);
+    let cpu_graph = block_chart_rows(&cpu_activity.history, cpu_graph_width, 100, 4);
+    let cpu_lines = panel_lines(
+        "CPU PULSE · ● LIVE · 60s",
+        &[
+            format!(
+                "{:>5.1}% current  ·  {:>3}% peak  ·  {} logical CPU{}",
+                snapshot.host.cpu_percent,
+                cpu_peak,
+                snapshot.host.cpu_count,
+                if snapshot.host.cpu_count == 1 {
+                    ""
+                } else {
+                    "s"
+                }
+            ),
+            format!("100 ┤{}", cpu_graph[0]),
+            format!(" 75 ┤{}", cpu_graph[1]),
+            format!(" 50 ┤{}", cpu_graph[2]),
+            format!(" 25 ┤{}", cpu_graph[3]),
+        ],
+        cpu_width,
+    );
+
+    let (rx, tx) = network_activity.current().unwrap_or_default();
+    let rx_peak = network_activity
+        .rx_history
+        .iter()
+        .copied()
+        .max()
+        .unwrap_or(0);
+    let tx_peak = network_activity
+        .tx_history
+        .iter()
+        .copied()
+        .max()
+        .unwrap_or(0);
+    let rx_graph = block_chart_rows(
+        &network_activity.rx_history,
+        network_graph_width,
+        rx_peak,
+        2,
+    );
+    let tx_graph = block_chart_rows(
+        &network_activity.tx_history,
+        network_graph_width,
+        tx_peak,
+        2,
+    );
+    let network_lines = panel_lines(
+        "NETWORK FLOW · ● LIVE · 60s",
+        &[
+            format!(
+                "↓ {}/s  peak {}/s  ·  ↑ {}/s  peak {}/s",
+                human_bytes(rx),
+                human_bytes(rx_peak),
+                human_bytes(tx),
+                human_bytes(tx_peak),
+            ),
+            format!("RX max ┤{}", rx_graph[0]),
+            format!("RX   0 ┤{}", rx_graph[1]),
+            format!("TX max ┤{}", tx_graph[0]),
+            format!("TX   0 ┤{}", tx_graph[1]),
+        ],
+        network_width,
+    );
+
+    writeln!(stdout)?;
+    for (cpu_line, network_line) in cpu_lines.iter().zip(&network_lines) {
+        writeln!(
+            stdout,
+            "  {}  {}",
+            ink(cpu_line, Ink::Info, colour),
+            ink(network_line, Ink::Attention, colour),
+        )?;
+    }
+    Ok(())
+}
+
+fn panel_lines(title: &str, content: &[String], width: usize) -> Vec<String> {
+    let mut lines = Vec::with_capacity(content.len() + 2);
+    let title_width = title.chars().count();
+    lines.push(format!(
+        "╭─ {title} {}╮",
+        "─".repeat(width.saturating_sub(title_width + 5))
+    ));
+    let content_width = width.saturating_sub(4);
+    for line in content {
+        let line = truncate_text(line, content_width);
+        let padding = content_width.saturating_sub(line.chars().count());
+        lines.push(format!("│ {line}{} │", " ".repeat(padding)));
+    }
+    lines.push(format!("╰{}╯", "─".repeat(width.saturating_sub(2))));
+    lines
+}
+
+fn fixed_chart_cell(chart: &str, width: usize) -> String {
+    let chart = truncate_text(chart, width);
+    format!(
+        "{}{}",
+        " ".repeat(width.saturating_sub(chart.chars().count())),
+        chart
+    )
+}
+
+fn block_chart_rows(
+    values: &VecDeque<u64>,
+    width: usize,
+    maximum: u64,
+    height: usize,
+) -> Vec<String> {
+    const BLOCKS: [char; 9] = [' ', '▁', '▂', '▃', '▄', '▅', '▆', '▇', '█'];
+    let visible_start = values.len().saturating_sub(width);
+    let visible: Vec<_> = values.iter().skip(visible_start).copied().collect();
+    let left_padding = width.saturating_sub(visible.len());
+    let levels = height.saturating_mul(8);
+    (0..height)
+        .map(|row| {
+            let lower_level = height.saturating_sub(row + 1).saturating_mul(8);
+            let mut output = " ".repeat(left_padding);
+            for value in &visible {
+                let filled = if maximum == 0 {
+                    0
+                } else {
+                    (*value as u128 * levels as u128).div_ceil(maximum as u128) as usize
+                };
+                let row_fill = filled.saturating_sub(lower_level).min(8);
+                output.push(if row == height.saturating_sub(1) && row_fill == 0 {
+                    BLOCKS[1]
+                } else {
+                    BLOCKS[row_fill]
+                });
+            }
+            output
+        })
+        .collect()
 }
 
 fn present_frame(stdout: &mut impl Write, frame: &[u8]) -> Result<()> {
@@ -7117,24 +7622,55 @@ mod tests {
     #[test]
     fn cockpit_leads_with_host_status_while_details_load() {
         let snapshot = demo_snapshot();
+        let cpu_activity = CpuActivity::default();
+        let network_activity = NetworkActivity::default();
         let mut loading_output = Vec::new();
-        render_cockpit(&snapshot, 0, true, 36, &mut loading_output).expect("loading cockpit");
+        render_cockpit(
+            &snapshot,
+            &cpu_activity,
+            &network_activity,
+            0,
+            true,
+            36,
+            &mut loading_output,
+        )
+        .expect("loading cockpit");
         let loading_output = String::from_utf8(loading_output).expect("UTF-8");
         assert!(loading_output.contains("CPU"));
         assert!(loading_output.contains("Memory"));
+        assert!(loading_output.contains("LIVE ACTIVITY"));
+        assert!(loading_output.contains("logical CPU"));
         assert!(loading_output.contains("BUSIEST PROCESSES"));
         assert!(loading_output.contains("Checking services, logs, storage and network"));
         assert!(loading_output.contains("Processes    1 processes"));
         assert!(loading_output.contains("Services     checking"));
 
         let mut compact_output = Vec::new();
-        render_cockpit(&snapshot, 0, true, 20, &mut compact_output).expect("compact cockpit");
+        render_cockpit(
+            &snapshot,
+            &cpu_activity,
+            &network_activity,
+            0,
+            true,
+            20,
+            &mut compact_output,
+        )
+        .expect("compact cockpit");
         let compact_output = String::from_utf8(compact_output).expect("UTF-8");
         assert!(!compact_output.contains("BUSIEST PROCESSES"));
         assert!(compact_output.matches('\n').count() <= 20);
 
         let mut complete_output = Vec::new();
-        render_cockpit(&snapshot, 3, false, 30, &mut complete_output).expect("complete cockpit");
+        render_cockpit(
+            &snapshot,
+            &cpu_activity,
+            &network_activity,
+            3,
+            false,
+            30,
+            &mut complete_output,
+        )
+        .expect("complete cockpit");
         let complete_output = String::from_utf8(complete_output).expect("UTF-8");
         assert!(complete_output.contains("critical ·"));
         assert!(complete_output.contains("▶ Storage"));
@@ -7489,7 +8025,16 @@ mod tests {
         assert!(specialist.contains("\u{1b}[J\u{1b}[28;1H"));
 
         let mut cockpit = Vec::new();
-        render_cockpit_content(&snapshot, 0, false, 30, &mut cockpit).expect("cockpit");
+        render_cockpit_content(
+            &snapshot,
+            &CpuActivity::default(),
+            &NetworkActivity::default(),
+            0,
+            false,
+            30,
+            &mut cockpit,
+        )
+        .expect("cockpit");
         let cockpit = String::from_utf8(cockpit).expect("UTF-8");
         assert!(cockpit.contains("\u{1b}[J\u{1b}[28;1H"));
     }
@@ -7584,6 +8129,117 @@ mod tests {
         assert!(output.contains("RX"));
         assert!(output.contains("TX"));
         assert!(output.contains('█'));
+    }
+
+    #[test]
+    fn cockpit_cpu_activity_uses_aggregate_ticks_across_all_cores() {
+        let mut first = demo_snapshot();
+        first.host.cpu_count = 4;
+        first.host.total_cpu_ticks = 1_000;
+        first.host.idle_cpu_ticks = 800;
+        first.processes[0].cpu_time_ticks = 10;
+        let mut activity = CpuActivity::default();
+        activity.observe(&mut first);
+
+        let mut second = first.clone();
+        second.host.total_cpu_ticks = 1_400;
+        second.host.idle_cpu_ticks = 1_000;
+        second.processes[0].cpu_time_ticks = 110;
+        activity.observe(&mut second);
+
+        assert_eq!(second.host.cpu_percent, 50.0);
+        #[cfg(target_os = "linux")]
+        assert_eq!(second.processes[0].cpu_percent, 100.0);
+        assert_eq!(activity.history.back(), Some(&50));
+    }
+
+    #[test]
+    fn cockpit_activity_renders_cpu_and_network_histories() {
+        let snapshot = demo_snapshot();
+        let cpu_activity = CpuActivity {
+            history: VecDeque::from([0, 50, 100]),
+            ..CpuActivity::default()
+        };
+        let started = Instant::now();
+        let mut network_activity = NetworkActivity::default();
+        network_activity.observe(&snapshot.interfaces, started);
+        let mut later = snapshot.clone();
+        later.interfaces[0].rx_bytes = later.interfaces[0].rx_bytes.map(|value| value + 2_048);
+        later.interfaces[0].tx_bytes = later.interfaces[0].tx_bytes.map(|value| value + 1_024);
+        network_activity.observe(&later.interfaces, started + Duration::from_secs(1));
+
+        let mut output = Vec::new();
+        render_cockpit_activity(
+            &snapshot,
+            &cpu_activity,
+            &network_activity,
+            166,
+            30,
+            &mut output,
+        )
+        .expect("cockpit activity");
+        let output = String::from_utf8(output).expect("UTF-8");
+        assert!(output.contains("CPU PULSE · ● LIVE · 60s"));
+        assert!(output.contains("NETWORK FLOW · ● LIVE · 60s"));
+        assert!(output.contains("logical CPU"));
+        assert!(output.contains("2.0KiB/s"));
+        assert!(output.contains("1.0KiB/s"));
+        assert!(output.contains("100 ┤"));
+    }
+
+    #[test]
+    fn activity_charts_reserve_their_full_width_before_history_fills() {
+        let snapshot = demo_snapshot();
+        let short_cpu = CpuActivity {
+            history: VecDeque::from([20]),
+            ..CpuActivity::default()
+        };
+        let short_network = NetworkActivity {
+            rx_history: VecDeque::from([1_024]),
+            tx_history: VecDeque::from([512]),
+            ..NetworkActivity::default()
+        };
+        let full_cpu = CpuActivity {
+            history: (0..60).map(|value| value * 100 / 59).collect(),
+            ..CpuActivity::default()
+        };
+        let full_network = NetworkActivity {
+            rx_history: (1..=60).map(|value| value * 1_024).collect(),
+            tx_history: (1..=60).map(|value| value * 512).collect(),
+            ..NetworkActivity::default()
+        };
+
+        let mut short_output = Vec::new();
+        render_cockpit_activity(
+            &snapshot,
+            &short_cpu,
+            &short_network,
+            166,
+            30,
+            &mut short_output,
+        )
+        .expect("short history");
+        let mut full_output = Vec::new();
+        render_cockpit_activity(
+            &snapshot,
+            &full_cpu,
+            &full_network,
+            166,
+            30,
+            &mut full_output,
+        )
+        .expect("full history");
+
+        let widths = |output: Vec<u8>| {
+            String::from_utf8(output)
+                .expect("UTF-8")
+                .lines()
+                .map(|line| line.chars().count())
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(widths(short_output), widths(full_output));
+        assert_eq!(fixed_chart_cell("▁", 32).chars().count(), 32);
+        assert_eq!(fixed_chart_cell(&"█".repeat(32), 32).chars().count(), 32);
     }
 
     #[test]
