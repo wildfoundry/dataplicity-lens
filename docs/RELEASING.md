@@ -13,8 +13,9 @@
    sign every executable, submit both architecture archives to Apple's notary service and fail closed
    if signing or notarization is unavailable.
 9. The release job publishes only after all architecture jobs succeed.
-10. The Homebrew job copies the verified macOS archives to the public tap release, generates the
-    formula from `SHA256SUMS`, and opens an auto-merge pull request against the protected tap branch.
+10. The separate `Update Homebrew tap` workflow runs when the GitHub Release is published, mirrors
+    the verified macOS archives to the public tap release, recomputes their checksums, and opens a
+    pull request against the protected tap branch.
 
 To reproduce package assembly after building both targets and generating the `lens-top` man page and
 completions:
@@ -43,7 +44,7 @@ time. No locally compiled artifact may be uploaded as a release asset.
 Release jobs receive only `contents: write`, `id-token: write` and `attestations: write`. Pull-request
 jobs remain read-only. Third-party actions are pinned to immutable commit SHAs.
 
-The `release` environment must provide these Actions secrets; signing material is never read from a
+The `release-signing` environment must provide these Actions secrets; signing material is never read from a
 maintainer workstation by the release workflow:
 
 - `MACOS_CERTIFICATE_P12_BASE64`
@@ -51,9 +52,10 @@ maintainer workstation by the release workflow:
 - `APPLE_NOTARY_KEY_P8_BASE64`
 - `APPLE_NOTARY_KEY_ID`
 - `APPLE_NOTARY_ISSUER_ID`
-- `HOMEBREW_TAP_TOKEN`, scoped to release, branch and pull-request writes in
-  `wildfoundry/homebrew-tap`
 
-The public tap must allow auto-merge while continuing to require its formula analysis check. A tag
-is not complete until `brew install wildfoundry/tap/dataplicity-lens`, `brew upgrade
+Homebrew publication follows the `dataplicity-cli` repository's release-triggered tap workflow. The
+Lens repository must provide `HOMEBREW_TAP_TOKEN`, scoped to release, branch and pull-request writes
+in `wildfoundry/homebrew-tap`, plus the repository variables `HOMEBREW_TAP_REPOSITORY` and
+`HOMEBREW_FORMULA_NAME`. The tap PR is reviewed and merged only after its required formula analysis
+check passes. A tag is not complete until `brew install wildfoundry/tap/dataplicity-lens`, `brew upgrade
 dataplicity-lens`, and `brew uninstall dataplicity-lens` pass on both macOS architectures.

@@ -1,0 +1,160 @@
+name: Update Homebrew tap
+
+"on":
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Release version (for example 0.3.0 or v0.3.0)"
+        required: true
+        type: string
+      tap_repository:
+        description: "Target tap repository (owner/repo)"
+        required: false
+        type: string
+      formula_name:
+        description: "Formula filename without .rb"
+        required: false
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: "homebrew-tap-${{ github.event.release.tag_name || inputs.version }}"
+  cancel-in-progress: false
+
+jobs:
+  update-tap:
+    name: Open tap PR
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+      - name: Resolve release metadata
+        id: release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SOURCE_REPO: ${{ github.repository }}
+          RELEASE_TAG: ${{ github.event.release.tag_name || inputs.version }}
+        run: |
+          set -euo pipefail
+          tag="$RELEASE_TAG"
+          [[ "$tag" == v* ]] || tag="v${tag}"
+          version="${tag#v}"
+          release_json="$(gh api "repos/${SOURCE_REPO}/releases/tags/${tag}")"
+          for target in aarch64-apple-darwin x86_64-apple-darwin; do
+            asset="dataplicity-lens-v${version}-${target}.tar.gz"
+            jq -e --arg name "$asset" '.assets[] | select(.name == $name)' <<<"$release_json" >/dev/null
+          done
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+      - name: Resolve tap metadata
+        id: tap
+        env:
+          TAP_REPOSITORY_INPUT: ${{ inputs.tap_repository }}
+          FORMULA_NAME_INPUT: ${{ inputs.formula_name }}
+          TAP_REPOSITORY_VAR: ${{ vars.HOMEBREW_TAP_REPOSITORY }}
+          FORMULA_NAME_VAR: ${{ vars.HOMEBREW_FORMULA_NAME }}
+        run: |
+          set -euo pipefail
+          echo "tap_repository=${TAP_REPOSITORY_INPUT:-${TAP_REPOSITORY_VAR:-wildfoundry/homebrew-tap}}" >> "$GITHUB_OUTPUT"
+          echo "formula_name=${FORMULA_NAME_INPUT:-${FORMULA_NAME_VAR:-dataplicity-lens}}" >> "$GITHUB_OUTPUT"
+      - name: Download and verify macOS release assets
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ steps.release.outputs.tag }}
+          VERSION: ${{ steps.release.outputs.version }}
+        run: |
+          set -euo pipefail
+          mkdir -p dist/homebrew
+          for target in aarch64-apple-darwin x86_64-apple-darwin; do
+            gh release download "$RELEASE_TAG" \
+              --repo "$GITHUB_REPOSITORY" \
+              --pattern "dataplicity-lens-v${VERSION}-${target}.tar.gz" \
+              --dir dist/homebrew \
+              --clobber
+          done
+          (cd dist/homebrew && sha256sum *.tar.gz > SHA256SUMS)
+      - name: Validate tap token
+        env:
+          TAP_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+        run: |
+          set -euo pipefail
+          if [[ -z "$TAP_TOKEN" ]]; then
+            echo "Missing required repository secret: HOMEBREW_TAP_TOKEN" >&2
+            exit 1
+          fi
+      - name: Publish public Homebrew assets
+        env:
+          GH_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+          TAP_REPOSITORY: ${{ steps.tap.outputs.tap_repository }}
+          VERSION: ${{ steps.release.outputs.version }}
+        run: |
+          set -euo pipefail
+          tap_tag="dataplicity-lens-v${VERSION}"
+          assets=(dist/homebrew/*.tar.gz)
+          if gh release view "$tap_tag" --repo "$TAP_REPOSITORY" >/dev/null 2>&1; then
+            gh release upload "$tap_tag" "${assets[@]}" --clobber --repo "$TAP_REPOSITORY"
+          else
+            gh release create "$tap_tag" "${assets[@]}" \
+              --repo "$TAP_REPOSITORY" \
+              --title "Dataplicity Lens v${VERSION}" \
+              --notes "Signed and notarized macOS archives for the Dataplicity Lens Homebrew formula."
+          fi
+      - name: Checkout tap repository
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          repository: ${{ steps.tap.outputs.tap_repository }}
+          token: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+          path: homebrew-tap
+          persist-credentials: true
+      - name: Update formula
+        id: formula
+        env:
+          FORMULA_NAME: ${{ steps.tap.outputs.formula_name }}
+          HOMEBREW_TAP_REPOSITORY: ${{ steps.tap.outputs.tap_repository }}
+          VERSION: ${{ steps.release.outputs.version }}
+        run: |
+          set -euo pipefail
+          formula="homebrew-tap/Formula/${FORMULA_NAME}.rb"
+          scripts/generate-homebrew-formula.sh "$VERSION" dist/homebrew/SHA256SUMS "$formula"
+          ruby -c "$formula"
+          if [[ -z "$(git -C homebrew-tap status --porcelain -- "Formula/${FORMULA_NAME}.rb")" ]]; then
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "changed=true" >> "$GITHUB_OUTPUT"
+          fi
+      - name: Create pull request in tap
+        if: steps.formula.outputs.changed == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+          TAP_REPOSITORY: ${{ steps.tap.outputs.tap_repository }}
+          FORMULA_NAME: ${{ steps.tap.outputs.formula_name }}
+          VERSION: ${{ steps.release.outputs.version }}
+        run: |
+          set -euo pipefail
+          cd homebrew-tap
+          branch="chore/${FORMULA_NAME}-${VERSION}"
+          existing="$(gh pr list --repo "$TAP_REPOSITORY" --head "$branch" --state open --json number --jq '.[0].number // empty')"
+          if [[ -n "$existing" ]]; then
+            echo "PR already open: #${existing}"
+            exit 0
+          fi
+          if git ls-remote --exit-code --heads origin "$branch" >/dev/null; then
+            branch="${branch}-${GITHUB_RUN_ID}"
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git switch -c "$branch"
+          git add "Formula/${FORMULA_NAME}.rb"
+          git commit -m "Bump ${FORMULA_NAME} to ${VERSION}"
+          git push -u origin "$branch"
+          gh pr create \
+            --repo "$TAP_REPOSITORY" \
+            --base main \
+            --head "$branch" \
+            --title "Bump ${FORMULA_NAME} to ${VERSION}" \
+            --body "Updates the formula to the verified, signed and notarized Dataplicity Lens v${VERSION} macOS archives."
