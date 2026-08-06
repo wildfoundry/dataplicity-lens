@@ -82,12 +82,14 @@ Prerequisites:
 Install and open Lens:
 
 ```sh
-brew install wildfoundry/tap/dataplicity-lens
+brew tap wildfoundry/tap
+brew install dataplicity-lens
+lens --version
 lens
 ```
 
 Homebrew verifies the archive digest before installing it. Rust and Apple's developer tools are not
-required for this binary installation.
+required for this binary installation. The current published release reports `lens 0.3.0`.
 
 Open the overview, then check the local machine:
 
@@ -108,8 +110,9 @@ the entire snapshot.
 Upgrade to the newest published version or remove the suite with:
 
 ```sh
+brew update
 brew upgrade dataplicity-lens
-lens-top --version
+lens --version
 brew uninstall dataplicity-lens
 ```
 

@@ -45,5 +45,5 @@ Homebrew publication follows the `dataplicity-cli` repository's release-triggere
 Lens repository must provide `HOMEBREW_TAP_TOKEN`, scoped to release, branch and pull-request writes
 in `wildfoundry/homebrew-tap`, plus the repository variables `HOMEBREW_TAP_REPOSITORY` and
 `HOMEBREW_FORMULA_NAME`. The tap PR is reviewed and merged only after its required formula analysis
-check passes. A tag is not complete until `brew install wildfoundry/tap/dataplicity-lens`, `brew upgrade
-dataplicity-lens`, and `brew uninstall dataplicity-lens` pass on both macOS architectures.
+check passes. A tag is not complete until adding `wildfoundry/tap`, installing `dataplicity-lens`,
+upgrading it and uninstalling it pass on both macOS architectures.
