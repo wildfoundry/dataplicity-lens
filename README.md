@@ -46,7 +46,7 @@ and musl archives for other Linux systems.
 
 ### macOS with Homebrew
 
-Install Homebrew if it is not already present, then install the signed release from WildFoundry's
+Install Homebrew if it is not already present, then install the release from WildFoundry's
 tap:
 
 ```sh
@@ -54,8 +54,8 @@ brew install wildfoundry/tap/dataplicity-lens
 lens
 ```
 
-The formula selects the notarized Apple Silicon or Intel archive for the Mac; it does not compile
-Rust locally. Homebrew verifies the published SHA-256 digest before installation.
+The formula selects the native Apple Silicon or Intel archive for the Mac; it does not compile Rust
+locally. Homebrew verifies the published SHA-256 digest before installation.
 
 Run Lens as your normal account; it does not need `sudo`. Start with the overview, then open the
 specialist view you need:

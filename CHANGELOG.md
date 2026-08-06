@@ -27,8 +27,8 @@ versioning once the first public release is tagged.
 - A `lens-hardware` view for device identity, firmware, Linux thermal/hwmon sensors, Raspberry Pi
   power and throttling status, and USB/serial inventory on Linux and macOS.
 - Live RX/TX rate charts in `lens-net`, with per-interface activity and responsive compact output.
-- CI-only Developer ID signing and Apple notarization for native Apple Silicon and Intel release
-  archives, plus the same release-triggered protected Homebrew tap PR flow used by `dataplicity-cli`.
+- Native Apple Silicon and Intel release archives plus the same release-triggered, checksummed and
+  protected Homebrew tap PR flow used by `dataplicity-cli`.
 
 ### Changed
 

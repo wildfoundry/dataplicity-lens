@@ -9,11 +9,8 @@
    CycloneDX SBOMs, SHA-256 checksums and provenance attestations where the repository plan permits.
 6. Native packages are installed and smoke-tested before publication.
 7. ARMv6 hard-float Raspberry Pi binaries are run under emulation and their `armhf` packages are inspected.
-8. On tagged releases, the macOS jobs import the Developer ID certificate from Actions secrets,
-   sign every executable, submit both architecture archives to Apple's notary service and fail closed
-   if signing or notarization is unavailable.
-9. The release job publishes only after all architecture jobs succeed.
-10. The separate `Update Homebrew tap` workflow runs when the GitHub Release is published, mirrors
+8. The release job publishes only after all architecture jobs succeed.
+9. The separate `Update Homebrew tap` workflow runs when the GitHub Release is published, mirrors
     the verified macOS archives to the public tap release, recomputes their checksums, and opens a
     pull request against the protected tap branch.
 
@@ -43,15 +40,6 @@ time. No locally compiled artifact may be uploaded as a release asset.
 
 Release jobs receive only `contents: write`, `id-token: write` and `attestations: write`. Pull-request
 jobs remain read-only. Third-party actions are pinned to immutable commit SHAs.
-
-The `release-signing` environment must provide these Actions secrets; signing material is never read from a
-maintainer workstation by the release workflow:
-
-- `MACOS_CERTIFICATE_P12_BASE64`
-- `MACOS_CERTIFICATE_PASSWORD`
-- `APPLE_NOTARY_KEY_P8_BASE64`
-- `APPLE_NOTARY_KEY_ID`
-- `APPLE_NOTARY_ISSUER_ID`
 
 Homebrew publication follows the `dataplicity-cli` repository's release-triggered tap workflow. The
 Lens repository must provide `HOMEBREW_TAP_TOKEN`, scoped to release, branch and pull-request writes

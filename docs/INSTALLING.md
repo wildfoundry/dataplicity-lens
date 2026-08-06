@@ -72,7 +72,7 @@ binaries together during an upgrade.
 ## macOS with Homebrew
 
 The WildFoundry tap installs all nine applications, their manual pages and shell completions from a
-signed and notarized release archive. Apple Silicon and Intel Macs receive their native build.
+checksummed CI-built release archive. Apple Silicon and Intel Macs receive their native build.
 
 Prerequisites:
 
