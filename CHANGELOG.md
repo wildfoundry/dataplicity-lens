@@ -7,6 +7,8 @@ versioning once the first public release is tagged.
 
 ### Added
 
+- The 1.x platform/support policy and a threat model covering local data, actions, hostile input,
+  privilege boundaries and release provenance.
 - Operator documentation for platform compatibility, the command-line and exit-status contract,
   structured-output fields, package verification and upgrades, and practical troubleshooting.
 - Shared Linux process, history, diagnostics, terminal UI and output architecture.

@@ -60,3 +60,6 @@ Colour defaults to automatic background detection; use `--theme light`, `--theme
 `LENS_THEME` environment variable when a browser terminal, serial link or multiplexer does not expose
 reliable colour metadata. `lens-top --ascii` is available where Unicode drawing characters are not
 rendered correctly.
+
+Minimum tier-1 operating-system releases, the stable 1.x surface and deprecation rules are defined
+in [`SUPPORT_POLICY.md`](SUPPORT_POLICY.md).

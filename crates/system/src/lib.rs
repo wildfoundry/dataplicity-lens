@@ -1690,6 +1690,22 @@ fn truncate_text(text: &str, width: usize) -> String {
     value
 }
 
+fn mask_identifier(value: &str) -> String {
+    let visible: String = value
+        .chars()
+        .rev()
+        .take(4)
+        .collect::<String>()
+        .chars()
+        .rev()
+        .collect();
+    if value.chars().count() <= 4 {
+        "•".repeat(value.chars().count())
+    } else {
+        format!("••••{visible}")
+    }
+}
+
 fn viewport_start(selected: usize, length: usize, capacity: usize) -> usize {
     if capacity == 0 || length <= capacity {
         0
@@ -2536,7 +2552,12 @@ fn render_net_specialist(
             if let Some(sim) = &modem.sim {
                 writeln!(out, "  {} {}", ink("SIM", Ink::Label, colour), sim.path)?;
                 if let Some(iccid) = &sim.iccid {
-                    writeln!(out, "  {} {iccid}", ink("ICCID", Ink::Label, colour))?;
+                    writeln!(
+                        out,
+                        "  {} {}",
+                        ink("ICCID", Ink::Label, colour),
+                        mask_identifier(iccid)
+                    )?;
                 }
             }
         }
@@ -5926,6 +5947,56 @@ fn diagnose(snapshot: &SystemSnapshot) -> Vec<SystemFinding> {
             suggested_actions: vec!["Inspect preceding service logs with lens-logs.".into()],
         });
     }
+    for modem in &snapshot.cellular_modems {
+        let label = modem
+            .model
+            .as_deref()
+            .or(modem.manufacturer.as_deref())
+            .unwrap_or(&modem.path);
+        if modem.state.eq_ignore_ascii_case("failed") {
+            findings.push(SystemFinding {
+                id: format!("cellular.failed.{}", modem.path),
+                severity: Severity::Critical,
+                title: "Cellular modem failed".into(),
+                summary: format!("{label} is reported in a failed state."),
+                evidence: vec![lens_model::Evidence {
+                    label: "state".into(),
+                    value: modem.state.clone(),
+                    unit: None,
+                }],
+                related_entities: vec![EntityId::Host(snapshot.host.hostname.clone())],
+                suggested_actions: vec![
+                    "Open lens-net and inspect the modem, SIM and registration state.".into(),
+                    "Review ModemManager logs before reconnecting or replacing hardware.".into(),
+                ],
+            });
+        } else if modem
+            .signal_quality_percent
+            .is_some_and(|quality| quality <= 15)
+            && ["registered", "connected"]
+                .iter()
+                .any(|state| modem.state.to_ascii_lowercase().contains(state))
+        {
+            let quality = modem.signal_quality_percent.unwrap_or_default();
+            findings.push(SystemFinding {
+                id: format!("cellular.weak-signal.{}", modem.path),
+                severity: Severity::Attention,
+                title: "Weak cellular signal".into(),
+                summary: format!("{label} reports {quality}% signal quality."),
+                evidence: vec![lens_model::Evidence {
+                    label: "signal quality".into(),
+                    value: quality.to_string(),
+                    unit: Some("percent".into()),
+                }],
+                related_entities: vec![EntityId::Host(snapshot.host.hostname.clone())],
+                suggested_actions: vec![
+                    "Open lens-net and confirm access technology, operator and registration state."
+                        .into(),
+                    "Check antenna placement and compare signal quality over time.".into(),
+                ],
+            });
+        }
+    }
     for sensor in snapshot.temperatures.iter().filter(|sensor| {
         sensor.temperature_c
             >= sensor
@@ -6319,7 +6390,9 @@ fn render_plain(view: View, snapshot: &SystemSnapshot, out: &mut dyn Write) -> R
                         writeln!(
                             out,
                             "  SIM {}{}",
-                            sim.iccid.as_deref().unwrap_or(&sim.path),
+                            sim.iccid
+                                .as_deref()
+                                .map_or_else(|| sim.path.clone(), mask_identifier),
                             sim.operator_name
                                 .as_deref()
                                 .map_or_else(String::new, |name| format!(" · {name}"))
@@ -6878,6 +6951,34 @@ mod tests {
         assert_eq!(
             key_values(modem, "modem.generic.access-technologies.value["),
             ["lte"]
+        );
+    }
+
+    #[test]
+    fn masks_cellular_identifiers_in_human_output() {
+        assert_eq!(mask_identifier("8944500000000012345"), "••••2345");
+        assert_eq!(mask_identifier("123"), "•••");
+    }
+
+    #[test]
+    fn diagnoses_failed_and_weak_cellular_modems() {
+        let mut failed = demo_snapshot();
+        failed.cellular_modems[0].state = "failed".into();
+        failed.findings = diagnose(&failed);
+        assert!(
+            failed
+                .findings
+                .iter()
+                .any(|finding| finding.id.starts_with("cellular.failed."))
+        );
+
+        let mut weak = demo_snapshot();
+        weak.cellular_modems[0].signal_quality_percent = Some(12);
+        weak.findings = diagnose(&weak);
+        assert!(
+            weak.findings
+                .iter()
+                .any(|finding| finding.id.starts_with("cellular.weak-signal."))
         );
     }
 

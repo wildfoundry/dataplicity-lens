@@ -287,9 +287,11 @@ including its data sources, controls, filters and structured output fields.
 - [Install, upgrade and remove](docs/INSTALLING.md)
 - [Practical operations guide](docs/OPERATIONS_GUIDE.md)
 - [Platform compatibility](docs/COMPATIBILITY.md)
+- [Support and 1.x compatibility policy](docs/SUPPORT_POLICY.md)
 - [Command-line and automation contract](docs/CLI_CONTRACT.md)
 - [Structured output reference](docs/JSON_SCHEMA.md)
 - [Troubleshooting and support information](docs/TROUBLESHOOTING.md)
+- [Threat model](docs/THREAT_MODEL.md)
 - [Architecture](docs/ARCHITECTURE.md)
 - [Release procedure](docs/RELEASING.md)
 
