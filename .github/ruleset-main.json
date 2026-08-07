@@ -2,25 +2,36 @@
   "name": "Protect main",
   "target": "branch",
   "enforcement": "active",
+  "bypass_actors": [],
   "conditions": {
     "ref_name": {
-      "include": ["refs/heads/main"],
+      "include": [
+        "refs/heads/main"
+      ],
       "exclude": []
     }
   },
   "rules": [
-    { "type": "deletion" },
-    { "type": "non_fast_forward" },
-    { "type": "required_linear_history" },
+    {
+      "type": "deletion"
+    },
+    {
+      "type": "non_fast_forward"
+    },
+    {
+      "type": "required_linear_history"
+    },
     {
       "type": "pull_request",
       "parameters": {
-        "dismiss_stale_reviews_on_push": false,
-        "require_code_owner_review": false,
-        "require_last_push_approval": false,
-        "required_approving_review_count": 0,
+        "dismiss_stale_reviews_on_push": true,
+        "require_code_owner_review": true,
+        "require_last_push_approval": true,
+        "required_approving_review_count": 1,
         "required_review_thread_resolution": true,
-        "allowed_merge_methods": ["squash"]
+        "allowed_merge_methods": [
+          "squash"
+        ]
       }
     },
     {
@@ -29,17 +40,39 @@
         "strict_required_status_checks_policy": true,
         "do_not_enforce_on_create": false,
         "required_status_checks": [
-          { "context": "Locked dependencies" },
-          { "context": "Format, lint, test and document" },
-          { "context": "Licences and advisories" },
-          { "context": "Build x86_64-unknown-linux-gnu" },
-          { "context": "Build aarch64-unknown-linux-gnu" },
-          { "context": "Build arm-unknown-linux-gnueabihf" },
-          { "context": "Build x86_64-unknown-linux-musl" },
-          { "context": "Build aarch64-unknown-linux-musl" },
-          { "context": "Build arm-unknown-linux-musleabihf" },
-          { "context": "macOS Apple-Silicon native suite" },
-          { "context": "macOS Intel native suite" }
+          {
+            "context": "Locked dependencies"
+          },
+          {
+            "context": "Format, lint, test and document"
+          },
+          {
+            "context": "Licences and advisories"
+          },
+          {
+            "context": "Build x86_64-unknown-linux-gnu"
+          },
+          {
+            "context": "Build aarch64-unknown-linux-gnu"
+          },
+          {
+            "context": "Build arm-unknown-linux-gnueabihf"
+          },
+          {
+            "context": "Build x86_64-unknown-linux-musl"
+          },
+          {
+            "context": "Build aarch64-unknown-linux-musl"
+          },
+          {
+            "context": "Build arm-unknown-linux-musleabihf"
+          },
+          {
+            "context": "macOS Apple-Silicon native suite"
+          },
+          {
+            "context": "macOS Intel native suite"
+          }
         ]
       }
     }
