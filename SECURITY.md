@@ -9,7 +9,9 @@ releases do not receive separate security updates.
 ## Reporting a vulnerability
 
 Do not open a public issue for a suspected vulnerability. Report it privately through GitHub's
-security advisory flow for this repository. Include affected versions, reproduction steps, impact
+security advisory flow for this repository:
+
+https://github.com/wildfoundry/dataplicity-lens/security/advisories/new Include affected versions, reproduction steps, impact
 and any known mitigation. Do not include credentials, private keys or system data that is not needed
 to understand the report.
 
