@@ -14,6 +14,11 @@ access still require administrator action in GitHub when they change.
 - Private vulnerability reporting enabled
 - GitHub Pages: workflow-built from `site/`, custom domain `lens.dataplicity.com`
 
+## Release automation tokens
+
+Cross-repo GitHub credentials used by Actions must belong to `dataplicity-release-bot`. See
+`.github/RELEASE_TOKENS.md`. Workflows refuse personal-account PATs.
+
 ## Access (no public write)
 
 - Organisation default repository permission: **none**
