@@ -87,23 +87,6 @@ jobs:
             echo "Missing required repository secret: HOMEBREW_TAP_TOKEN" >&2
             exit 1
           fi
-      - name: Publish public Homebrew assets
-        env:
-          GH_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
-          TAP_REPOSITORY: ${{ steps.tap.outputs.tap_repository }}
-          VERSION: ${{ steps.release.outputs.version }}
-        run: |
-          set -euo pipefail
-          tap_tag="dataplicity-lens-v${VERSION}"
-          assets=(dist/homebrew/*.tar.gz)
-          if gh release view "$tap_tag" --repo "$TAP_REPOSITORY" >/dev/null 2>&1; then
-            gh release upload "$tap_tag" "${assets[@]}" --clobber --repo "$TAP_REPOSITORY"
-          else
-            gh release create "$tap_tag" "${assets[@]}" \
-              --repo "$TAP_REPOSITORY" \
-              --title "Dataplicity Lens v${VERSION}" \
-              --notes "CI-built macOS archives for the Dataplicity Lens Homebrew formula."
-          fi
       - name: Checkout tap repository
         uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:
@@ -115,7 +98,7 @@ jobs:
         id: formula
         env:
           FORMULA_NAME: ${{ steps.tap.outputs.formula_name }}
-          HOMEBREW_TAP_REPOSITORY: ${{ steps.tap.outputs.tap_repository }}
+          HOMEBREW_SOURCE_REPOSITORY: ${{ github.repository }}
           VERSION: ${{ steps.release.outputs.version }}
         run: |
           set -euo pipefail
@@ -157,4 +140,4 @@ jobs:
             --base main \
             --head "$branch" \
             --title "Bump ${FORMULA_NAME} to ${VERSION}" \
-            --body "Updates the formula to the verified Dataplicity Lens v${VERSION} macOS archives."
+            --body "Updates the formula to the verified Dataplicity Lens v${VERSION} macOS archives published on the Lens GitHub Release."

@@ -17,14 +17,15 @@ printf '%s  %s\n' "$intel_sha" "dataplicity-lens-v0.3.0-x86_64-apple-darwin.tar.
 ruby -c "$formula" >/dev/null
 grep -q "dataplicity-lens-v0.3.0-aarch64-apple-darwin.tar.gz" "$formula"
 grep -q "dataplicity-lens-v0.3.0-x86_64-apple-darwin.tar.gz" "$formula"
+grep -q "github.com/wildfoundry/dataplicity-lens/releases/download/v0.3.0/" "$formula"
 grep -q "$arm_sha" "$formula"
 grep -q "$intel_sha" "$formula"
 grep -q 'bin.install Dir\["bin/\*"\]' "$formula"
 grep -q 'assert_match version.to_s' "$formula"
 
-HOMEBREW_TAP_REPOSITORY=example/custom-tap \
+HOMEBREW_SOURCE_REPOSITORY=example/custom-lens \
   "$repo/scripts/generate-homebrew-formula.sh" 0.3.0 "$manifest" "$work/custom.rb"
-grep -q 'github.com/example/custom-tap/releases/download' "$work/custom.rb"
+grep -q 'github.com/example/custom-lens/releases/download/v0.3.0/' "$work/custom.rb"
 
 if "$repo/scripts/generate-homebrew-formula.sh" 0.3.0 /dev/null "$work/invalid.rb" 2>/dev/null; then
   echo "formula generation accepted a manifest without release archives" >&2
