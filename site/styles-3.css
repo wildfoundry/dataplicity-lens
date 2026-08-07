@@ -10,6 +10,7 @@
 }
 .project-band-inner { display: grid; grid-template-columns: 1fr auto; gap: 40px; align-items: center; padding: 48px 0; }
 .project-band p { max-width: 700px; margin: 12px 0 0; color: var(--muted); }
+.project-band-actions { display: flex; flex-wrap: wrap; gap: 12px; justify-content: flex-end; }
 
 .page-hero { padding: 86px 0 58px; border-bottom: 1px solid var(--line); }
 .page-hero h1 { max-width: 900px; font-size: clamp(2.8rem, 6vw, 5.6rem); }
