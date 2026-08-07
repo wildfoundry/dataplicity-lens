@@ -1,37 +1,62 @@
 # Dataplicity Lens
 
-[![CI](https://github.com/wildfoundry/dataplicity-lens/actions/workflows/ci.yml/badge.svg)](https://github.com/wildfoundry/dataplicity-lens/actions/workflows/ci.yml)
-[![Apache 2.0](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
+[![CI](https://img.shields.io/github/actions/workflow/status/wildfoundry/dataplicity-lens/ci.yml?branch=main&label=CI)](https://github.com/wildfoundry/dataplicity-lens/actions/workflows/ci.yml)
+[![Release](https://img.shields.io/github/v/release/wildfoundry/dataplicity-lens?display_name=tag)](https://github.com/wildfoundry/dataplicity-lens/releases)
+[![License](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
+[![Platforms](https://img.shields.io/badge/platform-Linux%20%7C%20macOS%20%7C%20Raspberry%20Pi-0B3D32)](https://lens.dataplicity.com/compatibility.html)
+[![Docs](https://img.shields.io/badge/docs-lens.dataplicity.com-1F6F5B)](https://lens.dataplicity.com/)
 
-**Processes, services, logs, storage, networking and hardware in one terminal toolkit.**
+**Open-source terminal toolkit for Linux and macOS system inspection.**
 
-Lens brings the system information we use most often into a consistent set of terminal commands for
-Linux and macOS. Start with a host overview, or go directly to processes, services, logs, storage,
-networking, hardware, system context or health checks.
+Dataplicity Lens is a local CLI suite for understanding a host in focus: processes and resource use,
+systemd / launchd services, journal and file logs, disk and mounts, network interfaces and listeners,
+hardware inventory, system context, and health findings — in one consistent terminal experience.
 
-This repository ships nine commands: **`lens`**, **`lens-top`**, **`lens-services`**, **`lens-logs`**,
-**`lens-disk`**, **`lens-net`**, **`lens-hardware`**, **`lens-system`** and **`lens-health`**. They share
-the same host snapshot and process and service identities.
-
-## Why we built Lens
-
-At WildFoundry, we use Linux every day to build and support [Dataplicity](https://www.dataplicity.com/).
-Lens began as a tool for our own team: a quicker, more consistent way to inspect processes, services,
-logs, storage and networking while working on real systems.
-
-Lens is not a new service or a commercial add-on. Dataplicity remains our core product, and Lens works
-independently of it. We are publishing Lens because it is already useful to us, and making it available
-may also save time for Dataplicity customers and anyone else looking after Linux or macOS systems.
+Built for Raspberry Pi OS, Debian, Ubuntu, other Linux systems, and macOS. No daemon, no cloud account,
+no telemetry. Install a package, run `lens`, and work with the machine in front of you.
 
 > **Making Linux make sense.**
 
+**Docs:** [lens.dataplicity.com](https://lens.dataplicity.com/) · **Install:** [install guide](https://lens.dataplicity.com/install.html) · **Releases:** [GitHub Releases](https://github.com/wildfoundry/dataplicity-lens/releases)
+
+---
+
+## Why Lens
+
+Linux already exposes the facts. Operators still juggle `top` / `htop`, `systemctl`, `journalctl`,
+`df`, `ip`, `lsusb`, and a dozen other formats. Lens brings that system information into one toolkit
+with shared process and service identities, so you can move from a noisy process to its service,
+recent logs, and listeners without starting over.
+
+Lens is maintained by [WildFoundry](https://www.dataplicity.com/) (the team behind Dataplicity). It is
+not a Dataplicity commercial add-on and works independently of Dataplicity. We publish it because we
+use it every day for real support work on Linux systems — including fleets of Raspberry Pi and gateway
+devices.
+
+## Features
+
+| Need | Command | What you get |
+| --- | --- | --- |
+| Host overview | `lens` | Cockpit summary of the machine |
+| Process monitor | `lens-top` | Live TUI process explorer (CPU, memory, I/O, state, signals) |
+| Services | `lens-services` | systemd / launchd state, restart loops, related processes |
+| Logs | `lens-logs` | Recent journal, unified log, and local file messages |
+| Storage | `lens-disk` | Block devices, filesystems, mounts, inodes, deleted-open files |
+| Networking | `lens-net` | Interfaces, routes, listeners, live receive/transmit charts |
+| Hardware | `lens-hardware` | Identity, temperatures, firmware, USB / serial inventory |
+| System context | `lens-system` | Clock / NTP, resolver, login identities, local certificates |
+| Health checks | `lens-health` | Findings with evidence and suggested follow-ups |
+
+Every specialist supports interactive terminal use plus one-shot **plain text**, **JSON**, and **JSON
+Lines** for scripts and scheduled checks. Flags that do not apply are rejected instead of silently
+ignored.
+
 ## Install
 
-### Raspberry Pi OS, Debian and Ubuntu
+### Raspberry Pi OS, Debian, and Ubuntu
 
-Download the package matching `dpkg --print-architecture` from
-[GitHub Releases](https://github.com/wildfoundry/dataplicity-lens/releases), then install it
-through `apt`:
+Download the `.deb` matching `dpkg --print-architecture` from
+[GitHub Releases](https://github.com/wildfoundry/dataplicity-lens/releases), then install with `apt`:
 
 ```sh
 dpkg --print-architecture
@@ -39,30 +64,30 @@ sudo apt install ./dataplicity-lens_<version>_<architecture>.deb
 lens
 ```
 
-Use `armhf` for 32-bit Raspberry Pi OS, `arm64` for 64-bit Raspberry Pi OS and ARM gateways, and
-`amd64` for Intel/AMD Debian or Ubuntu. Debian and RPM packages contain statically linked binaries,
-so they do not depend on the build machine's glibc version. The release also contains checksummed GNU
-and musl archives for other Linux systems.
+| Architecture | Typical systems |
+| --- | --- |
+| `armhf` | 32-bit Raspberry Pi OS |
+| `arm64` | 64-bit Raspberry Pi OS and ARM gateways |
+| `amd64` | Intel / AMD Debian and Ubuntu |
+
+Debian and RPM packages ship statically linked binaries, so they are not tied to the build machine's
+glibc. Releases also include checksummed GNU and musl archives for other Linux systems.
 
 ### macOS with Homebrew
-
-Install Homebrew if it is not already present, then install the release from WildFoundry's
-tap:
 
 ```sh
 brew tap wildfoundry/tap
 brew trust --formula wildfoundry/tap/dataplicity-lens
 brew install wildfoundry/tap/dataplicity-lens
 lens --version
-lens
 ```
 
-The formula selects the native Apple Silicon or Intel archive for the Mac; it does not compile Rust
-locally. Homebrew verifies the published SHA-256 digest before installation. The current published
-release reports `lens 0.3.0`.
+The formula installs a native Apple Silicon or Intel archive from GitHub Releases (no local Rust
+compile). Homebrew verifies the published SHA-256 digest before installation.
 
-Run Lens as your normal account; it does not need `sudo`. Start with the overview, then open the
-specialist view you need:
+### Quick start
+
+Run as your normal user — Lens does not need `sudo` to inspect the host:
 
 ```sh
 lens
@@ -76,19 +101,10 @@ lens-system --filter ntp
 lens-health --json
 ```
 
-Upgrade or remove the complete suite through Homebrew:
+Full package matrix, checksum verification, upgrades, and removal:
+[`docs/INSTALLING.md`](docs/INSTALLING.md) · [online install guide](https://lens.dataplicity.com/install.html)
 
-```sh
-brew update
-brew upgrade dataplicity-lens
-lens --version
-brew uninstall dataplicity-lens
-```
-
-See [`docs/INSTALLING.md`](docs/INSTALLING.md) for the package matrix, checksum verification, macOS
-prerequisites, removal and source builds.
-
-Contributors can build the full workspace with the pinned toolchain:
+Build from source (contributors):
 
 ```sh
 cargo build --release --locked --workspace
@@ -97,103 +113,61 @@ cargo build --release --locked --workspace
 
 ## Use
 
-Start with `lens` for a cockpit, or run a specialist directly. Each specialist supports `--once`,
-`--plain`, `--json`, `--filter` and `--limit`; logs additionally support `--service`, `--process`,
-`--severity`, `--since` and repeatable `--log-file`. `--once` prints one human-readable snapshot in
-a terminal; `--plain` explicitly selects that output format and also exits after one snapshot.
-Redirected output is plain automatically. The default limit is 1,000 rows per result type; pass
-`--limit 0` when you explicitly want every available row. Flags that do not apply to a specialist
-are rejected instead of being silently ignored.
+Start with `lens` for the cockpit, or open a specialist directly. Common flags across the suite:
 
-For practical fault-finding sequences, field interpretation and platform-specific behaviour, use
-the [operations guide](docs/OPERATIONS_GUIDE.md). The command pages on the documentation site cover
-every interactive view, filter, output mode, action and incomplete-data state in detail.
-
-The interactive cockpit draws the host and process summary first. Services, recent logs, storage and
-network details then load once in the background, so a slow platform command does not hold up the
-opening screen or normal navigation. Each specialist collects only the system data it displays, and
-individual operating-system commands time out instead of holding the whole tool open indefinitely.
-Interactive views follow the terminal as it is resized: larger windows show more rows and useful
-columns, while smaller windows hide secondary detail before navigation or primary values. Headers
-show the local clock, while host summaries retain system uptime. Press `!` to run a one-shot local
-diagnostic command in a responsive panel without leaving the live view.
+- `--once` / `--plain` — one human-readable snapshot (redirected stdout is plain automatically)
+- `--json` / `--jsonl` — structured output for automation
+- `--filter` / `--limit` — narrow results (`--limit 0` returns every available row)
+- Logs also support `--service`, `--process`, `--severity`, `--since`, and repeatable `--log-file`
 
 ```sh
-lens
 lens --once
 lens-services --service nginx
 lens-logs --since "1 hour ago" --severity error
-lens-logs --log-file /var/log/my-app.log --process worker
 lens-disk --filter /var
 lens-net --filter 443
 lens-hardware --filter serial
-lens-system --json
 lens-health --json
 ```
 
-When stdout is a terminal, running `lens-top` starts the interactive interface. `--once` suppresses
-the TUI and defaults to plain text; `--plain`, `--json` and `--jsonl` each select a one-shot format
-directly. Redirected output is plain automatically. An explicit `--interval` is honoured as the CPU
-measurement window for one-shot output as well as the refresh interval for the TUI.
+### Process explorer (`lens-top`)
+
+When stdout is a terminal, `lens-top` opens the interactive process monitor. Use `--once`, `--plain`,
+`--json`, or `--jsonl` for one-shot output.
 
 ```sh
 lens-top
-lens-top --plain
-lens-top --json
-lens-top --jsonl
-lens-top --once
-lens-top --interval 2s
-lens-top --sort cpu
-lens-top --sort memory
-lens-top --group tree
-lens-top --filter-user postgres
-lens-top --filter-name nginx
-lens-top --filter-service sshd
-lens-top --min-cpu 5
-lens-top --min-memory 1
-lens-top --limit 20
-lens-top --theme light
-lens-top --no-color
+lens-top --plain --sort memory --limit 20
+lens-top --json --filter-user postgres
+lens-top --filter-name nginx --min-cpu 5
+lens-top --group tree --theme light
 ```
-
-### Interactive keys
 
 | Key | Action |
 | --- | --- |
-| `Up` / `Down` or `j` / `k` | Move |
+| `↑` `↓` / `j` `k` | Move |
 | `Enter` | Inspect selected process |
-| `a` | Review and run a signal against the selected process |
-| `Esc` | Go back or close an overlay |
-| `/` | Search name, command, PID, user, service and cgroup |
+| `a` | Review and run a signal |
+| `/` | Search name, command, PID, user, service, cgroup |
 | `f` | Filter (`user:`, `state:`, `cpu:>`, `mem:>`, `name:`, `service:`) |
-| `s` | Choose sort key |
-| `g` | Cycle no grouping, process tree, user and service/cgroup |
-| `Tab` / `Shift+Tab` | Next or previous item |
-| `Space` | Pause or resume sampling |
-| `r` | Refresh immediately |
-| `!` | Open the responsive diagnostic shell |
-| `?` | Help |
-| `q` or `Ctrl+C` | Quit |
+| `s` / `g` | Sort / group |
+| `!` | Responsive diagnostic shell |
+| `?` / `q` | Help / quit |
 
-Process signals are available from the interactive `a` menu and as explicit one-shot commands. Lens resolves the process before acting,
-checks its PID/start-time identity again immediately before execution, requires `--yes`, and reports
-the observed result. Use `--dry-run` first:
+Process signals and systemd service actions use an explicit plan → confirm → result flow (`--dry-run`,
+then `--yes`). Lens does not run itself as root; system policy decides whether the account may act.
 
 ```sh
 lens-top --signal term --pid 4242 --dry-run
 lens-top --signal term --pid 4242 --yes
-```
-
-On systemd Linux, press `a` on a selected service, or use the CLI to start, stop, restart, enable or disable it with the same
-plan/confirm/result pattern. Lens does not run itself as root; system policy decides whether the
-invoking account may perform the action.
-
-```sh
 lens-services --action restart --target nginx.service --dry-run
 lens-services --action restart --target nginx.service --yes
 ```
 
-## Plain and structured output
+Practical fault-finding sequences: [`docs/OPERATIONS_GUIDE.md`](docs/OPERATIONS_GUIDE.md) ·
+[suite overview](https://lens.dataplicity.com/lens-suite.html)
+
+## Plain text and JSON
 
 ```sh
 lens-top --plain --sort memory --limit 10
@@ -202,18 +176,15 @@ lens-top --jsonl --min-cpu 5
 ```
 
 JSON documents always include `schema_version`, an RFC 3339 UTC `generated_at` timestamp, host data,
-processes, findings, relationships and optional build metadata. Byte fields are bytes; rates are bytes
-per second; percentages use a `0..100` host scale and may exceed `100` for a multithreaded process
-using more than one logical CPU. Missing permission-limited fields are `null` or listed under
-`unavailable_fields`; they do not abort collection.
+processes, findings, relationships, and optional build metadata. Missing permission-limited fields are
+`null` or listed under `unavailable_fields` — they do not abort collection.
 
-The schema and stability policy are documented in [`docs/JSON_SCHEMA.md`](docs/JSON_SCHEMA.md). The
-one-shot, stream, exit-status and action rules are in
-[`docs/CLI_CONTRACT.md`](docs/CLI_CONTRACT.md).
+- Schema and stability: [`docs/JSON_SCHEMA.md`](docs/JSON_SCHEMA.md)
+- CLI, streaming, exit status, and actions: [`docs/CLI_CONTRACT.md`](docs/CLI_CONTRACT.md)
 
 ## Configuration
 
-No configuration is required. Lens loads, in increasing precedence:
+No configuration is required. Precedence, lowest to highest:
 
 1. Built-in defaults
 2. `$XDG_CONFIG_HOME/dataplicity-lens/config.toml` or `~/.config/dataplicity-lens/config.toml`
@@ -224,87 +195,54 @@ No configuration is required. Lens loads, in increasing precedence:
 lens-top --print-default-config
 ```
 
-Lens normally infers a light or dark background from `COLORFGBG` and chooses a contrasting palette.
-Some serial and browser terminals do not expose that metadata. Use `--theme light` or `--theme dark`
-when needed; `LENS_THEME=light` (or `dark`) applies the same override to the complete suite. Lens
-continues to use the terminal's own background rather than painting over it.
+Theme: Lens infers light/dark from `COLORFGBG` when available. Override with `--theme light|dark` or
+`LENS_THEME=light|dark` for the full suite.
 
-## Architecture
-
-The workspace keeps applications thin and gives shared crates real responsibilities:
+## Design
 
 ```text
-apps/lens*             Thin cockpit, process explorer and specialist entry points
-crates/system          Shared service, log, storage and network composition
-crates/model           Shared entities, snapshots, findings and relationships
-crates/core            Shared filtering, sorting, grouping and search grammar
+apps/lens*             Thin cockpit and specialist entry points
+crates/system          Shared service, log, storage, and network composition
+crates/model           Entities, snapshots, findings, relationships
+crates/core            Filtering, sorting, grouping, search grammar
 crates/platform-linux  Linux collection and kernel parsers
 crates/platform-macos  macOS collection and command parsers
-crates/history         Bounded deltas, trends and process appearance/disappearance
+crates/history         Bounded deltas and process appearance / disappearance
 crates/diagnostics     System checks and findings
-crates/output          Plain, JSON and JSON Lines contracts
-crates/ui              Shared terminal shell, tables, overlays and detail views
+crates/output          Plain, JSON, and JSON Lines contracts
+crates/ui              Shared terminal shell, tables, overlays
 ```
 
-Collection, diagnostics and rendering do not duplicate one another. A process identity includes both
-PID and start ticks so PID reuse cannot silently join unrelated histories. See
-[`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md).
+- **Local and private** — no root requirement by default, no network connection, no Dataplicity
+  account, nothing sent off the host
+- **Fast** — bounded history, timed-out OS commands, responsive interactive views over SSH and serial
+- **Safe actions** — inspect first; re-check process identity before signals or service changes
 
-Platform and namespace differences are summarized in
-[`docs/COMPATIBILITY.md`](docs/COMPATIBILITY.md). Practical failure modes and the information to
-include in a useful issue are in [`docs/TROUBLESHOOTING.md`](docs/TROUBLESHOOTING.md).
-
-## Performance
-
-Lens bounds every history buffer, caches UID lookups, avoids environment-variable reads, does not scan
-process file descriptors beyond counting directory entries, and tolerates processes disappearing
-between reads. Criterion benchmarks cover filtering and sorting 10,000 processes. The design targets
-sub-100 ms startup and smooth one-second refreshes; actual measurements are tracked in
-[`docs/PERFORMANCE.md`](docs/PERFORMANCE.md) rather than claimed without evidence.
-
-## Security and privacy
-
-Lens needs no root account, daemon, setuid binary, network connection, Dataplicity account or
-cloud service. It does not read process environments by default and sends nothing off the host.
-Normal permission restrictions are preserved and shown as unavailable data.
-
-Release builds use locked dependencies, immutable action references, licence and advisory checks,
-SBOMs, checksums and package smoke tests. See [`SECURITY.md`](SECURITY.md) and
-[`docs/RELEASING.md`](docs/RELEASING.md).
-
-## Shipped suite
-
-- `lens-services` — navigable service state, restart loops and related processes
-- `lens-logs` — a navigable recent-message view, repeated-message folding and service/severity/time filters
-- `lens-disk` — navigable block devices, filesystems, mounts, inodes and deleted-open files
-- `lens-net` — live receive/transmit charts, navigable interfaces, routes and listener ownership
-- `lens-hardware` — identity, temperatures, firmware status and USB/serial inventory
-- `lens-system` — clock/NTP, resolver, login identities and locally managed certificate metadata
-- `lens-health` — selectable findings with the evidence and suggested checks behind each warning
-
-Each specialist is documented on the [Lens documentation site](https://lens.dataplicity.com/lens-suite.html),
-including its data sources, controls, filters and structured output fields.
+More: [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) · [`PHILOSOPHY.md`](PHILOSOPHY.md) ·
+[`SECURITY.md`](SECURITY.md)
 
 ## Documentation
 
-- [Install, upgrade and remove](docs/INSTALLING.md)
-- [Practical operations guide](docs/OPERATIONS_GUIDE.md)
-- [Platform compatibility](docs/COMPATIBILITY.md)
-- [Support and 1.x compatibility policy](docs/SUPPORT_POLICY.md)
-- [Command-line and automation contract](docs/CLI_CONTRACT.md)
-- [Structured output reference](docs/JSON_SCHEMA.md)
-- [Troubleshooting and support information](docs/TROUBLESHOOTING.md)
-- [Threat model](docs/THREAT_MODEL.md)
-- [Architecture](docs/ARCHITECTURE.md)
-- [Release procedure](docs/RELEASING.md)
+| Topic | Link |
+| --- | --- |
+| Documentation site | [lens.dataplicity.com](https://lens.dataplicity.com/) |
+| Install, upgrade, remove | [docs/INSTALLING.md](docs/INSTALLING.md) |
+| Operations guide | [docs/OPERATIONS_GUIDE.md](docs/OPERATIONS_GUIDE.md) |
+| Platform compatibility | [docs/COMPATIBILITY.md](docs/COMPATIBILITY.md) |
+| CLI and automation contract | [docs/CLI_CONTRACT.md](docs/CLI_CONTRACT.md) |
+| JSON schema | [docs/JSON_SCHEMA.md](docs/JSON_SCHEMA.md) |
+| Troubleshooting | [docs/TROUBLESHOOTING.md](docs/TROUBLESHOOTING.md) |
+| Support policy | [docs/SUPPORT_POLICY.md](docs/SUPPORT_POLICY.md) |
+| Threat model | [docs/THREAT_MODEL.md](docs/THREAT_MODEL.md) |
+| Releasing | [docs/RELEASING.md](docs/RELEASING.md) |
 
 ## Contribute
 
 Read [`CONTRIBUTING.md`](CONTRIBUTING.md), run the full local check suite, and preserve the shared
-interaction and data contracts. Usage support goes through [GitHub Issues](SUPPORT.md); security
-reports must follow [`SECURITY.md`](SECURITY.md).
+interaction and data contracts. Usage support: [GitHub Issues](SUPPORT.md). Security reports:
+[`SECURITY.md`](SECURITY.md).
 
 ## Licence
 
-Licensed under the Apache License, Version 2.0. Copyright 2026 WildFoundry Ltd. See [`LICENSE`](LICENSE)
-and [`NOTICE`](NOTICE).
+Licensed under the Apache License, Version 2.0. Copyright 2026 WildFoundry Ltd.
+See [`LICENSE`](LICENSE) and [`NOTICE`](NOTICE).

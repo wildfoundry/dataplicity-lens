@@ -36,6 +36,9 @@ Cross-repo GitHub credentials used by Actions must belong to `dataplicity-releas
 - The complete Linux/macOS CI matrix
 - Linear history; no force pushes; no branch deletion
 
+Repository **admins** may bypass those PR requirements when merging a pull request
+(`bypass_mode: pull_request`). Direct pushes to `main` remain blocked.
+
 Apply or refresh with:
 
 ```sh
