@@ -5,6 +5,12 @@ versioning once the first public release is tagged.
 
 ## [Unreleased]
 
+### Changed
+
+- Homebrew install docs require `brew trust` for the third-party formula, matching `dataplicity-cli`.
+- The Homebrew tap formula now installs macOS archives directly from Lens GitHub Releases instead of
+  mirroring them onto the tap release.
+
 ## [0.3.0] - 2026-08-06
 
 ### Added

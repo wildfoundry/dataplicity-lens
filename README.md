@@ -51,7 +51,8 @@ tap:
 
 ```sh
 brew tap wildfoundry/tap
-brew install dataplicity-lens
+brew trust --formula wildfoundry/tap/dataplicity-lens
+brew install wildfoundry/tap/dataplicity-lens
 lens --version
 lens
 ```
