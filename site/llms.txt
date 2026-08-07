@@ -1,0 +1,66 @@
+# Dataplicity Lens
+
+> Dataplicity Lens is an open-source terminal toolkit for inspecting processes, services, logs, storage, networking, and hardware on Linux and macOS.
+
+## What Dataplicity Lens is
+
+Dataplicity Lens is a suite of local CLI tools that bring common system inspection into one consistent interface. Start with a host overview, then open specialist views for the detail you need.
+
+It is published by WildFoundry (the company behind Dataplicity). Lens works independently of Dataplicity and is not a cloud service, agent, or commercial add-on.
+
+License: Apache License 2.0.
+
+## What Dataplicity Lens is not
+
+- It is not Dataplicity the IoT device-management platform.
+- It does not require a Dataplicity account, agent, or network connection to inspect a local host.
+- It is not a remote-access, fleet-management, monitoring SaaS, or log-aggregation product.
+- It is not an installer or update system for firmware or operating systems.
+
+## Supported platforms
+
+- Linux (including Raspberry Pi OS / Debian / Ubuntu): x86-64, ARM64, and armhf.
+- macOS: Apple Silicon and Intel via Homebrew.
+- Install options: Debian packages, RPM packages, checksummed archives, and Homebrew (`brew tap wildfoundry/tap && brew install dataplicity-lens`).
+
+## Commands
+
+The suite ships nine commands that share the same host snapshot and process/service identities:
+
+- `lens` — host overview
+- `lens-top` — processes and resource use
+- `lens-services` — service state (systemd / launchd)
+- `lens-logs` — recent journal, unified log, and local file messages
+- `lens-disk` — storage and mounts
+- `lens-net` — interfaces, routes, and listeners
+- `lens-hardware` — hardware and attached devices
+- `lens-system` — clock/NTP, DNS, accounts, certificates, and related system context
+- `lens-health` — health-oriented checks
+
+Output modes include interactive terminal, plain text, JSON, and JSONL for scripts and scheduled checks.
+
+## Site pages
+
+- [Home](https://lens.dataplicity.com/)
+- [Install](https://lens.dataplicity.com/install.html)
+- [Suite overview](https://lens.dataplicity.com/lens-suite.html)
+- [lens overview](https://lens.dataplicity.com/lens.html)
+- [lens-top](https://lens.dataplicity.com/lens-top.html)
+- [lens-services](https://lens.dataplicity.com/lens-services.html)
+- [lens-logs](https://lens.dataplicity.com/lens-logs.html)
+- [lens-disk](https://lens.dataplicity.com/lens-disk.html)
+- [lens-net](https://lens.dataplicity.com/lens-net.html)
+- [lens-hardware](https://lens.dataplicity.com/lens-hardware.html)
+- [lens-system](https://lens.dataplicity.com/lens-system.html)
+- [lens-health](https://lens.dataplicity.com/lens-health.html)
+- [Architecture](https://lens.dataplicity.com/architecture.html)
+- [Compatibility](https://lens.dataplicity.com/compatibility.html)
+- [Command reference](https://lens.dataplicity.com/reference.html)
+- [Troubleshooting](https://lens.dataplicity.com/troubleshooting.html)
+
+## Related links
+
+- [GitHub repository](https://github.com/wildfoundry/dataplicity-lens)
+- [GitHub Releases](https://github.com/wildfoundry/dataplicity-lens/releases)
+- [Dataplicity product site](https://www.dataplicity.com/)
+- [Dataplicity documentation](https://docs.dataplicity.com/)
