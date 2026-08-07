@@ -13,6 +13,13 @@ REQUIRED = {
     "lens-logs.html", "lens-disk.html", "lens-net.html", "lens-hardware.html", "lens-system.html", "lens-health.html",
     "architecture.html", "404.html",
 }
+REQUIRED_SEARCH_FILES = {
+    "robots.txt",
+    "sitemap.xml",
+    "llms.txt",
+}
+SITE_ORIGIN = "https://lens.dataplicity.com"
+SITEMAP_EXCLUDE = {"404.html"}
 
 class Links(html.parser.HTMLParser):
     def __init__(self) -> None:
@@ -32,6 +39,43 @@ errors: list[str] = []
 missing_pages = REQUIRED - {p.name for p in HTML_FILES}
 if missing_pages:
     errors.append(f"missing required pages: {', '.join(sorted(missing_pages))}")
+
+missing_search = REQUIRED_SEARCH_FILES - {p.name for p in ROOT.iterdir() if p.is_file()}
+if missing_search:
+    errors.append(f"missing search engine files: {', '.join(sorted(missing_search))}")
+
+robots_path = ROOT / "robots.txt"
+if robots_path.exists():
+    robots_text = robots_path.read_text(encoding="utf-8")
+    if "Sitemap: https://lens.dataplicity.com/sitemap.xml" not in robots_text:
+        errors.append("robots.txt: missing Sitemap line for https://lens.dataplicity.com/sitemap.xml")
+
+sitemap_path = ROOT / "sitemap.xml"
+if sitemap_path.exists():
+    sitemap_text = sitemap_path.read_text(encoding="utf-8")
+    expected_locs: set[str] = set()
+    for page in HTML_FILES:
+        if page.name in SITEMAP_EXCLUDE:
+            continue
+        if page.name == "index.html":
+            expected_locs.add(f"{SITE_ORIGIN}/")
+        else:
+            expected_locs.add(f"{SITE_ORIGIN}/{page.name}")
+    for loc in sorted(expected_locs):
+        if f"<loc>{loc}</loc>" not in sitemap_text:
+            errors.append(f"sitemap.xml: missing {loc}")
+    if "<loc>https://lens.dataplicity.com/404.html</loc>" in sitemap_text:
+        errors.append("sitemap.xml: should not include 404.html")
+    if "<loc>https://lens.dataplicity.com/index.html</loc>" in sitemap_text:
+        errors.append("sitemap.xml: use / for the home page, not index.html")
+
+llms_path = ROOT / "llms.txt"
+if llms_path.exists():
+    llms_text = llms_path.read_text(encoding="utf-8")
+    if "# Dataplicity Lens" not in llms_text:
+        errors.append("llms.txt: missing Dataplicity Lens heading")
+    if "https://lens.dataplicity.com/" not in llms_text:
+        errors.append("llms.txt: missing site home URL")
 
 parsed: dict[Path, Links] = {}
 for page in HTML_FILES:
