@@ -43,7 +43,7 @@ Release jobs receive only `contents: write`, `id-token: write` and `attestations
 jobs remain read-only. Third-party actions are pinned to immutable commit SHAs.
 
 Homebrew publication follows the `dataplicity-cli` repository's release-triggered tap workflow. The
-Lens repository must provide `HOMEBREW_TAP_TOKEN` with contents write access to
+Lens repository must provide `HOMEBREW_TAP_TOKEN` owned by `dataplicity-release-bot` with contents write access to
 `wildfoundry/homebrew-tap` (enough to push a formula branch and open a PR), plus the repository
 variables `HOMEBREW_TAP_REPOSITORY` and `HOMEBREW_FORMULA_NAME`. The tap PR is reviewed and merged
 only after its required formula analysis check passes. A tag is not complete until adding
