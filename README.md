@@ -1,6 +1,6 @@
 # Dataplicity Lens
 
-[![CI](https://github.com/wildfoundry/dataplicity-lens/actions/workflows/ci.yml/badge.svg)](https://github.com/wildfoundry/dataplicity-lens/actions/workflows/ci.yml)
+[![CI](https://img.shields.io/github/actions/workflow/status/wildfoundry/dataplicity-lens/ci.yml?branch=main&label=CI)](https://github.com/wildfoundry/dataplicity-lens/actions/workflows/ci.yml)
 [![Release](https://img.shields.io/github/v/release/wildfoundry/dataplicity-lens?display_name=tag)](https://github.com/wildfoundry/dataplicity-lens/releases)
 [![License](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
 [![Platforms](https://img.shields.io/badge/platform-Linux%20%7C%20macOS%20%7C%20Raspberry%20Pi-0B3D32)](https://lens.dataplicity.com/compatibility.html)
