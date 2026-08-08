@@ -6,6 +6,6 @@ fn main() {
             return;
         }
         eprintln!("lens-hardware: {error:#}");
-        std::process::exit(1);
+        std::process::exit(lens_system::exit_code(&error));
     }
 }

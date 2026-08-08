@@ -135,3 +135,76 @@ fn process_actions_require_confirmation_and_support_dry_run() {
         String::from_utf8_lossy(&stale.stderr).contains("changed or exited before confirmation")
     );
 }
+
+#[test]
+fn scripting_assertions_and_name_resolved_signal() {
+    let zombies = Command::new(binary())
+        .args([
+            "--demo",
+            "--filter-state",
+            "zombie",
+            "--fail-if-any",
+            "--quiet",
+        ])
+        .output()
+        .expect("zombie assert");
+    assert_eq!(zombies.status.code(), Some(3));
+
+    let none = Command::new(binary())
+        .args([
+            "--demo",
+            "--exact-name",
+            "missing-process",
+            "--fail-if-empty",
+            "--quiet",
+        ])
+        .output()
+        .expect("empty assert");
+    assert_eq!(none.status.code(), Some(3));
+
+    let by_name = Command::new(binary())
+        .args([
+            "--demo",
+            "--signal",
+            "term",
+            "--exact-name",
+            "image-worker",
+            "--expect-name",
+            "image-worker",
+            "--dry-run",
+            "--json",
+        ])
+        .output()
+        .expect("name-resolved signal");
+    assert!(by_name.status.success());
+    let value: serde_json::Value = serde_json::from_slice(&by_name.stdout).expect("JSON");
+    assert_eq!(value["pid"], 8421);
+    assert_eq!(value["status"], "planned");
+
+    let ambiguous = Command::new(binary())
+        .args([
+            "--demo",
+            "--signal",
+            "term",
+            "--filter-service",
+            "image-worker.service",
+            "--dry-run",
+        ])
+        .output()
+        .expect("ambiguous signal");
+    assert_eq!(ambiguous.status.code(), Some(2));
+}
+
+#[test]
+fn fields_projection_keeps_host_and_schema() {
+    let output = Command::new(binary())
+        .args(["--demo", "--json", "--fields", "processes,findings"])
+        .output()
+        .expect("fields");
+    assert!(output.status.success());
+    let value: serde_json::Value = serde_json::from_slice(&output.stdout).expect("JSON");
+    assert_eq!(value["schema_version"], "2");
+    assert!(value.get("host").is_some());
+    assert!(value.get("processes").is_some());
+    assert!(value.get("services").is_none());
+}

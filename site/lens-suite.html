@@ -85,18 +85,22 @@
 <span class="token-comment"># A focused specialist result</span>
 <span class="token-command">lens-logs</span> <span class="token-flag">--since</span> <span class="token-value">"30 minutes ago"</span> <span class="token-flag">--severity</span> <span class="token-value">error</span> <span class="token-flag">--plain</span>
 
-<span class="token-comment"># Structured data for a check or collector</span>
-<span class="token-command">lens-health</span> <span class="token-flag">--json</span> | <span class="token-command">jq</span> <span class="token-value">'.findings'</span></code></pre></div>
-        <p>Pass <code>--once</code> to print one readable snapshot instead of opening an interactive screen. <code>--plain</code> explicitly selects the same one-shot human-readable output, while <code>--json</code> emits the shared schema-versioned snapshot. Redirected output is plain automatically. Common specialist options include <code>--filter</code> and <code>--limit</code>; domain-specific flags fail clearly when used with the wrong command.</p>
+<span class="token-comment"># Assert without jq (exit 3 on miss)</span>
+<span class="token-command">lens-health</span> <span class="token-flag">--fail-on</span> <span class="token-value">critical</span> <span class="token-flag">--fail-on-collection-warnings --quiet</span>
+<span class="token-command">lens-services</span> <span class="token-flag">--name</span> <span class="token-value">nginx.service</span> <span class="token-flag">--active</span> <span class="token-value">active</span> <span class="token-flag">--fail-if-empty --quiet</span>
+
+<span class="token-comment"># Structured data when you still want the full document</span>
+<span class="token-command">lens-health</span> <span class="token-flag">--json --fields</span> <span class="token-value">findings,collection_warnings</span></code></pre></div>
+        <p>Pass <code>--once</code> to print one readable snapshot instead of opening an interactive screen. <code>--plain</code> explicitly selects the same one-shot human-readable output, while <code>--json</code> / <code>--jsonl</code> emit the shared schema-versioned snapshot. <code>--fields</code> projects JSON; <code>--quiet</code> keeps only the exit status. Redirected output is plain automatically. Common specialist options include <code>--filter</code>, <code>--match</code> and <code>--limit</code>; domain-specific flags fail clearly when used with the wrong command.</p>
         <p>Use <code>--limit 0</code> deliberately: it removes the row cap and can produce a large result on a busy host. The normal default is 1,000 rows.</p>
-        <p>The <a href="reference.html">command reference</a> defines exit status, standard streams, structured fields and scheduled-check behaviour.</p>
+        <p>The <a href="reference.html">command reference</a> defines exit status (including assert exit <code>3</code>), standard streams, structured fields and scripting behaviour.</p>
       </section>
 
       <section id="actions">
         <h2>Inspect first, then act on a pinned target</h2>
-        <p>Most Lens views inspect the machine. Two narrow action families are available: process signals in <code>lens-top</code> and systemd service actions in <code>lens-services</code>. Interactive actions show the exact target and ask for confirmation. CLI actions require <code>--yes</code>; use <code>--dry-run</code> first.</p>
-        <div class="code-block"><div class="code-head">shell <button class="copy-button" data-copy type="button">Copy</button></div><pre><code><span class="token-command">lens-top</span> <span class="token-flag">--signal</span> <span class="token-value">term</span> <span class="token-flag">--pid</span> <span class="token-value">4242</span> <span class="token-flag">--dry-run</span>
-<span class="token-command">lens-services</span> <span class="token-flag">--action</span> <span class="token-value">restart</span> <span class="token-flag">--target</span> <span class="token-value">nginx.service</span> <span class="token-flag">--dry-run</span></code></pre></div>
+        <p>Most Lens views inspect the machine. Two narrow action families are available: process signals in <code>lens-top</code> and systemd service actions in <code>lens-services</code>. Interactive actions show the exact target and ask for confirmation. CLI actions require <code>--yes</code>; use <code>--dry-run</code> first. Selectors must resolve to exactly one target.</p>
+        <div class="code-block"><div class="code-head">shell <button class="copy-button" data-copy type="button">Copy</button></div><pre><code><span class="token-command">lens-top</span> <span class="token-flag">--signal</span> <span class="token-value">term</span> <span class="token-flag">--exact-name</span> <span class="token-value">nginx</span> <span class="token-flag">--expect-name</span> <span class="token-value">nginx</span> <span class="token-flag">--dry-run</span>
+<span class="token-command">lens-services</span> <span class="token-flag">--action</span> <span class="token-value">restart</span> <span class="token-flag">--name</span> <span class="token-value">nginx.service</span> <span class="token-flag">--match exact --expect-active</span> <span class="token-value">active</span> <span class="token-flag">--dry-run</span></code></pre></div>
         <p>Lens actions run as the current user under the operating system's normal policy. Review the <a href="lens-top.html#safety">process action guide</a> and <a href="lens-services.html#actions">service action guide</a> before acting on a live target.</p>
       </section>
 

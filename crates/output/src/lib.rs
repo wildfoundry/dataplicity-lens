@@ -171,6 +171,134 @@ pub fn write_json(writer: &mut impl Write, snapshot: &Snapshot) -> io::Result<()
     }
 }
 
+pub fn write_json_value(writer: &mut impl Write, value: &serde_json::Value) -> io::Result<()> {
+    match serde_json::to_writer_pretty(&mut *writer, value) {
+        Ok(()) => safe_writeln(writer, ""),
+        Err(error) if error.is_io() => Err(io::Error::new(
+            error.io_error_kind().unwrap_or(io::ErrorKind::Other),
+            error,
+        )),
+        Err(error) => Err(io::Error::new(io::ErrorKind::InvalidData, error)),
+    }
+}
+
+/// Emit JSON Lines for the given record types only (plus always `host` when requested).
+pub fn write_json_lines_filtered(
+    writer: &mut impl Write,
+    snapshot: &Snapshot,
+    record_types: &[&str],
+) -> io::Result<()> {
+    let emit_all = record_types.is_empty();
+    let want = |name: &str| emit_all || record_types.iter().any(|item| *item == name);
+    if want("host") {
+        write_json_line(writer, snapshot, "host", &snapshot.host)?;
+    }
+    if want("process") {
+        for process in &snapshot.processes {
+            write_json_line(writer, snapshot, "process", process)?;
+        }
+    }
+    if want("service") {
+        for service in &snapshot.services {
+            write_json_line(writer, snapshot, "service", service)?;
+        }
+    }
+    if want("log_source") {
+        for source in &snapshot.log_sources {
+            write_json_line(writer, snapshot, "log_source", source)?;
+        }
+    }
+    if want("log") {
+        for entry in &snapshot.logs {
+            write_json_line(writer, snapshot, "log", entry)?;
+        }
+    }
+    if want("mount") {
+        for mount in &snapshot.mounts {
+            write_json_line(writer, snapshot, "mount", mount)?;
+        }
+    }
+    if want("filesystem") {
+        for filesystem in &snapshot.filesystems {
+            write_json_line(writer, snapshot, "filesystem", filesystem)?;
+        }
+    }
+    if want("deleted_open_file") {
+        for file in &snapshot.deleted_open_files {
+            write_json_line(writer, snapshot, "deleted_open_file", file)?;
+        }
+    }
+    if want("block_device") {
+        for device in &snapshot.block_devices {
+            write_json_line(writer, snapshot, "block_device", device)?;
+        }
+    }
+    if want("interface") {
+        for interface in &snapshot.interfaces {
+            write_json_line(writer, snapshot, "interface", interface)?;
+        }
+    }
+    if want("route") {
+        for route in &snapshot.routes {
+            write_json_line(writer, snapshot, "route", route)?;
+        }
+    }
+    if want("socket") {
+        for socket in &snapshot.sockets {
+            write_json_line(writer, snapshot, "socket", socket)?;
+        }
+    }
+    if want("finding") {
+        for finding in &snapshot.findings {
+            write_json_line(writer, snapshot, "finding", finding)?;
+        }
+    }
+    if want("relationship") {
+        for relationship in &snapshot.relationships {
+            write_json_line(writer, snapshot, "relationship", relationship)?;
+        }
+    }
+    if want("hardware_device") {
+        for device in &snapshot.hardware_devices {
+            write_json_line(writer, snapshot, "hardware_device", device)?;
+        }
+    }
+    if want("collection_warning") {
+        for warning in &snapshot.collection_warnings {
+            write_json_line(writer, snapshot, "collection_warning", warning)?;
+        }
+    }
+    Ok(())
+}
+
+pub fn jsonl_record_types_for_fields(fields: &[String]) -> Vec<&'static str> {
+    let mut types = Vec::new();
+    for field in fields {
+        let record = match field.as_str() {
+            "processes" => "process",
+            "services" => "service",
+            "log_sources" => "log_source",
+            "logs" => "log",
+            "mounts" => "mount",
+            "filesystems" => "filesystem",
+            "deleted_open_files" => "deleted_open_file",
+            "block_devices" => "block_device",
+            "interfaces" => "interface",
+            "routes" => "route",
+            "sockets" => "socket",
+            "findings" => "finding",
+            "relationships" => "relationship",
+            "hardware_devices" => "hardware_device",
+            "collection_warnings" => "collection_warning",
+            _ => continue,
+        };
+        if !types.contains(&record) {
+            types.push(record);
+        }
+    }
+    types
+}
+
 #[derive(Serialize)]
 struct JsonLine<'a, T: Serialize> {
     schema_version: &'a str,

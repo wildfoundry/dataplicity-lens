@@ -17,7 +17,9 @@ use std::{
     time::{Duration, Instant},
 };
 
-use anyhow::{Context, Result, bail};
+#[cfg(target_os = "linux")]
+use anyhow::bail;
+use anyhow::{Context, Result};
 use clap::{CommandFactory, FromArgMatches, Parser, ValueEnum};
 use crossterm::{
     cursor,
@@ -25,6 +27,10 @@ use crossterm::{
     execute,
     style::ResetColor,
     terminal::{self, ClearType},
+};
+use lens_core::{
+    AssertionError, AssertionPolicy, FailOnSeverity, MatchMode, PrimaryDomain, UsageError,
+    exit_code_from_error, parse_fields_list, project_snapshot_value,
 };
 use lens_model::{
     AccountInfo, CellularModem, CellularSim, CertificateInfo, Cgroup, ClockContext, DnsContext,
@@ -35,6 +41,7 @@ pub use lens_model::{
     BlockDevice, DeletedOpenFile, EntityId, Filesystem, Interface, LogEntry, LogSource, Mount,
     Relationship, RelationshipKind, Route, Service, Snapshot as SystemSnapshot, Socket,
 };
+use lens_output::{jsonl_record_types_for_fields, write_json_lines_filtered, write_json_value};
 #[cfg(target_os = "linux")]
 use lens_platform_linux::LinuxCollector;
 #[cfg(target_os = "macos")]
@@ -128,7 +135,7 @@ impl ServiceAction {
         Self::Disable,
     ];
 
-    const fn cli_name(self) -> &'static str {
+    pub const fn cli_name(self) -> &'static str {
         match self {
             Self::Start => "start",
             Self::Stop => "stop",
@@ -149,18 +156,36 @@ impl ServiceAction {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+pub enum SpecialistSort {
+    Name,
+    Restarts,
+    UsedPercent,
+    Port,
+    Severity,
+}
+
 #[derive(Debug, Clone, Parser)]
 #[command(version, about = "A coherent view of a Linux or macOS system")]
 pub struct ViewArgs {
     /// Emit stable JSON rather than human-readable output.
-    #[arg(long)]
+    #[arg(long, conflicts_with = "jsonl")]
     pub json: bool,
+    /// Emit stable JSON Lines rather than human-readable output.
+    #[arg(long, conflicts_with_all = ["json", "plain"])]
+    pub jsonl: bool,
     /// Emit stable plain text explicitly (the default outside an interactive terminal).
-    #[arg(long, conflicts_with = "json")]
+    #[arg(long, conflicts_with_all = ["json", "jsonl"])]
     pub plain: bool,
     /// Print one snapshot and exit instead of opening the interactive view.
     #[arg(long)]
     pub once: bool,
+    /// Suppress stdout on success (errors still go to stderr).
+    #[arg(long)]
+    pub quiet: bool,
+    /// Project JSON/JSONL to these top-level snapshot fields (comma-separated).
+    #[arg(long, value_name = "LIST")]
+    pub fields: Option<String>,
     /// Choose colours for an auto-detected, dark or light terminal background.
     #[arg(long, value_enum, default_value_t = ThemeMode::Auto)]
     pub theme: ThemeMode,
@@ -170,6 +195,21 @@ pub struct ViewArgs {
     /// Case-insensitive filter applied to rows and findings.
     #[arg(long)]
     pub filter: Option<String>,
+    /// How `--filter` and name selectors bind (default: contains).
+    #[arg(long, value_enum, default_value_t = MatchMode::Contains)]
+    pub r#match: MatchMode,
+    /// Sort primary rows when the domain supports it.
+    #[arg(long, value_enum)]
+    pub sort: Option<SpecialistSort>,
+    /// Exact or matched service unit name (lens-services / action resolution).
+    #[arg(long, value_name = "UNIT")]
+    pub name: Option<String>,
+    /// Restrict services to an active state (for example active, failed).
+    #[arg(long, value_name = "STATE")]
+    pub active: Option<String>,
+    /// Restrict services whose unit load state is loaded (true) or not (false).
+    #[arg(long, value_name = "BOOL")]
+    pub enabled: Option<bool>,
     /// Restrict log records and services to a unit name.
     #[arg(long)]
     pub service: Option<String>,
@@ -179,12 +219,75 @@ pub struct ViewArgs {
     /// Restrict log records to a journal priority label.
     #[arg(long)]
     pub severity: Option<String>,
+    /// Restrict log messages containing this text.
+    #[arg(long, value_name = "TEXT")]
+    pub contains: Option<String>,
+    /// Restrict logs to an exact unit name.
+    #[arg(long, value_name = "UNIT")]
+    pub unit: Option<String>,
     /// Restrict journal collection to entries newer than this journalctl time expression.
     #[arg(long)]
     pub since: Option<String>,
     /// Read an additional plain-text log file (repeatable).
     #[arg(long, value_name = "PATH")]
     pub log_file: Vec<PathBuf>,
+    /// Exact mount target (lens-disk).
+    #[arg(long, value_name = "PATH")]
+    pub mount: Option<String>,
+    /// Filesystem type filter (lens-disk).
+    #[arg(long, value_name = "TYPE")]
+    pub fstype: Option<String>,
+    /// Minimum mount used percent (lens-disk).
+    #[arg(long, value_name = "PERCENT")]
+    pub min_used_percent: Option<f64>,
+    /// Local TCP/UDP port (lens-net).
+    #[arg(long, value_name = "PORT")]
+    pub port: Option<u16>,
+    /// Socket protocol filter: tcp or udp (lens-net).
+    #[arg(long, value_name = "PROTO")]
+    pub proto: Option<String>,
+    /// Only listening sockets (lens-net).
+    #[arg(long)]
+    pub listening: bool,
+    /// Network interface name (lens-net).
+    #[arg(long, value_name = "IFACE")]
+    pub interface: Option<String>,
+    /// Hardware device class/kind (lens-hardware).
+    #[arg(long, value_name = "CLASS")]
+    pub class: Option<String>,
+    /// Hardware serial number (lens-hardware).
+    #[arg(long, value_name = "SERIAL")]
+    pub serial: Option<String>,
+    /// System context section: clock, dns, users, groups, certificates.
+    #[arg(long, value_name = "SECTION")]
+    pub section: Option<String>,
+    /// Minimum finding severity for lens-health filters (information, attention, critical).
+    #[arg(long, value_name = "SEVERITY")]
+    pub min_severity: Option<String>,
+    /// Exact finding id (lens-health).
+    #[arg(long, value_name = "ID")]
+    pub id: Option<String>,
+    /// Exit 3 when the filtered primary row set is empty.
+    #[arg(long)]
+    pub fail_if_empty: bool,
+    /// Exit 3 when any filtered primary rows remain.
+    #[arg(long)]
+    pub fail_if_any: bool,
+    /// Exit 3 unless the filtered primary row count equals N.
+    #[arg(long, value_name = "N")]
+    pub expect_count: Option<usize>,
+    /// Exit 3 unless the filtered primary row count is at least N.
+    #[arg(long, value_name = "N")]
+    pub expect_count_min: Option<usize>,
+    /// Exit 3 unless the filtered primary row count is at most N.
+    #[arg(long, value_name = "N")]
+    pub expect_count_max: Option<usize>,
+    /// Exit 3 when findings reach this severity (warning or critical).
+    #[arg(long, value_enum)]
+    pub fail_on: Option<FailOnSeverity>,
+    /// Exit 3 when collection_warnings is non-empty.
+    #[arg(long)]
+    pub fail_on_collection_warnings: bool,
     /// Generate a manual page and exit.
     #[arg(long, value_name = "PATH", hide = true)]
     pub generate_man: Option<PathBuf>,
@@ -203,17 +306,23 @@ pub struct ViewArgs {
     #[arg(long, default_value_t = 1000)]
     pub limit: usize,
     /// Change a service state (lens-services on Linux only).
-    #[arg(long, value_enum, requires = "target")]
+    #[arg(long, value_enum)]
     pub action: Option<ServiceAction>,
     /// Exact service unit targeted by --action.
-    #[arg(long, requires = "action")]
+    #[arg(long)]
     pub target: Option<String>,
     /// Confirm a requested state change for non-interactive use.
-    #[arg(long, requires = "action")]
+    #[arg(long)]
     pub yes: bool,
     /// Print the planned state change without executing it.
-    #[arg(long, requires = "action")]
+    #[arg(long)]
     pub dry_run: bool,
+    /// After a service action, require this active state (lens-services).
+    #[arg(long, value_name = "STATE")]
+    pub expect_active: Option<String>,
+    /// Bound wait for --expect-active (for example 2s, 500ms). Default: 2s.
+    #[arg(long, value_name = "DURATION")]
+    pub wait: Option<String>,
 }
 
 pub type SystemFinding = lens_model::Finding;
@@ -231,6 +340,18 @@ pub fn is_broken_pipe(error: &anyhow::Error) -> bool {
     })
 }
 
+pub fn exit_code(error: &anyhow::Error) -> i32 {
+    exit_code_from_error(error.as_ref())
+}
+
+fn usage_err(message: impl Into<String>) -> anyhow::Error {
+    anyhow::Error::new(UsageError::new(message))
+}
+
+fn assertion_err(message: impl Into<String>) -> anyhow::Error {
+    anyhow::Error::new(AssertionError::new(message))
+}
+
 pub fn run_view(view: View) -> Result<()> {
     let args = parse_view_args(view.binary());
     validate_view_args(view, &args)?;
@@ -241,7 +362,16 @@ pub fn run_view(view: View) -> Result<()> {
     if args.action.is_some() {
         return run_service_action(view, &args);
     }
-    if !args.json && !args.plain && !args.once && !args.demo && io::stdout().is_terminal() {
+    let force_oneshot = args.json
+        || args.jsonl
+        || args.plain
+        || args.once
+        || args.demo
+        || args.quiet
+        || args.fields.is_some()
+        || assertion_policy_from_args(&args).is_active()
+        || !io::stdout().is_terminal();
+    if !force_oneshot {
         let mut terminal = CockpitTerminal::enter()?;
         specialist_loop(view, &args, &mut terminal.stdout)?;
         return Ok(());
@@ -251,53 +381,47 @@ pub fn run_view(view: View) -> Result<()> {
     } else {
         collect_view(view, args.since.as_deref(), &args.log_file, args.limit)
     };
-    let filtered = filter_snapshot(
-        snapshot,
-        args.filter.as_deref(),
-        args.service.as_deref(),
-        args.process.as_deref(),
-        args.severity.as_deref(),
-        args.limit,
-    );
-    if args.json {
-        serde_json::to_writer_pretty(io::stdout().lock(), &filtered).context("write JSON")?;
-        println!();
-    } else if args.plain || args.once || args.demo || !io::stdout().is_terminal() {
-        render_plain(view, &filtered, &mut io::stdout().lock())?;
-    }
-    Ok(())
+    let filtered = apply_view_filters(view, snapshot, &args)?;
+    emit_snapshot_output(OutputView::Specialist(view), &args, &filtered)?;
+    evaluate_assertions(view, &args, &filtered)
+}
+
+#[derive(Debug, Clone, Copy)]
+enum OutputView {
+    Specialist(View),
+    Cockpit,
 }
 
 pub fn run_cockpit() -> Result<()> {
     let args = parse_view_args("lens");
+    validate_view_args_cockpit(&args)?;
     set_terminal_theme(args.theme);
     if generate_assets("lens", &args)? {
         return Ok(());
     }
     if args.action.is_some() {
-        bail!("service actions are available through lens-services");
+        return Err(usage_err(
+            "service actions are available through lens-services",
+        ));
     }
-    if args.json || args.plain || args.once || args.demo || !io::stdout().is_terminal() {
+    let force_oneshot = args.json
+        || args.jsonl
+        || args.plain
+        || args.once
+        || args.demo
+        || args.quiet
+        || args.fields.is_some()
+        || assertion_policy_from_args(&args).is_active()
+        || !io::stdout().is_terminal();
+    if force_oneshot {
         let snapshot = if args.demo {
             demo_snapshot()
         } else {
             collect_with_options(args.since.as_deref(), &args.log_file)
         };
-        let snapshot = filter_snapshot(
-            snapshot,
-            args.filter.as_deref(),
-            args.service.as_deref(),
-            args.process.as_deref(),
-            args.severity.as_deref(),
-            args.limit,
-        );
-        if args.json {
-            serde_json::to_writer_pretty(io::stdout().lock(), &snapshot)?;
-            println!();
-        } else {
-            render_overview(&snapshot, &mut io::stdout().lock())?;
-        }
-        return Ok(());
+        let snapshot = apply_view_filters(View::Processes, snapshot, &args)?;
+        emit_snapshot_output(OutputView::Cockpit, &args, &snapshot)?;
+        return evaluate_assertions(View::Processes, &args, &snapshot);
     }
 
     let mut terminal = CockpitTerminal::enter()?;
@@ -306,6 +430,119 @@ pub fn run_cockpit() -> Result<()> {
         args.since.clone(),
         args.log_file.clone(),
     )
+}
+
+fn assertion_policy_from_args(args: &ViewArgs) -> AssertionPolicy {
+    AssertionPolicy {
+        fail_if_empty: args.fail_if_empty,
+        fail_if_any: args.fail_if_any,
+        expect_count: args.expect_count,
+        expect_count_min: args.expect_count_min,
+        expect_count_max: args.expect_count_max,
+        fail_on: args.fail_on,
+        fail_on_collection_warnings: args.fail_on_collection_warnings,
+    }
+}
+
+fn primary_domain_for(view: View) -> PrimaryDomain {
+    match view {
+        View::Processes => PrimaryDomain::Processes,
+        View::Services => PrimaryDomain::Services,
+        View::Logs => PrimaryDomain::Logs,
+        View::Disk => PrimaryDomain::Mounts,
+        View::Net => PrimaryDomain::Sockets,
+        View::Hardware => PrimaryDomain::HardwareDevices,
+        View::System => PrimaryDomain::SystemRows,
+        View::Health => PrimaryDomain::Findings,
+    }
+}
+
+fn evaluate_assertions(view: View, args: &ViewArgs, snapshot: &SystemSnapshot) -> Result<()> {
+    let policy = assertion_policy_from_args(args);
+    policy
+        .validate()
+        .map_err(|error| usage_err(error.message))?;
+    match policy.evaluate(snapshot, primary_domain_for(view)) {
+        Ok(()) => Ok(()),
+        Err(error) => Err(assertion_err(error.message)),
+    }
+}
+
+fn emit_snapshot_output(
+    view: OutputView,
+    args: &ViewArgs,
+    snapshot: &SystemSnapshot,
+) -> Result<()> {
+    if args.quiet {
+        return Ok(());
+    }
+    let fields = match &args.fields {
+        Some(raw) => Some(parse_fields_list(raw).map_err(|error| usage_err(error.message))?),
+        None => None,
+    };
+    if args.fields.is_some() && !args.json && !args.jsonl {
+        return Err(usage_err("--fields requires --json or --jsonl"));
+    }
+    let write_result: Result<()> = if args.json {
+        if let Some(fields) = fields {
+            let value = project_snapshot_value(snapshot, &fields).context("project JSON fields")?;
+            write_json_value(&mut io::stdout().lock(), &value).context("write JSON")
+        } else {
+            serde_json::to_writer_pretty(io::stdout().lock(), snapshot).context("write JSON")?;
+            writeln!(io::stdout()).context("write JSON")
+        }
+    } else if args.jsonl {
+        let record_types = if let Some(fields) = fields.as_ref() {
+            jsonl_record_types_for_fields(fields)
+        } else {
+            match view {
+                OutputView::Specialist(specialist) => jsonl_defaults_for_view(specialist),
+                OutputView::Cockpit => vec![
+                    "host",
+                    "process",
+                    "service",
+                    "log",
+                    "mount",
+                    "socket",
+                    "finding",
+                    "collection_warning",
+                ],
+            }
+        };
+        write_json_lines_filtered(&mut io::stdout().lock(), snapshot, &record_types)
+            .context("write JSON Lines")
+    } else {
+        match view {
+            OutputView::Cockpit => render_overview(snapshot, &mut io::stdout().lock()),
+            OutputView::Specialist(specialist) => {
+                render_plain(specialist, snapshot, &mut io::stdout().lock())
+            }
+        }
+    };
+    match write_result {
+        Ok(()) => Ok(()),
+        Err(error) if is_broken_pipe(&error) => Ok(()),
+        Err(error) => Err(error),
+    }
+}
+
+fn jsonl_defaults_for_view(view: View) -> Vec<&'static str> {
+    match view {
+        View::Processes => vec!["host", "process", "finding"],
+        View::Services => vec!["host", "service", "finding"],
+        View::Logs => vec!["host", "log", "finding"],
+        View::Disk => vec![
+            "host",
+            "mount",
+            "block_device",
+            "deleted_open_file",
+            "finding",
+        ],
+        View::Net => vec!["host", "interface", "route", "socket", "finding"],
+        View::Hardware => vec!["host", "hardware_device", "finding"],
+        View::System => vec!["host", "finding"],
+        View::Health => vec!["host", "finding", "collection_warning"],
+    }
 }
 
 fn parse_view_args(name: &'static str) -> ViewArgs {
@@ -319,16 +556,43 @@ fn view_command(name: &'static str) -> clap::Command {
     let supports_log_filters = matches!(name, "lens" | "lens-logs");
     let supports_log_source = matches!(name, "lens" | "lens-logs" | "lens-health");
     let supports_actions = name == "lens-services";
+    let supports_name = matches!(name, "lens-services");
+    let supports_service_state = name == "lens-services";
+    let supports_disk = name == "lens-disk";
+    let supports_net = name == "lens-net";
+    let supports_hardware = name == "lens-hardware";
+    let supports_system = name == "lens-system";
+    let supports_health = matches!(name, "lens-health" | "lens");
     for (argument, visible) in [
         ("service", supports_service),
         ("process", supports_log_filters),
         ("severity", supports_log_filters),
+        ("contains", supports_log_filters),
+        ("unit", supports_log_filters),
         ("since", supports_log_source),
         ("log_file", supports_log_source),
+        ("name", supports_name),
+        ("active", supports_service_state),
+        ("enabled", supports_service_state),
+        ("mount", supports_disk),
+        ("fstype", supports_disk),
+        ("min_used_percent", supports_disk),
+        ("port", supports_net),
+        ("proto", supports_net),
+        ("listening", supports_net),
+        ("interface", supports_net),
+        ("class", supports_hardware),
+        ("serial", supports_hardware),
+        ("section", supports_system),
+        ("min_severity", supports_health),
+        ("id", supports_health),
+        ("fail_on", supports_health),
         ("action", supports_actions),
         ("target", supports_actions),
         ("yes", supports_actions),
         ("dry_run", supports_actions),
+        ("expect_active", supports_actions),
+        ("wait", supports_actions),
     ] {
         if !visible {
             command = command.mut_arg(argument, |arg| arg.hide(true));
@@ -337,46 +601,123 @@ fn view_command(name: &'static str) -> clap::Command {
     command
 }
 
+fn validate_view_args_cockpit(args: &ViewArgs) -> Result<()> {
+    assertion_policy_from_args(args)
+        .validate()
+        .map_err(|error| usage_err(error.message))?;
+    if args.fields.is_some() && !args.json && !args.jsonl {
+        return Err(usage_err("--fields requires --json or --jsonl"));
+    }
+    Ok(())
+}
+
 fn validate_view_args(view: View, args: &ViewArgs) -> Result<()> {
+    assertion_policy_from_args(args)
+        .validate()
+        .map_err(|error| usage_err(error.message))?;
+    if args.fields.is_some() && !args.json && !args.jsonl {
+        return Err(usage_err("--fields requires --json or --jsonl"));
+    }
     if args.service.is_some() && !matches!(view, View::Services | View::Logs) {
-        bail!("--service is only available in lens-services and lens-logs");
+        return Err(usage_err(
+            "--service is only available in lens-services and lens-logs",
+        ));
+    }
+    if args.name.is_some() && view != View::Services {
+        return Err(usage_err("--name is only available in lens-services"));
+    }
+    if (args.active.is_some() || args.enabled.is_some()) && view != View::Services {
+        return Err(usage_err(
+            "--active and --enabled are only available in lens-services",
+        ));
     }
     if args.process.is_some() && view != View::Logs {
-        bail!("--process is only available in lens-logs");
+        return Err(usage_err("--process is only available in lens-logs"));
     }
     if args.severity.is_some() && view != View::Logs {
-        bail!("--severity is only available in lens-logs");
+        return Err(usage_err("--severity is only available in lens-logs"));
+    }
+    if (args.contains.is_some() || args.unit.is_some()) && view != View::Logs {
+        return Err(usage_err(
+            "--contains and --unit are only available in lens-logs",
+        ));
     }
     if (args.since.is_some() || !args.log_file.is_empty())
         && !matches!(view, View::Logs | View::Health)
     {
-        bail!("--since and --log-file are only available in lens-logs and lens-health");
+        return Err(usage_err(
+            "--since and --log-file are only available in lens-logs and lens-health",
+        ));
+    }
+    if (args.mount.is_some() || args.fstype.is_some() || args.min_used_percent.is_some())
+        && view != View::Disk
+    {
+        return Err(usage_err(
+            "--mount, --fstype and --min-used-percent are only available in lens-disk",
+        ));
+    }
+    if (args.port.is_some() || args.proto.is_some() || args.listening || args.interface.is_some())
+        && view != View::Net
+    {
+        return Err(usage_err(
+            "--port, --proto, --listening and --interface are only available in lens-net",
+        ));
+    }
+    if (args.class.is_some() || args.serial.is_some()) && view != View::Hardware {
+        return Err(usage_err(
+            "--class and --serial are only available in lens-hardware",
+        ));
+    }
+    if args.section.is_some() && view != View::System {
+        return Err(usage_err("--section is only available in lens-system"));
+    }
+    if (args.min_severity.is_some() || args.id.is_some()) && view != View::Health {
+        return Err(usage_err(
+            "--min-severity and --id are only available in lens-health",
+        ));
+    }
+    if args.fail_on.is_some() && !matches!(view, View::Health) {
+        // Allow on health only for specialists; cockpit validates separately.
+        return Err(usage_err(
+            "--fail-on is only available in lens-health and lens",
+        ));
+    }
+    if let Some(percent) = args.min_used_percent
+        && !(0.0..=100.0).contains(&percent)
+    {
+        return Err(usage_err("--min-used-percent must be between 0 and 100"));
+    }
+    if let Some(proto) = args.proto.as_deref() {
+        let proto = proto.to_ascii_lowercase();
+        if proto != "tcp" && proto != "udp" {
+            return Err(usage_err("--proto must be tcp or udp"));
+        }
     }
     Ok(())
 }
 
 #[derive(Debug, Serialize)]
-struct ActionOutcome<'a> {
+struct ActionOutcome {
     action: ServiceAction,
-    target: &'a str,
+    target: String,
     status: &'static str,
     verified_state: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    dry_run: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    expect_active: Option<String>,
 }
 
 fn run_service_action(view: View, args: &ViewArgs) -> Result<()> {
     if view != View::Services {
-        bail!("--action is only supported by lens-services");
+        return Err(usage_err("--action is only supported by lens-services"));
     }
-    let action = args.action.context("missing --action")?;
-    let target = args.target.as_deref().context("missing --target")?;
-    if target.trim().is_empty()
-        || target.starts_with('-')
-        || target.chars().any(char::is_whitespace)
-    {
-        bail!("--target must be one exact service unit name");
-    }
+    let action = args.action.ok_or_else(|| usage_err("missing --action"))?;
+    let target = resolve_service_action_target(args)?;
     if !args.dry_run && !args.yes {
-        bail!("state changes require --yes; use --dry-run to inspect the plan safely");
+        return Err(usage_err(
+            "state changes require --yes; use --dry-run to inspect the plan safely",
+        ));
     }
     if args.dry_run {
         return write_action_outcome(
@@ -386,13 +727,18 @@ fn run_service_action(view: View, args: &ViewArgs) -> Result<()> {
                 target,
                 status: "planned",
                 verified_state: None,
+                dry_run: Some(true),
+                expect_active: args.expect_active.clone(),
             },
         );
     }
     #[cfg(target_os = "macos")]
-    bail!(
-        "service actions are not yet supported safely for launchd; no change was made to {target}"
-    );
+    {
+        let _ = action;
+        return Err(usage_err(format!(
+            "service actions are not yet supported safely for launchd; no change was made to {target}"
+        )));
+    }
     #[cfg(target_os = "linux")]
     {
         let verb = match action {
@@ -405,7 +751,7 @@ fn run_service_action(view: View, args: &ViewArgs) -> Result<()> {
         let mut warnings = Vec::new();
         if command_with_timeout(
             "systemctl",
-            &[verb, "--", target],
+            &[verb, "--", target.as_str()],
             &mut warnings,
             Duration::from_secs(15),
         )
@@ -413,11 +759,36 @@ fn run_service_action(view: View, args: &ViewArgs) -> Result<()> {
         {
             bail!("{}", warnings.join("; "));
         }
-        let mut verify_warnings = Vec::new();
-        let verified_state = collect_services(&mut verify_warnings)
-            .into_iter()
-            .find(|service| service.name == target)
-            .map(|service| format!("{} / {}", service.active, service.sub));
+        let wait =
+            parse_wait_duration(args.wait.as_deref()).map_err(|message| usage_err(message))?;
+        let deadline = Instant::now() + wait;
+        let mut verified_state = None;
+        loop {
+            let mut verify_warnings = Vec::new();
+            let service = collect_services(&mut verify_warnings)
+                .into_iter()
+                .find(|service| service.name == target);
+            verified_state = service
+                .as_ref()
+                .map(|service| format!("{} / {}", service.active, service.sub));
+            if let Some(expected) = args.expect_active.as_deref() {
+                if service
+                    .as_ref()
+                    .is_some_and(|item| item.active.eq_ignore_ascii_case(expected))
+                {
+                    break;
+                }
+                if Instant::now() >= deadline {
+                    return Err(assertion_err(format!(
+                        "service {target} did not reach active state '{expected}' within {}",
+                        format_wait(wait)
+                    )));
+                }
+                thread::sleep(Duration::from_millis(100));
+                continue;
+            }
+            break;
+        }
         write_action_outcome(
             args,
             &ActionOutcome {
@@ -425,19 +796,100 @@ fn run_service_action(view: View, args: &ViewArgs) -> Result<()> {
                 target,
                 status: "completed",
                 verified_state,
+                dry_run: Some(false),
+                expect_active: args.expect_active.clone(),
             },
         )
     }
 }
 
-fn write_action_outcome(args: &ViewArgs, outcome: &ActionOutcome<'_>) -> Result<()> {
+fn resolve_service_action_target(args: &ViewArgs) -> Result<String> {
+    if let Some(target) = args.target.as_deref() {
+        if target.trim().is_empty()
+            || target.starts_with('-')
+            || target.chars().any(char::is_whitespace)
+        {
+            return Err(usage_err("--target must be one exact service unit name"));
+        }
+        return Ok(target.to_owned());
+    }
+    if args.name.is_none()
+        && args.service.is_none()
+        && args.filter.is_none()
+        && args.active.is_none()
+    {
+        return Err(usage_err(
+            "--action requires --target or a selector that resolves to exactly one service (--name/--service/--filter/--active)",
+        ));
+    }
+    let snapshot = if args.demo {
+        demo_snapshot()
+    } else {
+        let mut warnings = Vec::new();
+        let mut snapshot = SystemSnapshot::empty(hostname());
+        snapshot.services = collect_services(&mut warnings);
+        snapshot.collection_warnings = warnings;
+        snapshot
+    };
+    let filtered = apply_view_filters(View::Services, snapshot, args)?;
+    match filtered.services.as_slice() {
+        [service] => Ok(service.name.clone()),
+        [] => Err(usage_err(
+            "service action selector matched no units; refuse to act",
+        )),
+        _ => Err(usage_err(format!(
+            "service action selector matched {} units; refuse to act without a unique target",
+            filtered.services.len()
+        ))),
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn parse_wait_duration(raw: Option<&str>) -> Result<Duration, String> {
+    let Some(raw) = raw else {
+        return Ok(Duration::from_secs(2));
+    };
+    let raw = raw.trim();
+    if let Some(ms) = raw.strip_suffix("ms") {
+        let value: u64 = ms
+            .parse()
+            .map_err(|_| format!("invalid --wait duration '{raw}'"))?;
+        return Ok(Duration::from_millis(value.max(1)));
+    }
+    if let Some(secs) = raw.strip_suffix('s') {
+        let value: u64 = secs
+            .parse()
+            .map_err(|_| format!("invalid --wait duration '{raw}'"))?;
+        return Ok(Duration::from_secs(value.max(1)));
+    }
+    if let Ok(secs) = raw.parse::<u64>() {
+        return Ok(Duration::from_secs(secs.max(1)));
+    }
+    Err(format!("invalid --wait duration '{raw}' (use 2s or 500ms)"))
+}
+
+#[cfg(target_os = "linux")]
+fn format_wait(duration: Duration) -> String {
+    if duration.as_millis() % 1000 == 0 {
+        format!("{}s", duration.as_secs())
+    } else {
+        format!("{}ms", duration.as_millis())
+    }
+}
+
+fn write_action_outcome(args: &ViewArgs, outcome: &ActionOutcome) -> Result<()> {
+    if args.quiet {
+        return Ok(());
+    }
     if args.json {
         serde_json::to_writer_pretty(io::stdout().lock(), outcome)?;
         println!();
     } else {
         println!(
-            "{:?} {}: {}",
-            outcome.action, outcome.target, outcome.status
+            "{} {}: {}",
+            outcome.action.cli_name(),
+            outcome.target,
+            outcome.status
         );
         if let Some(state) = &outcome.verified_state {
             println!("Verified state: {state}");
@@ -991,19 +1443,14 @@ fn spawn_interface_counter_collection() -> Receiver<Vec<(String, u64, u64)>> {
 
 fn send_specialist_update(
     sender: &mpsc::Sender<SpecialistUpdate>,
+    view: View,
     snapshot: SystemSnapshot,
     args: &ViewArgs,
     loading_more: bool,
     status: &'static str,
 ) -> bool {
-    let snapshot = filter_snapshot(
-        snapshot,
-        args.filter.as_deref(),
-        args.service.as_deref(),
-        args.process.as_deref(),
-        args.severity.as_deref(),
-        args.limit,
-    );
+    let snapshot = apply_view_filters(view, snapshot, args)
+        .unwrap_or_else(|_| SystemSnapshot::empty("localhost"));
     sender
         .send(SpecialistUpdate {
             snapshot,
@@ -1013,17 +1460,35 @@ fn send_specialist_update(
         .is_ok()
 }
 
+fn filter_snapshot(
+    snapshot: SystemSnapshot,
+    filter: Option<&str>,
+    service: Option<&str>,
+    process: Option<&str>,
+    severity: Option<&str>,
+    limit: usize,
+) -> SystemSnapshot {
+    let mut args = ViewArgs::parse_from(["lens-services"]);
+    args.filter = filter.map(str::to_owned);
+    args.service = service.map(str::to_owned);
+    args.process = process.map(str::to_owned);
+    args.severity = severity.map(str::to_owned);
+    args.limit = limit;
+    apply_view_filters(View::Logs, snapshot, &args)
+        .unwrap_or_else(|_| SystemSnapshot::empty("localhost"))
+}
+
 fn spawn_specialist_collection(view: View, args: ViewArgs) -> Receiver<SpecialistUpdate> {
     let (sender, receiver) = mpsc::channel();
     thread::spawn(move || {
         let mut snapshot = domain_base_snapshot(view);
         match view {
             View::Processes => {
-                let _ = send_specialist_update(&sender, snapshot, &args, false, "Ready");
+                let _ = send_specialist_update(&sender, view, snapshot, &args, false, "Ready");
             }
             View::Services => {
                 snapshot.services = collect_services(&mut snapshot.collection_warnings);
-                let _ = send_specialist_update(&sender, snapshot, &args, false, "Ready");
+                let _ = send_specialist_update(&sender, view, snapshot, &args, false, "Ready");
             }
             View::Logs => {
                 #[cfg(target_os = "macos")]
@@ -1045,6 +1510,7 @@ fn spawn_specialist_collection(view: View, args: ViewArgs) -> Receiver<Specialis
                     let loading_older = args.since.is_none();
                     if !send_specialist_update(
                         &sender,
+                        view,
                         snapshot.clone(),
                         &args,
                         loading_older,
@@ -1067,7 +1533,7 @@ fn spawn_specialist_collection(view: View, args: ViewArgs) -> Receiver<Specialis
                     );
                     snapshot.log_sources = vec![platform_log_source()];
                     snapshot.log_sources.extend(file_sources);
-                    let _ = send_specialist_update(&sender, snapshot, &args, false, "Ready");
+                    let _ = send_specialist_update(&sender, view, snapshot, &args, false, "Ready");
                 }
                 #[cfg(target_os = "linux")]
                 {
@@ -1084,7 +1550,7 @@ fn spawn_specialist_collection(view: View, args: ViewArgs) -> Receiver<Specialis
                     );
                     snapshot.log_sources = vec![platform_log_source()];
                     snapshot.log_sources.extend(file_sources);
-                    let _ = send_specialist_update(&sender, snapshot, &args, false, "Ready");
+                    let _ = send_specialist_update(&sender, view, snapshot, &args, false, "Ready");
                 }
             }
             View::Disk => {
@@ -1094,6 +1560,7 @@ fn spawn_specialist_collection(view: View, args: ViewArgs) -> Receiver<Specialis
                 snapshot.mounts = mounts;
                 if !send_specialist_update(
                     &sender,
+                    view,
                     snapshot.clone(),
                     &args,
                     true,
@@ -1104,13 +1571,14 @@ fn spawn_specialist_collection(view: View, args: ViewArgs) -> Receiver<Specialis
                 snapshot.deleted_open_files =
                     collect_deleted_open_files(&mut snapshot.collection_warnings);
                 snapshot.block_devices = collect_block_devices(&mut snapshot.collection_warnings);
-                let _ = send_specialist_update(&sender, snapshot, &args, false, "Ready");
+                let _ = send_specialist_update(&sender, view, snapshot, &args, false, "Ready");
             }
             View::Net => {
                 snapshot.interfaces = collect_interfaces(&mut snapshot.collection_warnings);
                 snapshot.routes = collect_routes(&mut snapshot.collection_warnings);
                 if !send_specialist_update(
                     &sender,
+                    view,
                     snapshot.clone(),
                     &args,
                     true,
@@ -1120,15 +1588,15 @@ fn spawn_specialist_collection(view: View, args: ViewArgs) -> Receiver<Specialis
                 }
                 snapshot.sockets = collect_sockets(&mut snapshot.collection_warnings);
                 snapshot.cellular_modems = collect_cellular(&mut snapshot.collection_warnings);
-                let _ = send_specialist_update(&sender, snapshot, &args, false, "Ready");
+                let _ = send_specialist_update(&sender, view, snapshot, &args, false, "Ready");
             }
             View::Hardware => {
                 collect_hardware_context(&mut snapshot);
-                let _ = send_specialist_update(&sender, snapshot, &args, false, "Ready");
+                let _ = send_specialist_update(&sender, view, snapshot, &args, false, "Ready");
             }
             View::System => {
                 collect_system_context(&mut snapshot);
-                let _ = send_specialist_update(&sender, snapshot, &args, false, "Ready");
+                let _ = send_specialist_update(&sender, view, snapshot, &args, false, "Ready");
             }
             View::Health => {
                 snapshot.services = collect_services(&mut snapshot.collection_warnings);
@@ -1139,6 +1607,7 @@ fn spawn_specialist_collection(view: View, args: ViewArgs) -> Receiver<Specialis
                 snapshot.findings = diagnose(&snapshot);
                 if !send_specialist_update(
                     &sender,
+                    view,
                     snapshot.clone(),
                     &args,
                     true,
@@ -1171,7 +1640,7 @@ fn spawn_specialist_collection(view: View, args: ViewArgs) -> Receiver<Specialis
                 snapshot
                     .relationships
                     .extend(domain_relationships(&snapshot));
-                let _ = send_specialist_update(&sender, snapshot, &args, false, "Ready");
+                let _ = send_specialist_update(&sender, view, snapshot, &args, false, "Ready");
             }
         }
     });
@@ -6575,57 +7044,82 @@ fn diagnose(snapshot: &SystemSnapshot) -> Vec<SystemFinding> {
     findings
 }
 
-fn filter_snapshot(
+fn apply_view_filters(
+    view: View,
     mut snapshot: SystemSnapshot,
-    filter: Option<&str>,
-    service: Option<&str>,
-    process: Option<&str>,
-    severity: Option<&str>,
-    limit: usize,
-) -> SystemSnapshot {
-    let needle = filter.map(str::to_ascii_lowercase);
-    let matches = |text: &str| {
-        needle
-            .as_ref()
-            .is_none_or(|needle| text.to_ascii_lowercase().contains(needle))
-    };
+    args: &ViewArgs,
+) -> Result<SystemSnapshot> {
+    let mode = args.r#match;
+    let needle = args
+        .filter
+        .as_deref()
+        .map(str::trim)
+        .filter(|v| !v.is_empty());
+    let matches = |text: &str| needle.is_none_or(|needle| mode.matches(text, needle));
+
+    if let Some(name) = args.name.as_deref() {
+        snapshot
+            .services
+            .retain(|item| mode.matches(&item.name, name));
+    }
+    if let Some(active) = args.active.as_deref() {
+        snapshot
+            .services
+            .retain(|item| item.active.eq_ignore_ascii_case(active));
+    }
+    if let Some(enabled) = args.enabled {
+        snapshot.services.retain(|item| {
+            let loaded = item.load.eq_ignore_ascii_case("loaded");
+            if enabled { loaded } else { !loaded }
+        });
+    }
     snapshot.services.retain(|item| {
         matches(&format!(
             "{} {} {} {}",
             item.name, item.active, item.sub, item.description
         ))
     });
-    if let Some(service) = service {
-        let service = service.to_ascii_lowercase();
+    if let Some(service) = args.service.as_deref() {
         snapshot
             .services
-            .retain(|item| item.name.to_ascii_lowercase().contains(&service));
+            .retain(|item| mode.matches(&item.name, service));
         snapshot.logs.retain(|item| {
             item.unit
                 .as_deref()
-                .is_some_and(|unit| unit.to_ascii_lowercase().contains(&service))
+                .is_some_and(|unit| mode.matches(unit, service))
         });
     }
-    if let Some(severity) = severity {
-        let severity = severity.to_ascii_lowercase();
+    if let Some(severity) = args.severity.as_deref() {
         snapshot.logs.retain(|item| {
             item.priority
                 .as_deref()
-                .is_some_and(|priority| priority.eq_ignore_ascii_case(&severity))
+                .is_some_and(|priority| priority.eq_ignore_ascii_case(severity))
         });
     }
-    if let Some(process) = process {
-        let process = process.to_ascii_lowercase();
+    if let Some(process) = args.process.as_deref() {
         snapshot.logs.retain(|item| {
-            format!(
-                "{} {} {}",
-                item.source,
-                item.unit.as_deref().unwrap_or(""),
-                item.message
+            mode.matches(
+                &format!(
+                    "{} {} {}",
+                    item.source,
+                    item.unit.as_deref().unwrap_or(""),
+                    item.message
+                ),
+                process,
             )
-            .to_ascii_lowercase()
-            .contains(&process)
         });
+    }
+    if let Some(unit) = args.unit.as_deref() {
+        snapshot.logs.retain(|item| {
+            item.unit
+                .as_deref()
+                .is_some_and(|value| value.eq_ignore_ascii_case(unit))
+        });
+    }
+    if let Some(contains) = args.contains.as_deref() {
+        snapshot
+            .logs
+            .retain(|item| mode.matches(&item.message, contains));
     }
     snapshot.logs.retain(|item| {
         matches(&format!(
@@ -6637,6 +7131,24 @@ fn filter_snapshot(
             item.message
         ))
     });
+    if let Some(mount) = args.mount.as_deref() {
+        snapshot
+            .mounts
+            .retain(|item| item.target.eq_ignore_ascii_case(mount));
+    }
+    if let Some(fstype) = args.fstype.as_deref() {
+        snapshot
+            .mounts
+            .retain(|item| mode.matches(&item.filesystem, fstype));
+        snapshot.block_devices.retain(|item| {
+            item.filesystem
+                .as_deref()
+                .is_some_and(|value| mode.matches(value, fstype))
+        });
+    }
+    if let Some(minimum) = args.min_used_percent {
+        snapshot.mounts.retain(|item| item.used_percent >= minimum);
+    }
     snapshot.mounts.retain(|item| {
         matches(&format!(
             "{} {} {}",
@@ -6655,6 +7167,16 @@ fn filter_snapshot(
     snapshot
         .deleted_open_files
         .retain(|item| matches(&format!("{} {}", item.command, item.path)));
+    if let Some(interface) = args.interface.as_deref() {
+        snapshot
+            .interfaces
+            .retain(|item| mode.matches(&item.name, interface));
+        snapshot.routes.retain(|item| {
+            item.interface
+                .as_deref()
+                .is_some_and(|value| mode.matches(value, interface))
+        });
+    }
     snapshot.interfaces.retain(|item| {
         matches(&format!(
             "{} {} {}",
@@ -6664,6 +7186,26 @@ fn filter_snapshot(
         ))
     });
     snapshot.routes.retain(|item| matches(&item.raw));
+    if args.listening {
+        snapshot.sockets.retain(|item| {
+            item.state.eq_ignore_ascii_case("listen")
+                || item.state.eq_ignore_ascii_case("listening")
+        });
+    }
+    if let Some(port) = args.port {
+        let port = port.to_string();
+        snapshot.sockets.retain(|item| {
+            item.local
+                .rsplit_once(':')
+                .is_some_and(|(_, local_port)| local_port == port)
+                || item.local.ends_with(&format!(":{port}"))
+        });
+    }
+    if let Some(proto) = args.proto.as_deref() {
+        snapshot
+            .sockets
+            .retain(|item| item.protocol.eq_ignore_ascii_case(proto));
+    }
     snapshot
         .sockets
         .retain(|item| matches(&format!("{} {} {:?}", item.local, item.peer, item.owner)));
@@ -6681,6 +7223,18 @@ fn filter_snapshot(
     snapshot
         .temperatures
         .retain(|item| matches(&format!("{} {}", item.name, item.source)));
+    if let Some(class) = args.class.as_deref() {
+        snapshot
+            .hardware_devices
+            .retain(|item| mode.matches(&item.kind, class));
+    }
+    if let Some(serial) = args.serial.as_deref() {
+        snapshot.hardware_devices.retain(|item| {
+            item.serial_number
+                .as_deref()
+                .is_some_and(|value| mode.matches(value, serial))
+        });
+    }
     snapshot.hardware_devices.retain(|item| {
         matches(&format!(
             "{} {} {} {} {}",
@@ -6691,6 +7245,9 @@ fn filter_snapshot(
             item.serial_number.as_deref().unwrap_or("")
         ))
     });
+    if let Some(section) = args.section.as_deref() {
+        apply_system_section_filter(&mut snapshot, section)?;
+    }
     snapshot.accounts.retain(|item| {
         matches(&format!(
             "{} {} {} {} {}",
@@ -6714,9 +7271,21 @@ fn filter_snapshot(
             item.not_after.as_deref().unwrap_or("")
         ))
     });
+    if let Some(min_severity) = args.min_severity.as_deref() {
+        let minimum = parse_finding_severity(min_severity)?;
+        snapshot.findings.retain(|item| item.severity >= minimum);
+    }
+    if let Some(id) = args.id.as_deref() {
+        snapshot
+            .findings
+            .retain(|item| item.id.eq_ignore_ascii_case(id));
+    }
     snapshot
         .findings
         .retain(|item| matches(&format!("{} {} {}", item.id, item.title, item.summary)));
+
+    sort_snapshot_domain(view, &mut snapshot, args.sort);
+    let limit = args.limit;
     if limit > 0 {
         snapshot.processes.truncate(limit);
         snapshot.services.truncate(limit);
@@ -6735,7 +7304,108 @@ fn filter_snapshot(
         snapshot.certificates.truncate(limit);
         snapshot.findings.truncate(limit);
     }
-    snapshot
+    Ok(snapshot)
+}
+
+fn apply_system_section_filter(snapshot: &mut SystemSnapshot, section: &str) -> Result<()> {
+    match section.to_ascii_lowercase().as_str() {
+        "clock" | "ntp" | "clock/ntp" => {
+            snapshot.dns = DnsContext::default();
+            snapshot.accounts.clear();
+            snapshot.groups.clear();
+            snapshot.certificates.clear();
+        }
+        "dns" => {
+            snapshot.clock = ClockContext::default();
+            snapshot.accounts.clear();
+            snapshot.groups.clear();
+            snapshot.certificates.clear();
+        }
+        "users" => {
+            snapshot.clock = ClockContext::default();
+            snapshot.dns = DnsContext::default();
+            snapshot.groups.clear();
+            snapshot.certificates.clear();
+        }
+        "groups" => {
+            snapshot.clock = ClockContext::default();
+            snapshot.dns = DnsContext::default();
+            snapshot.accounts.clear();
+            snapshot.certificates.clear();
+        }
+        "certificates" | "certs" => {
+            snapshot.clock = ClockContext::default();
+            snapshot.dns = DnsContext::default();
+            snapshot.accounts.clear();
+            snapshot.groups.clear();
+        }
+        other => {
+            return Err(usage_err(format!(
+                "unknown --section '{other}'; use clock, dns, users, groups, or certificates"
+            )));
+        }
+    }
+    Ok(())
+}
+
+fn parse_finding_severity(value: &str) -> Result<lens_model::Severity> {
+    match value.to_ascii_lowercase().as_str() {
+        "information" | "info" => Ok(lens_model::Severity::Information),
+        "attention" | "warning" | "warn" => Ok(lens_model::Severity::Attention),
+        "critical" | "crit" => Ok(lens_model::Severity::Critical),
+        other => Err(usage_err(format!(
+            "unknown --min-severity '{other}'; use information, attention, or critical"
+        ))),
+    }
+}
+
+fn sort_snapshot_domain(view: View, snapshot: &mut SystemSnapshot, sort: Option<SpecialistSort>) {
+    let Some(sort) = sort else {
+        return;
+    };
+    match (view, sort) {
+        (View::Services, SpecialistSort::Name) => {
+            snapshot.services.sort_by(|left, right| {
+                left.name
+                    .to_ascii_lowercase()
+                    .cmp(&right.name.to_ascii_lowercase())
+            });
+        }
+        (View::Services, SpecialistSort::Restarts) => {
+            snapshot.services.sort_by(|left, right| {
+                right
+                    .restart_count
+                    .unwrap_or(0)
+                    .cmp(&left.restart_count.unwrap_or(0))
+                    .then_with(|| left.name.cmp(&right.name))
+            });
+        }
+        (View::Disk, SpecialistSort::UsedPercent) => {
+            snapshot
+                .mounts
+                .sort_by(|left, right| right.used_percent.total_cmp(&left.used_percent));
+        }
+        (View::Net, SpecialistSort::Port) => {
+            snapshot.sockets.sort_by(|left, right| {
+                socket_port(&left.local)
+                    .cmp(&socket_port(&right.local))
+                    .then_with(|| left.local.cmp(&right.local))
+            });
+        }
+        (View::Health, SpecialistSort::Severity) => {
+            snapshot
+                .findings
+                .sort_by_key(|finding| std::cmp::Reverse(finding.severity));
+        }
+        _ => {}
+    }
+}
+
+fn socket_port(local: &str) -> u32 {
+    local
+        .rsplit_once(':')
+        .and_then(|(_, port)| port.parse().ok())
+        .unwrap_or(0)
 }
 
 fn render_plain(view: View, snapshot: &SystemSnapshot, out: &mut dyn Write) -> Result<()> {

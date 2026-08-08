@@ -156,17 +156,35 @@ lens-health --json | jq '.findings'
 A healthy result means that checks with available source data found no problem. It does not mean
 every check ran. Review collection warnings when completeness matters.
 
+## Script without jq for common gates
+
+Lens can assert on filtered results directly. Exit `3` means the policy missed; exit `1` still means
+collection or action failure; exit `2` means bad flags or an ambiguous action target.
+
+```sh
+lens-services --name nginx.service --active active --fail-if-empty --quiet
+lens-top --filter-state zombie --fail-if-any --quiet
+lens-net --listening --port 22 --expect-count-min 1 --quiet
+lens-disk --mount / --min-used-percent 90 --fail-if-any --quiet
+lens-health --fail-on critical --fail-on-collection-warnings --quiet
+lens-services --json --fields services,findings
+```
+
+Use `--match exact` when a substring filter is too loose. Combine selectors with `--dry-run` actions
+to resolve a unique target before `--yes`.
+
 ## Capture a result for support or automation
 
 Use `--once` when you want the same command to print one readable snapshot instead of opening its
 interactive screen. Use `--plain` when you want to explicitly select human-readable output, and
 `--json` for the shared schema-versioned document. Redirected output defaults to plain text. JSON
 preserves entities, findings, relationships and collection warnings so scripts do not have to parse
-the terminal layout.
+the terminal layout. `--fields` projects JSON/JSONL; `--quiet` keeps only the exit status.
 
 ```sh
 lens --plain > lens-snapshot.txt
 lens-health --json > lens-health.json
+lens-health --fail-on critical --quiet
 ```
 
 Review output before sharing it. Process commands, user names, host names, addresses, log messages

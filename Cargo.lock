@@ -967,8 +967,10 @@ dependencies = [
 name = "lens-core"
 version = "0.3.0"
 dependencies = [
+ "clap",
  "lens-model",
  "serde",
+ "serde_json",
 ]
 
 [[package]]
@@ -1065,6 +1067,7 @@ name = "lens-services"
 version = "0.3.0"
 dependencies = [
  "lens-system",
+ "serde_json",
 ]
 
 [[package]]
@@ -1076,7 +1079,9 @@ dependencies = [
  "clap_complete",
  "clap_mangen",
  "crossterm",
+ "lens-core",
  "lens-model",
+ "lens-output",
  "lens-platform-linux",
  "lens-platform-macos",
  "serde",

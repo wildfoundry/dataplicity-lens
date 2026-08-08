@@ -1,5 +1,13 @@
 #![forbid(unsafe_code)]
 
+mod scripting;
+
+pub use scripting::{
+    AssertionError, AssertionPolicy, EXIT_ASSERTION, EXIT_FAILURE, EXIT_SUCCESS, EXIT_USAGE,
+    FailOnSeverity, MatchMode, PROJECTABLE_FIELDS, PrimaryDomain, UsageError, exit_code_from_error,
+    parse_fields_list, project_snapshot_value,
+};
+
 use std::{cmp::Ordering, collections::HashMap};
 
 use lens_model::{Process, ProcessId, ProcessState};
@@ -96,11 +104,18 @@ pub struct ProcessFilter {
     pub min_cpu: Option<f64>,
     pub min_memory: Option<f64>,
     pub name: Option<String>,
+    pub exact_name: Option<String>,
     pub service_or_cgroup: Option<String>,
+    pub cgroup: Option<String>,
+    pub pid: Option<u32>,
+    pub ppid: Option<u32>,
+    #[serde(default)]
+    pub match_mode: MatchMode,
 }
 
 impl ProcessFilter {
     pub fn matches(&self, process: &Process) -> bool {
+        let mode = self.match_mode;
         if let Some(search) = normalized(&self.search) {
             let pid = process.pid.0.to_string();
             let haystacks = [
@@ -117,20 +132,13 @@ impl ProcessFilter {
                     .map_or("", |cgroup| cgroup.path.as_str()),
                 pid.as_str(),
             ];
-            if !haystacks
-                .iter()
-                .any(|value| value.to_ascii_lowercase().contains(&search))
-            {
+            if !haystacks.iter().any(|value| mode.matches(value, &search)) {
                 return false;
             }
         }
 
         if let Some(user) = normalized(&self.user)
-            && !process
-                .user
-                .display_name()
-                .to_ascii_lowercase()
-                .contains(&user)
+            && !mode.matches(&process.user.display_name(), &user)
         {
             return false;
         }
@@ -150,9 +158,25 @@ impl ProcessFilter {
             return false;
         }
         if let Some(name) = normalized(&self.name)
-            && !process.name.to_ascii_lowercase().contains(&name)
+            && !mode.matches(&process.name, &name)
         {
             return false;
+        }
+        if let Some(exact_name) = normalized(&self.exact_name)
+            && process.name.to_ascii_lowercase() != exact_name
+        {
+            return false;
+        }
+        if let Some(pid) = self.pid
+            && process.pid.0 != pid
+        {
+            return false;
+        }
+        if let Some(ppid) = self.ppid {
+            let parent = process.parent_pid.map(|id| id.0);
+            if parent != Some(ppid) {
+                return false;
+            }
         }
         if let Some(service) = normalized(&self.service_or_cgroup) {
             let service_name = process
@@ -163,13 +187,34 @@ impl ProcessFilter {
                 .cgroup
                 .as_ref()
                 .map_or("", |item| item.path.as_str());
-            if !service_name.to_ascii_lowercase().contains(&service)
-                && !cgroup.to_ascii_lowercase().contains(&service)
-            {
+            if !mode.matches(service_name, &service) && !mode.matches(cgroup, &service) {
+                return false;
+            }
+        }
+        if let Some(cgroup_filter) = normalized(&self.cgroup) {
+            let cgroup = process
+                .cgroup
+                .as_ref()
+                .map_or("", |item| item.path.as_str());
+            if !mode.matches(cgroup, &cgroup_filter) {
                 return false;
             }
         }
         true
+    }
+
+    pub fn has_selector(&self) -> bool {
+        self.search.is_some()
+            || self.user.is_some()
+            || self.state.is_some()
+            || self.min_cpu.is_some()
+            || self.min_memory.is_some()
+            || self.name.is_some()
+            || self.exact_name.is_some()
+            || self.service_or_cgroup.is_some()
+            || self.cgroup.is_some()
+            || self.pid.is_some()
+            || self.ppid.is_some()
     }
 }
 
