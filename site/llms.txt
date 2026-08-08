@@ -1,6 +1,6 @@
 # Dataplicity Lens
 
-> Dataplicity Lens is an open-source terminal toolkit for inspecting processes, services, logs, storage, networking, and hardware on Linux and macOS.
+> Dataplicity Lens is an open-source terminal toolkit for inspecting processes, services, containers, logs, storage, networking, and hardware on Linux and macOS.
 
 ## What Dataplicity Lens is
 
@@ -25,11 +25,12 @@ License: Apache License 2.0.
 
 ## Commands
 
-The suite ships nine commands that share the same host snapshot and process/service identities:
+The suite ships ten commands that share the same host snapshot and process/service identities:
 
 - `lens` — host overview
 - `lens-top` — processes and resource use
 - `lens-services` — service state (systemd / launchd)
+- `lens-containers` — Docker/Podman inventory and safe start/stop/restart
 - `lens-logs` — recent journal, unified log, and local file messages
 - `lens-disk` — storage and mounts
 - `lens-net` — interfaces, routes, and listeners

@@ -30,8 +30,8 @@ VERSION=0.3.0 TARGET=arm-unknown-linux-musleabihf DEB_ARCH=armhf RPM_ARCH=armv6h
 scripts/verify-release.sh dist/release
 ```
 
-Every archive and native package contains `lens`, `lens-top`, `lens-services`, `lens-logs`,
-`lens-disk`, `lens-net`, `lens-hardware`, `lens-system` and `lens-health`. Archive verification also checks the generated man page,
+Every archive and native package contains `lens`, `lens-top`, `lens-services`, `lens-containers`,
+`lens-logs`, `lens-disk`, `lens-net`, `lens-hardware`, `lens-system` and `lens-health`. Archive verification also checks the generated man page,
 completions, licences, checksums and CycloneDX output. Debian and RPM packages use the musl target's
 statically linked binaries so the package does not inherit the build runner's glibc requirement.
 

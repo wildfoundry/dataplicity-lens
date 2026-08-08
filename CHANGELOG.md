@@ -11,6 +11,10 @@ versioning once the first public release is tagged.
   opt-in assertion flags (`--fail-if-*`, `--expect-count*`, `--fail-on*`) with exit status `3`.
 - Safer scripted actions: unique-match resolution for `lens-top --signal` and
   `lens-services --action`, plus `--expect-name`, `--expect-active`, and `--wait`.
+- `lens-containers` specialist for Docker/Podman inventory (`runtime`, `id`, `name`, `image`,
+  `status`, `state`, `created`, `ports`) with silent hide when runtimes are absent/not live,
+  permission warnings when the socket/group blocks access, and safe `start` / `stop` / `restart`
+  actions.
 
 ### Changed
 

@@ -7,7 +7,7 @@ native_packages="${PACKAGE_NATIVE:-true}"
 out="${OUTPUT_DIR:-dist/${TARGET}}"
 stage="${STAGE_DIR:-stage/${TARGET}}"
 native_out="${NATIVE_OUTPUT_DIR:-$out}"
-binaries=(lens lens-top lens-services lens-logs lens-disk lens-net lens-hardware lens-system lens-health)
+binaries=(lens lens-top lens-services lens-containers lens-logs lens-disk lens-net lens-hardware lens-system lens-health)
 
 rm -rf "$stage" "$out"
 mkdir -p "$stage/usr/bin" "$stage/usr/share/doc/dataplicity-lens" "$out"

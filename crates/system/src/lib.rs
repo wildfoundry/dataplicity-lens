@@ -1,5 +1,6 @@
 #![forbid(unsafe_code)]
 
+mod containers;
 mod hardware;
 
 use std::{
@@ -38,8 +39,8 @@ use lens_model::{
     SchemaVersion, ServiceReference, TemperatureSensor, Timestamp, User,
 };
 pub use lens_model::{
-    BlockDevice, DeletedOpenFile, EntityId, Filesystem, Interface, LogEntry, LogSource, Mount,
-    Relationship, RelationshipKind, Route, Service, Snapshot as SystemSnapshot, Socket,
+    BlockDevice, Container, DeletedOpenFile, EntityId, Filesystem, Interface, LogEntry, LogSource,
+    Mount, Relationship, RelationshipKind, Route, Service, Snapshot as SystemSnapshot, Socket,
 };
 use lens_output::{jsonl_record_types_for_fields, write_json_lines_filtered, write_json_value};
 #[cfg(target_os = "linux")]
@@ -55,6 +56,7 @@ pub const SCHEMA_VERSION: &str = "2";
 pub enum View {
     Processes,
     Services,
+    Containers,
     Logs,
     Disk,
     Net,
@@ -64,9 +66,10 @@ pub enum View {
 }
 
 impl View {
-    pub const ALL: [Self; 8] = [
+    pub const ALL: [Self; 9] = [
         Self::Processes,
         Self::Services,
+        Self::Containers,
         Self::Logs,
         Self::Disk,
         Self::Net,
@@ -79,6 +82,7 @@ impl View {
         match self {
             Self::Processes => "lens-top",
             Self::Services => "lens-services",
+            Self::Containers => "lens-containers",
             Self::Logs => "lens-logs",
             Self::Disk => "lens-disk",
             Self::Net => "lens-net",
@@ -92,6 +96,7 @@ impl View {
         match self {
             Self::Processes => "Processes",
             Self::Services => "Services",
+            Self::Containers => "Containers",
             Self::Logs => "Logs",
             Self::Disk => "Storage",
             Self::Net => "Network",
@@ -135,6 +140,8 @@ impl ServiceAction {
         Self::Disable,
     ];
 
+    const CONTAINER_ALL: [Self; 3] = [Self::Restart, Self::Start, Self::Stop];
+
     pub const fn cli_name(self) -> &'static str {
         match self {
             Self::Start => "start",
@@ -145,6 +152,10 @@ impl ServiceAction {
         }
     }
 
+    pub const fn is_container_action(self) -> bool {
+        matches!(self, Self::Start | Self::Stop | Self::Restart)
+    }
+
     const fn label(self) -> &'static str {
         match self {
             Self::Start => "Start the service now",
@@ -152,6 +163,15 @@ impl ServiceAction {
             Self::Restart => "Restart the service",
             Self::Enable => "Enable at boot",
             Self::Disable => "Disable at boot",
+        }
+    }
+
+    const fn container_label(self) -> &'static str {
+        match self {
+            Self::Start => "Start the container now",
+            Self::Stop => "Stop the container now",
+            Self::Restart => "Restart the container",
+            Self::Enable | Self::Disable => "Unsupported",
         }
     }
 }
@@ -201,8 +221,8 @@ pub struct ViewArgs {
     /// Sort primary rows when the domain supports it.
     #[arg(long, value_enum)]
     pub sort: Option<SpecialistSort>,
-    /// Exact or matched service unit name (lens-services / action resolution).
-    #[arg(long, value_name = "UNIT")]
+    /// Exact or matched service/container name (lens-services / lens-containers).
+    #[arg(long, value_name = "NAME")]
     pub name: Option<String>,
     /// Restrict services to an active state (for example active, failed).
     #[arg(long, value_name = "STATE")]
@@ -210,6 +230,18 @@ pub struct ViewArgs {
     /// Restrict services whose unit load state is loaded (true) or not (false).
     #[arg(long, value_name = "BOOL")]
     pub enabled: Option<bool>,
+    /// Container runtime filter: docker or podman (lens-containers).
+    #[arg(long = "runtime", value_name = "RUNTIME")]
+    pub container_runtime: Option<String>,
+    /// Container image filter (lens-containers).
+    #[arg(long, value_name = "IMAGE")]
+    pub image: Option<String>,
+    /// Container human status filter (lens-containers).
+    #[arg(long, value_name = "STATUS")]
+    pub status: Option<String>,
+    /// Normalized container state filter (lens-containers).
+    #[arg(long, value_name = "STATE")]
+    pub state: Option<String>,
     /// Restrict log records and services to a unit name.
     #[arg(long)]
     pub service: Option<String>,
@@ -305,10 +337,10 @@ pub struct ViewArgs {
     /// Maximum rows per result type; use 0 for every available row.
     #[arg(long, default_value_t = 1000)]
     pub limit: usize,
-    /// Change a service state (lens-services on Linux only).
+    /// Change a service or container state (lens-services / lens-containers).
     #[arg(long, value_enum)]
     pub action: Option<ServiceAction>,
-    /// Exact service unit targeted by --action.
+    /// Exact service unit or container id/name targeted by --action.
     #[arg(long)]
     pub target: Option<String>,
     /// Confirm a requested state change for non-interactive use.
@@ -320,7 +352,10 @@ pub struct ViewArgs {
     /// After a service action, require this active state (lens-services).
     #[arg(long, value_name = "STATE")]
     pub expect_active: Option<String>,
-    /// Bound wait for --expect-active (for example 2s, 500ms). Default: 2s.
+    /// After a container action, require this status/state (lens-containers).
+    #[arg(long, value_name = "STATUS")]
+    pub expect_status: Option<String>,
+    /// Bound wait for --expect-active / --expect-status (for example 2s, 500ms). Default: 2s.
     #[arg(long, value_name = "DURATION")]
     pub wait: Option<String>,
 }
@@ -360,7 +395,13 @@ pub fn run_view(view: View) -> Result<()> {
         return Ok(());
     }
     if args.action.is_some() {
-        return run_service_action(view, &args);
+        return match view {
+            View::Services => run_service_action(view, &args),
+            View::Containers => run_container_action(view, &args),
+            _ => Err(usage_err(
+                "actions are available through lens-services and lens-containers",
+            )),
+        };
     }
     let force_oneshot = args.json
         || args.jsonl
@@ -448,6 +489,7 @@ fn primary_domain_for(view: View) -> PrimaryDomain {
     match view {
         View::Processes => PrimaryDomain::Processes,
         View::Services => PrimaryDomain::Services,
+        View::Containers => PrimaryDomain::Containers,
         View::Logs => PrimaryDomain::Logs,
         View::Disk => PrimaryDomain::Mounts,
         View::Net => PrimaryDomain::Sockets,
@@ -530,6 +572,7 @@ fn jsonl_defaults_for_view(view: View) -> Vec<&'static str> {
     match view {
         View::Processes => vec!["host", "process", "finding"],
         View::Services => vec!["host", "service", "finding"],
+        View::Containers => vec!["host", "container", "finding"],
         View::Logs => vec!["host", "log", "finding"],
         View::Disk => vec![
             "host",
@@ -555,9 +598,12 @@ fn view_command(name: &'static str) -> clap::Command {
     let supports_service = matches!(name, "lens" | "lens-services" | "lens-logs");
     let supports_log_filters = matches!(name, "lens" | "lens-logs");
     let supports_log_source = matches!(name, "lens" | "lens-logs" | "lens-health");
-    let supports_actions = name == "lens-services";
-    let supports_name = matches!(name, "lens-services");
+    let supports_service_actions = name == "lens-services";
+    let supports_container_actions = name == "lens-containers";
+    let supports_actions = supports_service_actions || supports_container_actions;
+    let supports_name = matches!(name, "lens-services" | "lens-containers");
     let supports_service_state = name == "lens-services";
+    let supports_containers = name == "lens-containers";
     let supports_disk = name == "lens-disk";
     let supports_net = name == "lens-net";
     let supports_hardware = name == "lens-hardware";
@@ -574,6 +620,10 @@ fn view_command(name: &'static str) -> clap::Command {
         ("name", supports_name),
         ("active", supports_service_state),
         ("enabled", supports_service_state),
+        ("container_runtime", supports_containers),
+        ("image", supports_containers),
+        ("status", supports_containers),
+        ("state", supports_containers),
         ("mount", supports_disk),
         ("fstype", supports_disk),
         ("min_used_percent", supports_disk),
@@ -591,7 +641,8 @@ fn view_command(name: &'static str) -> clap::Command {
         ("target", supports_actions),
         ("yes", supports_actions),
         ("dry_run", supports_actions),
-        ("expect_active", supports_actions),
+        ("expect_active", supports_service_actions),
+        ("expect_status", supports_container_actions),
         ("wait", supports_actions),
     ] {
         if !visible {
@@ -623,12 +674,40 @@ fn validate_view_args(view: View, args: &ViewArgs) -> Result<()> {
             "--service is only available in lens-services and lens-logs",
         ));
     }
-    if args.name.is_some() && view != View::Services {
-        return Err(usage_err("--name is only available in lens-services"));
+    if args.name.is_some() && !matches!(view, View::Services | View::Containers) {
+        return Err(usage_err(
+            "--name is only available in lens-services and lens-containers",
+        ));
     }
     if (args.active.is_some() || args.enabled.is_some()) && view != View::Services {
         return Err(usage_err(
             "--active and --enabled are only available in lens-services",
+        ));
+    }
+    if (args.container_runtime.is_some()
+        || args.image.is_some()
+        || args.status.is_some()
+        || args.state.is_some())
+        && view != View::Containers
+    {
+        return Err(usage_err(
+            "--runtime, --image, --status and --state are only available in lens-containers",
+        ));
+    }
+    if let Some(runtime) = args.container_runtime.as_deref() {
+        let runtime = runtime.to_ascii_lowercase();
+        if runtime != "docker" && runtime != "podman" {
+            return Err(usage_err("--runtime must be docker or podman"));
+        }
+    }
+    if args.expect_status.is_some() && view != View::Containers {
+        return Err(usage_err(
+            "--expect-status is only available in lens-containers",
+        ));
+    }
+    if args.expect_active.is_some() && view != View::Services {
+        return Err(usage_err(
+            "--expect-active is only available in lens-services",
         ));
     }
     if args.process.is_some() && view != View::Logs {
@@ -706,6 +785,10 @@ struct ActionOutcome {
     dry_run: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]
     expect_active: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    expect_status: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    runtime: Option<String>,
 }
 
 fn run_service_action(view: View, args: &ViewArgs) -> Result<()> {
@@ -729,6 +812,8 @@ fn run_service_action(view: View, args: &ViewArgs) -> Result<()> {
                 verified_state: None,
                 dry_run: Some(true),
                 expect_active: args.expect_active.clone(),
+                expect_status: None,
+                runtime: None,
             },
         );
     }
@@ -796,8 +881,197 @@ fn run_service_action(view: View, args: &ViewArgs) -> Result<()> {
                 verified_state,
                 dry_run: Some(false),
                 expect_active: args.expect_active.clone(),
+                expect_status: None,
+                runtime: None,
             },
         )
+    }
+}
+
+fn run_container_action(view: View, args: &ViewArgs) -> Result<()> {
+    if view != View::Containers {
+        return Err(usage_err("--action is only supported by lens-containers"));
+    }
+    let action = args.action.ok_or_else(|| usage_err("missing --action"))?;
+    if !action.is_container_action() {
+        return Err(usage_err(
+            "lens-containers supports --action start, stop, or restart",
+        ));
+    }
+    let resolved = resolve_container_action_target(args)?;
+    if !args.dry_run && !args.yes {
+        return Err(usage_err(
+            "state changes require --yes; use --dry-run to inspect the plan safely",
+        ));
+    }
+    if !args.demo && !containers::runtime_is_usable(&resolved.runtime) {
+        return Err(usage_err(format!(
+            "{} is not usable by the current user; refuse to act",
+            resolved.runtime
+        )));
+    }
+    if args.dry_run {
+        return write_action_outcome(
+            args,
+            &ActionOutcome {
+                action,
+                target: resolved.target,
+                status: "planned",
+                verified_state: None,
+                dry_run: Some(true),
+                expect_active: None,
+                expect_status: args.expect_status.clone(),
+                runtime: Some(resolved.runtime),
+            },
+        );
+    }
+    if args.demo {
+        return Err(usage_err(
+            "container actions cannot mutate demo data; omit --demo to act on the live runtime",
+        ));
+    }
+    containers::run_container_cli(
+        &resolved.runtime,
+        action.cli_name(),
+        &resolved.target,
+        Duration::from_secs(15),
+    )
+    .map_err(|message| anyhow::anyhow!(message))?;
+    let wait = parse_wait_duration(args.wait.as_deref()).map_err(usage_err)?;
+    let deadline = Instant::now() + wait;
+    let verified_state = loop {
+        let mut warnings = Vec::new();
+        let (containers, _) = containers::collect_containers(&mut warnings);
+        let container = containers.into_iter().find(|item| {
+            item.runtime == resolved.runtime
+                && (item.id == resolved.target
+                    || item.id.starts_with(&resolved.target)
+                    || item.name == resolved.target)
+        });
+        let state = container
+            .as_ref()
+            .map(|item| format!("{} / {}", item.state, item.status));
+        if let Some(expected) = args.expect_status.as_deref() {
+            let expected_norm = containers::normalize_state(expected);
+            let matches = container.as_ref().is_some_and(|item| {
+                item.state.eq_ignore_ascii_case(&expected_norm)
+                    || item.status.eq_ignore_ascii_case(expected)
+                    || containers::normalize_state(&item.status) == expected_norm
+            });
+            if matches {
+                break state;
+            }
+            if Instant::now() >= deadline {
+                return Err(assertion_err(format!(
+                    "container {} did not reach status '{expected}' within {}",
+                    resolved.target,
+                    format_wait(wait)
+                )));
+            }
+            thread::sleep(Duration::from_millis(100));
+            continue;
+        }
+        break state;
+    };
+    write_action_outcome(
+        args,
+        &ActionOutcome {
+            action,
+            target: resolved.target,
+            status: "completed",
+            verified_state,
+            dry_run: Some(false),
+            expect_active: None,
+            expect_status: args.expect_status.clone(),
+            runtime: Some(resolved.runtime),
+        },
+    )
+}
+
+struct ResolvedContainerTarget {
+    runtime: String,
+    target: String,
+}
+
+fn resolve_container_action_target(args: &ViewArgs) -> Result<ResolvedContainerTarget> {
+    if let Some(target) = args.target.as_deref() {
+        if target.trim().is_empty()
+            || target.starts_with('-')
+            || target.chars().any(char::is_whitespace)
+        {
+            return Err(usage_err("--target must be one exact container id or name"));
+        }
+        let snapshot = if args.demo {
+            demo_snapshot()
+        } else {
+            let mut warnings = Vec::new();
+            let mut snapshot = SystemSnapshot::empty(hostname());
+            let (containers, runtime_live) = containers::collect_containers(&mut warnings);
+            snapshot.containers = containers;
+            snapshot.containers_runtime_live = runtime_live;
+            snapshot.collection_warnings = warnings;
+            snapshot
+        };
+        let mut matches: Vec<_> = snapshot
+            .containers
+            .into_iter()
+            .filter(|item| {
+                args.container_runtime
+                    .as_deref()
+                    .is_none_or(|runtime| item.runtime.eq_ignore_ascii_case(runtime))
+                    && (item.id == target || item.id.starts_with(target) || item.name == target)
+            })
+            .collect();
+        matches.sort_by(|left, right| left.id.cmp(&right.id));
+        matches.dedup_by(|left, right| left.runtime == right.runtime && left.id == right.id);
+        return match matches.as_slice() {
+            [container] => Ok(ResolvedContainerTarget {
+                runtime: container.runtime.clone(),
+                target: container.id.clone(),
+            }),
+            [] => Err(usage_err(
+                "container --target matched no containers; refuse to act",
+            )),
+            _ => Err(usage_err(
+                "container --target matched multiple containers; refuse to act without a unique runtime/id",
+            )),
+        };
+    }
+    if args.name.is_none()
+        && args.filter.is_none()
+        && args.container_runtime.is_none()
+        && args.image.is_none()
+        && args.status.is_none()
+        && args.state.is_none()
+    {
+        return Err(usage_err(
+            "--action requires --target or a selector that resolves to exactly one container (--name/--runtime/--image/--status/--state/--filter)",
+        ));
+    }
+    let snapshot = if args.demo {
+        demo_snapshot()
+    } else {
+        let mut warnings = Vec::new();
+        let mut snapshot = SystemSnapshot::empty(hostname());
+        let (containers, runtime_live) = containers::collect_containers(&mut warnings);
+        snapshot.containers = containers;
+        snapshot.containers_runtime_live = runtime_live;
+        snapshot.collection_warnings = warnings;
+        snapshot
+    };
+    let filtered = apply_view_filters(View::Containers, snapshot, args)?;
+    match filtered.containers.as_slice() {
+        [container] => Ok(ResolvedContainerTarget {
+            runtime: container.runtime.clone(),
+            target: container.id.clone(),
+        }),
+        [] => Err(usage_err(
+            "container action selector matched no containers; refuse to act",
+        )),
+        _ => Err(usage_err(format!(
+            "container action selector matched {} containers; refuse to act without a unique target",
+            filtered.containers.len()
+        ))),
     }
 }
 
@@ -842,7 +1116,6 @@ fn resolve_service_action_target(args: &ViewArgs) -> Result<String> {
     }
 }
 
-#[cfg(target_os = "linux")]
 fn parse_wait_duration(raw: Option<&str>) -> Result<Duration, String> {
     let Some(raw) = raw else {
         return Ok(Duration::from_secs(2));
@@ -866,9 +1139,8 @@ fn parse_wait_duration(raw: Option<&str>) -> Result<Duration, String> {
     Err(format!("invalid --wait duration '{raw}' (use 2s or 500ms)"))
 }
 
-#[cfg(target_os = "linux")]
 fn format_wait(duration: Duration) -> String {
-    if duration.as_millis() % 1000 == 0 {
+    if duration.as_millis().is_multiple_of(1000) {
         format!("{}s", duration.as_secs())
     } else {
         format!("{}ms", duration.as_millis())
@@ -1488,6 +1760,13 @@ fn spawn_specialist_collection(view: View, args: ViewArgs) -> Receiver<Specialis
                 snapshot.services = collect_services(&mut snapshot.collection_warnings);
                 let _ = send_specialist_update(&sender, view, snapshot, &args, false, "Ready");
             }
+            View::Containers => {
+                let (containers, runtime_live) =
+                    containers::collect_containers(&mut snapshot.collection_warnings);
+                snapshot.containers = containers;
+                snapshot.containers_runtime_live = runtime_live;
+                let _ = send_specialist_update(&sender, view, snapshot, &args, false, "Ready");
+            }
             View::Logs => {
                 #[cfg(target_os = "macos")]
                 {
@@ -1955,39 +2234,49 @@ fn render_cockpit_content(
     }
 
     writeln!(stdout, "\n  {}", ink("EXPLORE", Ink::Label, colour))?;
-    if width >= 110 && rows >= 26 {
+    let explore_columns = if width >= 150 && rows >= 26 {
+        3usize
+    } else if width >= 110 && rows >= 26 {
+        2
+    } else {
+        1
+    };
+    if explore_columns > 1 {
         let gap = 2usize;
-        let available = width.saturating_sub(4 + gap);
-        let left_width = available / 2;
-        let right_width = available.saturating_sub(left_width);
-        for row_index in 0..4 {
-            let left_index = row_index;
-            let right_index = row_index + 4;
-            let left = cockpit_explore_cell(
-                View::ALL[left_index],
-                left_index == selected,
-                snapshot,
-                loading,
-                left_width,
-            );
-            let right = cockpit_explore_cell(
-                View::ALL[right_index],
-                right_index == selected,
-                snapshot,
-                loading,
-                right_width,
-            );
-            let left = if left_index == selected {
-                selected_row(&left, colour)
-            } else {
-                ink(&left, Ink::Muted, colour)
-            };
-            let right = if right_index == selected {
-                selected_row(&right, colour)
-            } else {
-                ink(&right, Ink::Muted, colour)
-            };
-            writeln!(stdout, "  {left}  {right}")?;
+        let available = width.saturating_sub(4 + gap * (explore_columns - 1));
+        let cell_width = available / explore_columns;
+        let row_count = View::ALL.len().div_ceil(explore_columns);
+        for row_index in 0..row_count {
+            let mut line = String::new();
+            for column in 0..explore_columns {
+                let index = row_index + column * row_count;
+                if column > 0 {
+                    line.push_str(&" ".repeat(gap));
+                }
+                if let Some(view) = View::ALL.get(index) {
+                    let cell = format!(
+                        "{:<cell_width$}",
+                        truncate_text(
+                            &cockpit_explore_cell(
+                                *view,
+                                index == selected,
+                                snapshot,
+                                loading,
+                                cell_width,
+                            ),
+                            cell_width,
+                        )
+                    );
+                    if index == selected {
+                        line.push_str(&selected_row(&cell, colour));
+                    } else {
+                        line.push_str(&ink(&cell, Ink::Muted, colour));
+                    }
+                } else {
+                    line.push_str(&" ".repeat(cell_width));
+                }
+            }
+            writeln!(stdout, "  {line}")?;
         }
     } else {
         for (index, view) in View::ALL.iter().enumerate() {
@@ -2359,6 +2648,7 @@ fn cockpit_view_summary(view: View, snapshot: &SystemSnapshot, loading: bool) ->
     match view {
         View::Processes => format!("{} processes", snapshot.processes.len()),
         View::Services => format!("{} services", snapshot.services.len()),
+        View::Containers => cockpit_containers_summary(snapshot),
         View::Logs if snapshot.logs.is_empty() && log_collection_failed(snapshot) => {
             "log collection unavailable".into()
         }
@@ -2405,6 +2695,26 @@ fn cockpit_view_summary(view: View, snapshot: &SystemSnapshot, loading: bool) ->
             )
         }
         View::Health => format!("{} findings", snapshot.findings.len()),
+    }
+}
+
+fn cockpit_containers_summary(snapshot: &SystemSnapshot) -> String {
+    if !snapshot.containers.is_empty() {
+        return format!("{} containers", snapshot.containers.len());
+    }
+    let access_limited = snapshot.collection_warnings.iter().any(|warning| {
+        let lower = warning.to_ascii_lowercase();
+        (lower.contains("docker") || lower.contains("podman"))
+            && (lower.contains("not usable")
+                || lower.contains("access denied")
+                || lower.contains("permission"))
+    });
+    if access_limited {
+        "runtime access limited".into()
+    } else if snapshot.containers_runtime_live {
+        "0 containers".into()
+    } else {
+        "no container runtime".into()
     }
 }
 
@@ -2582,6 +2892,7 @@ fn move_selection(selected: usize, delta: isize, length: usize) -> usize {
 fn specialist_item_count(view: View, snapshot: &SystemSnapshot) -> usize {
     match view {
         View::Services => snapshot.services.len(),
+        View::Containers => snapshot.containers.len(),
         View::Logs => snapshot.logs.len(),
         View::Disk => snapshot.mounts.len() + snapshot.block_devices.len(),
         View::Net => {
@@ -2601,6 +2912,9 @@ fn specialist_has_data(view: View, snapshot: &SystemSnapshot) -> bool {
     match view {
         View::Processes => !snapshot.processes.is_empty(),
         View::Services => !snapshot.services.is_empty(),
+        View::Containers => {
+            !snapshot.containers.is_empty() || !snapshot.collection_warnings.is_empty()
+        }
         View::Logs => !snapshot.logs.is_empty(),
         View::Disk => !snapshot.mounts.is_empty() || !snapshot.block_devices.is_empty(),
         View::Net => {
@@ -2818,6 +3132,9 @@ fn render_specialist_content(
         View::Services => {
             render_service_specialist(snapshot, selected, inspecting, rows, width, stdout)?
         }
+        View::Containers => {
+            render_container_specialist(snapshot, selected, inspecting, rows, width, stdout)?
+        }
         View::Logs => render_log_specialist(snapshot, selected, inspecting, rows, width, stdout)?,
         View::Disk => render_disk_specialist(snapshot, selected, inspecting, rows, width, stdout)?,
         View::Net => render_net_specialist(
@@ -2901,7 +3218,9 @@ fn render_specialist_content(
                 ink("quit", Ink::Muted, colour),
             )?;
         } else {
-            let action_hint = if view == View::Services && cfg!(target_os = "linux") {
+            let action_hint = if (view == View::Services && cfg!(target_os = "linux"))
+                || view == View::Containers
+            {
                 format!(
                     "   {} {}",
                     keycap("a", colour),
@@ -3189,6 +3508,330 @@ fn render_service_specialist(
         }
     }
     Ok(())
+}
+
+fn render_container_specialist(
+    snapshot: &SystemSnapshot,
+    selected: usize,
+    inspecting: bool,
+    rows: u16,
+    width: usize,
+    out: &mut impl Write,
+) -> Result<()> {
+    let colour = terminal_colour_enabled();
+    if snapshot.containers.is_empty() {
+        let message = if snapshot
+            .collection_warnings
+            .iter()
+            .any(|warning| warning.contains("not usable") || warning.contains("access denied"))
+        {
+            "Container runtime access is limited for the current user."
+        } else {
+            "No container runtime is available, or no containers matched."
+        };
+        writeln!(out, "\n  {}", ink(message, Ink::Muted, colour))?;
+        for warning in &snapshot.collection_warnings {
+            if warning.contains("docker") || warning.contains("podman") {
+                writeln!(out, "  {}", ink(warning, Ink::Attention, colour))?;
+            }
+        }
+        return Ok(());
+    }
+    let container = &snapshot.containers[selected.min(snapshot.containers.len() - 1)];
+    if inspecting {
+        writeln!(out, "\n  {}", ink("CONTAINER", Ink::Label, colour))?;
+        writeln!(out, "  {}", ink(&container.name, Ink::Bright, colour))?;
+        if width >= 80 {
+            let value_width = width.saturating_sub(28) / 2;
+            writeln!(
+                out,
+                "  {} {:<value_width$}  {} {}",
+                ink("RUNTIME", Ink::Label, colour),
+                truncate_text(&container.runtime, value_width),
+                ink("STATE", Ink::Label, colour),
+                container.state
+            )?;
+            writeln!(
+                out,
+                "  {} {:<value_width$}  {} {}",
+                ink("STATUS", Ink::Label, colour),
+                truncate_text(
+                    if container.status.is_empty() {
+                        "-"
+                    } else {
+                        container.status.as_str()
+                    },
+                    value_width
+                ),
+                ink("CREATED", Ink::Label, colour),
+                if container.created.is_empty() {
+                    "-"
+                } else {
+                    container.created.as_str()
+                }
+            )?;
+        } else {
+            writeln!(
+                out,
+                "  {} {:<12}  {} {}",
+                ink("RUNTIME", Ink::Label, colour),
+                container.runtime,
+                ink("STATE", Ink::Label, colour),
+                container.state
+            )?;
+            writeln!(
+                out,
+                "  {} {}",
+                ink("STATUS", Ink::Label, colour),
+                truncate_text(&container.status, width.saturating_sub(10))
+            )?;
+            writeln!(
+                out,
+                "  {} {}",
+                ink("CREATED", Ink::Label, colour),
+                if container.created.is_empty() {
+                    "-"
+                } else {
+                    container.created.as_str()
+                }
+            )?;
+        }
+        writeln!(out, "  {} {}", ink("ID", Ink::Label, colour), container.id)?;
+        writeln!(
+            out,
+            "  {} {}",
+            ink("IMAGE", Ink::Label, colour),
+            truncate_text(&container.image, width.saturating_sub(10))
+        )?;
+        writeln!(
+            out,
+            "  {} {}",
+            ink("PORTS", Ink::Label, colour),
+            if container.ports.is_empty() {
+                "-"
+            } else {
+                container.ports.as_str()
+            }
+        )?;
+        return Ok(());
+    }
+    let layout = container_list_layout(width);
+    match layout {
+        ContainerListLayout::Compact { name_width } => {
+            writeln!(
+                out,
+                "  {:<name_width$} {}",
+                ink("NAME", Ink::Label, colour),
+                ink("STATE", Ink::Label, colour),
+            )?;
+        }
+        ContainerListLayout::Standard {
+            name_width,
+            image_width,
+        } => {
+            writeln!(
+                out,
+                "  {:<8} {:<name_width$} {:<12} {:<image_width$}",
+                ink("RUNTIME", Ink::Label, colour),
+                ink("NAME", Ink::Label, colour),
+                ink("STATE", Ink::Label, colour),
+                ink("IMAGE", Ink::Label, colour),
+            )?;
+        }
+        ContainerListLayout::Wide {
+            name_width,
+            status_width,
+            image_width,
+        } => {
+            writeln!(
+                out,
+                "  {:<8} {:<name_width$} {:<10} {:<status_width$} {:<image_width$}",
+                ink("RUNTIME", Ink::Label, colour),
+                ink("NAME", Ink::Label, colour),
+                ink("STATE", Ink::Label, colour),
+                ink("STATUS", Ink::Label, colour),
+                ink("IMAGE", Ink::Label, colour),
+            )?;
+        }
+        ContainerListLayout::ExtraWide {
+            name_width,
+            status_width,
+            ports_width,
+            image_width,
+        } => {
+            writeln!(
+                out,
+                "  {:<8} {:<name_width$} {:<10} {:<status_width$} {:<ports_width$} {:<image_width$}",
+                ink("RUNTIME", Ink::Label, colour),
+                ink("NAME", Ink::Label, colour),
+                ink("STATE", Ink::Label, colour),
+                ink("STATUS", Ink::Label, colour),
+                ink("PORTS", Ink::Label, colour),
+                ink("IMAGE", Ink::Label, colour),
+            )?;
+        }
+    }
+    let capacity = usize::from(rows.saturating_sub(9)).max(1);
+    let start = viewport_start(selected, snapshot.containers.len(), capacity);
+    for (index, container) in snapshot
+        .containers
+        .iter()
+        .enumerate()
+        .skip(start)
+        .take(capacity)
+    {
+        let row = match layout {
+            ContainerListLayout::Compact { name_width } => format!(
+                "  {:<name_width$} {}",
+                truncate_text(&container.name, name_width),
+                container.state,
+            ),
+            ContainerListLayout::Standard {
+                name_width,
+                image_width,
+            } => format!(
+                "  {:<8} {:<name_width$} {:<12} {}",
+                truncate_text(&container.runtime, 8),
+                truncate_text(&container.name, name_width),
+                truncate_text(&container.state, 12),
+                truncate_text(&container.image, image_width),
+            ),
+            ContainerListLayout::Wide {
+                name_width,
+                status_width,
+                image_width,
+            } => format!(
+                "  {:<8} {:<name_width$} {:<10} {:<status_width$} {}",
+                truncate_text(&container.runtime, 8),
+                truncate_text(&container.name, name_width),
+                truncate_text(&container.state, 10),
+                truncate_text(
+                    if container.status.is_empty() {
+                        "-"
+                    } else {
+                        container.status.as_str()
+                    },
+                    status_width
+                ),
+                truncate_text(&container.image, image_width),
+            ),
+            ContainerListLayout::ExtraWide {
+                name_width,
+                status_width,
+                ports_width,
+                image_width,
+            } => format!(
+                "  {:<8} {:<name_width$} {:<10} {:<status_width$} {:<ports_width$} {}",
+                truncate_text(&container.runtime, 8),
+                truncate_text(&container.name, name_width),
+                truncate_text(&container.state, 10),
+                truncate_text(
+                    if container.status.is_empty() {
+                        "-"
+                    } else {
+                        container.status.as_str()
+                    },
+                    status_width
+                ),
+                truncate_text(
+                    if container.ports.is_empty() {
+                        "-"
+                    } else {
+                        container.ports.as_str()
+                    },
+                    ports_width
+                ),
+                truncate_text(&container.image, image_width),
+            ),
+        };
+        if index == selected {
+            writeln!(out, "{}", selected_row(&row, colour))?;
+        } else {
+            writeln!(
+                out,
+                "{}",
+                ink(
+                    &row,
+                    if container.state == "running" {
+                        Ink::Bright
+                    } else if container.state == "exited" || container.state == "dead" {
+                        Ink::Muted
+                    } else {
+                        Ink::Attention
+                    },
+                    colour
+                )
+            )?;
+        }
+    }
+    Ok(())
+}
+
+#[derive(Debug, Clone, Copy)]
+enum ContainerListLayout {
+    Compact {
+        name_width: usize,
+    },
+    Standard {
+        name_width: usize,
+        image_width: usize,
+    },
+    Wide {
+        name_width: usize,
+        status_width: usize,
+        image_width: usize,
+    },
+    ExtraWide {
+        name_width: usize,
+        status_width: usize,
+        ports_width: usize,
+        image_width: usize,
+    },
+}
+
+fn container_list_layout(width: usize) -> ContainerListLayout {
+    if width < 70 {
+        return ContainerListLayout::Compact {
+            name_width: width.saturating_sub(16).max(8),
+        };
+    }
+    // "  " + runtime(8) + " " + name + " " + state(10/12) + " " + optional cols + image
+    if width >= 130 {
+        let fixed = 2 + 8 + 1 + 1 + 10 + 1 + 1;
+        let flexible = width.saturating_sub(fixed);
+        let name_width = (flexible * 34 / 100).clamp(24, 40);
+        let status_width = (flexible * 22 / 100).clamp(14, 24);
+        let ports_width = (flexible * 18 / 100).clamp(12, 28);
+        let image_width = flexible
+            .saturating_sub(name_width + status_width + ports_width)
+            .max(16);
+        return ContainerListLayout::ExtraWide {
+            name_width,
+            status_width,
+            ports_width,
+            image_width,
+        };
+    }
+    if width >= 100 {
+        let fixed = 2 + 8 + 1 + 1 + 10 + 1;
+        let flexible = width.saturating_sub(fixed);
+        let name_width = (flexible * 40 / 100).clamp(22, 36);
+        let status_width = (flexible * 24 / 100).clamp(14, 22);
+        let image_width = flexible.saturating_sub(name_width + status_width).max(12);
+        return ContainerListLayout::Wide {
+            name_width,
+            status_width,
+            image_width,
+        };
+    }
+    let fixed = 2 + 8 + 1 + 1 + 12 + 1;
+    let flexible = width.saturating_sub(fixed);
+    let name_width = (flexible * 45 / 100).clamp(18, 32);
+    let image_width = flexible.saturating_sub(name_width).max(8);
+    ContainerListLayout::Standard {
+        name_width,
+        image_width,
+    }
 }
 
 fn render_disk_specialist(
@@ -4360,6 +5003,7 @@ fn specialist_loop(view: View, args: &ViewArgs, stdout: &mut impl Write) -> Resu
     let mut search_query: Option<String> = None;
     let mut diagnostic = DiagnosticShell::new();
     let mut service_action: Option<ServiceActionDialog> = None;
+    let mut container_action: Option<ContainerActionDialog> = None;
     let mut network_activity = NetworkActivity::default();
     let mut activity_receiver: Option<Receiver<Vec<(String, u64, u64)>>> = None;
     let mut next_network_sample = Instant::now() + Duration::from_secs(1);
@@ -4377,6 +5021,12 @@ fn specialist_loop(view: View, args: &ViewArgs, stdout: &mut impl Write) -> Resu
         if service_action
             .as_mut()
             .is_some_and(ServiceActionDialog::poll)
+        {
+            redraw = true;
+        }
+        if container_action
+            .as_mut()
+            .is_some_and(ContainerActionDialog::poll)
         {
             redraw = true;
         }
@@ -4450,6 +5100,9 @@ fn specialist_loop(view: View, args: &ViewArgs, stdout: &mut impl Write) -> Resu
             if let Some(dialog) = service_action.as_ref() {
                 render_service_action_overlay(stdout, dialog)?;
             }
+            if let Some(dialog) = container_action.as_ref() {
+                render_container_action_overlay(stdout, dialog)?;
+            }
             redraw = false;
         }
 
@@ -4473,6 +5126,22 @@ fn specialist_loop(view: View, args: &ViewArgs, stdout: &mut impl Write) -> Resu
                         receiver = spawn_specialist_collection(view, active_args.clone());
                         loading = true;
                         status = "Refreshing service state after action…".into();
+                    }
+                }
+                redraw = true;
+                continue;
+            }
+            if let Some(dialog) = container_action.as_mut() {
+                let completed = dialog.stage == ServiceActionStage::Result;
+                if dialog.handle_key(key) {
+                    container_action = None;
+                    if completed {
+                        snapshot = SystemSnapshot::empty(hostname());
+                        network_activity = NetworkActivity::default();
+                        activity_receiver = None;
+                        receiver = spawn_specialist_collection(view, active_args.clone());
+                        loading = true;
+                        status = "Refreshing container state after action…".into();
                     }
                 }
                 redraw = true;
@@ -4578,6 +5247,16 @@ fn specialist_loop(view: View, args: &ViewArgs, stdout: &mut impl Write) -> Resu
                     {
                         status = "Service actions require systemd on Linux; no change was made."
                             .to_owned();
+                    }
+                    redraw = true;
+                }
+                KeyCode::Char('a') if view == View::Containers && !inspecting => {
+                    if let Some(container) = snapshot.containers.get(selected) {
+                        container_action = Some(ContainerActionDialog::new(
+                            container.runtime.clone(),
+                            container.id.clone(),
+                            container.name.clone(),
+                        ));
                     }
                     redraw = true;
                 }
@@ -4771,6 +5450,211 @@ fn render_service_action_overlay(
         lines.push(format!(
             "Target: {} · Enter review · Esc cancel",
             dialog.target
+        ));
+    }
+    for row in 0..usize::from(height.saturating_sub(2)) {
+        execute!(stdout, cursor::MoveTo(x, y + 1 + row as u16))?;
+        let line = lines.get(row).map_or("", String::as_str);
+        let line = truncate_text(line, inner);
+        let padded = format!("{line:<inner$}");
+        let styled = if dialog.stage == ServiceActionStage::Choose && row == dialog.selection {
+            selected_row(&padded, colour)
+        } else {
+            ink(&padded, Ink::Bright, colour)
+        };
+        write!(stdout, "│{styled}│")?;
+    }
+    execute!(stdout, cursor::MoveTo(x, y + height - 1))?;
+    write!(stdout, "╰{}╯", "─".repeat(inner))?;
+    stdout.flush()?;
+    Ok(())
+}
+
+struct ContainerActionDialog {
+    runtime: String,
+    target: String,
+    name: String,
+    selection: usize,
+    stage: ServiceActionStage,
+    result: String,
+    receiver: Option<Receiver<String>>,
+}
+
+impl ContainerActionDialog {
+    fn new(runtime: String, target: String, name: String) -> Self {
+        Self {
+            runtime,
+            target,
+            name,
+            selection: 0,
+            stage: ServiceActionStage::Choose,
+            result: String::new(),
+            receiver: None,
+        }
+    }
+
+    fn poll(&mut self) -> bool {
+        let Some(receiver) = self.receiver.as_ref() else {
+            return false;
+        };
+        match receiver.try_recv() {
+            Ok(result) => {
+                self.result = result;
+                self.stage = ServiceActionStage::Result;
+                self.receiver = None;
+                true
+            }
+            Err(TryRecvError::Disconnected) => {
+                self.result =
+                    "Container action stopped unexpectedly; check the container state.".into();
+                self.stage = ServiceActionStage::Result;
+                self.receiver = None;
+                true
+            }
+            Err(TryRecvError::Empty) => false,
+        }
+    }
+
+    fn handle_key(&mut self, key: crossterm::event::KeyEvent) -> bool {
+        match self.stage {
+            ServiceActionStage::Choose => match key.code {
+                KeyCode::Esc => return true,
+                KeyCode::Down | KeyCode::Char('j') => {
+                    self.selection =
+                        (self.selection + 1).min(ServiceAction::CONTAINER_ALL.len() - 1);
+                }
+                KeyCode::Up | KeyCode::Char('k') => {
+                    self.selection = self.selection.saturating_sub(1);
+                }
+                KeyCode::Enter => self.stage = ServiceActionStage::Confirm,
+                _ => {}
+            },
+            ServiceActionStage::Confirm => match key.code {
+                KeyCode::Esc => self.stage = ServiceActionStage::Choose,
+                KeyCode::Char('y') | KeyCode::Char('Y') => self.execute(),
+                _ => {}
+            },
+            ServiceActionStage::Running => {}
+            ServiceActionStage::Result => {
+                if matches!(key.code, KeyCode::Esc | KeyCode::Enter) {
+                    return true;
+                }
+            }
+        }
+        false
+    }
+
+    fn execute(&mut self) {
+        let action = ServiceAction::CONTAINER_ALL[self.selection];
+        let runtime = self.runtime.clone();
+        let target = self.target.clone();
+        let (sender, receiver) = mpsc::channel();
+        self.receiver = Some(receiver);
+        self.stage = ServiceActionStage::Running;
+        thread::spawn(move || {
+            let _ = sender.send(run_container_action_command(action, &runtime, &target));
+        });
+    }
+}
+
+fn run_container_action_command(action: ServiceAction, runtime: &str, target: &str) -> String {
+    let executable = match env::current_exe() {
+        Ok(executable) => executable,
+        Err(error) => return format!("Unable to locate lens-containers: {error}"),
+    };
+    match Command::new(executable)
+        .args([
+            "--action",
+            action.cli_name(),
+            "--runtime",
+            runtime,
+            "--target",
+            target,
+            "--yes",
+        ])
+        .output()
+    {
+        Ok(output) => {
+            let mut text = String::from_utf8_lossy(&output.stdout).into_owned();
+            text.push_str(&String::from_utf8_lossy(&output.stderr));
+            let text = sanitise_terminal_output(&text);
+            if output.status.success() {
+                text.trim().to_owned()
+            } else {
+                format!("Action failed: {}", text.trim())
+            }
+        }
+        Err(error) => format!("Unable to run container action: {error}"),
+    }
+}
+
+fn render_container_action_overlay(
+    stdout: &mut impl Write,
+    dialog: &ContainerActionDialog,
+) -> Result<()> {
+    let (columns, rows) = terminal::size().unwrap_or((80, 24));
+    let width = columns.saturating_sub(2).clamp(38, 74);
+    let height = 12u16.min(rows.saturating_sub(2));
+    let x = columns.saturating_sub(width) / 2;
+    let y = rows.saturating_sub(height) / 2;
+    let inner = usize::from(width.saturating_sub(2));
+    let colour = terminal_colour_enabled();
+    execute!(stdout, cursor::MoveTo(x, y))?;
+    write!(
+        stdout,
+        "╭─CONTAINER ACTION{}╮",
+        "─".repeat(inner.saturating_sub(17))
+    )?;
+    let action = ServiceAction::CONTAINER_ALL[dialog.selection];
+    let mut lines = match dialog.stage {
+        ServiceActionStage::Choose => ServiceAction::CONTAINER_ALL
+            .iter()
+            .enumerate()
+            .map(|(index, item)| {
+                let marker = if index == dialog.selection {
+                    "▶"
+                } else {
+                    " "
+                };
+                format!(" {marker} {}", item.container_label())
+            })
+            .collect::<Vec<_>>(),
+        ServiceActionStage::Confirm => vec![
+            String::new(),
+            format!(
+                "{} {} ({})?",
+                action.cli_name().to_ascii_uppercase(),
+                dialog.name,
+                dialog.runtime
+            ),
+            String::new(),
+            "Lens will run one exact container action and verify state.".into(),
+            String::new(),
+            "y confirm · Esc back".into(),
+        ],
+        ServiceActionStage::Running => vec![
+            String::new(),
+            format!(
+                "Running {} on {} ({})…",
+                action.cli_name(),
+                dialog.name,
+                dialog.runtime
+            ),
+            String::new(),
+            "Waiting for the runtime and verification.".into(),
+        ],
+        ServiceActionStage::Result => vec![
+            String::new(),
+            dialog.result.clone(),
+            String::new(),
+            "Enter or Esc to close".into(),
+        ],
+    };
+    if dialog.stage == ServiceActionStage::Choose {
+        lines.push(String::new());
+        lines.push(format!(
+            "Target: {} · {} · Enter review · Esc cancel",
+            dialog.name, dialog.runtime
         ));
     }
     for row in 0..usize::from(height.saturating_sub(2)) {
@@ -5090,6 +5974,12 @@ fn collect_view(
         View::Services => {
             snapshot.services = collect_services(&mut snapshot.collection_warnings);
         }
+        View::Containers => {
+            let (containers, runtime_live) =
+                containers::collect_containers(&mut snapshot.collection_warnings);
+            snapshot.containers = containers;
+            snapshot.containers_runtime_live = runtime_live;
+        }
         View::Logs => {
             snapshot.logs = collect_logs(&mut snapshot.collection_warnings, since, limit);
             let file_sources = collect_file_logs(
@@ -5129,7 +6019,7 @@ fn enrich_snapshot(
     since: Option<&str>,
     log_files: &[PathBuf],
 ) -> SystemSnapshot {
-    let (service_result, log_result, disk_result, net_result, hardware_result) =
+    let (service_result, log_result, disk_result, net_result, hardware_result, container_result) =
         thread::scope(|scope| {
             let services = scope.spawn(|| {
                 let mut warnings = Vec::new();
@@ -5159,12 +6049,18 @@ fn enrich_snapshot(
                 (interfaces, routes, sockets, cellular, warnings)
             });
             let hardware = scope.spawn(hardware::collect);
+            let containers = scope.spawn(|| {
+                let mut warnings = Vec::new();
+                let (values, runtime_live) = containers::collect_containers(&mut warnings);
+                (values, runtime_live, warnings)
+            });
             (
                 services.join(),
                 logs.join(),
                 disk.join(),
                 net.join(),
                 hardware.join(),
+                containers.join(),
             )
         });
     let (services, service_warnings) = service_result.unwrap_or_default();
@@ -5174,11 +6070,16 @@ fn enrich_snapshot(
     let (interfaces, routes, sockets, cellular_modems, net_warnings) =
         net_result.unwrap_or_default();
     let hardware = hardware_result.unwrap_or_default();
+    let (container_rows, containers_runtime_live, container_warnings) =
+        container_result.unwrap_or_default();
     snapshot.collection_warnings.extend(service_warnings);
     snapshot.collection_warnings.extend(log_warnings);
     snapshot.collection_warnings.extend(disk_warnings);
     snapshot.collection_warnings.extend(net_warnings);
+    snapshot.collection_warnings.extend(container_warnings);
     snapshot.services = services;
+    snapshot.containers = container_rows;
+    snapshot.containers_runtime_live = containers_runtime_live;
     snapshot.log_sources = vec![platform_log_source()];
     snapshot.log_sources.extend(file_sources);
     snapshot.logs = logs;
@@ -6529,6 +7430,13 @@ fn domain_relationships(snapshot: &SystemSnapshot) -> Vec<Relationship> {
             kind: RelationshipKind::HostedOn,
         });
     }
+    for container in &snapshot.containers {
+        values.push(Relationship {
+            from: EntityId::Container(container.id.clone()),
+            to: host.clone(),
+            kind: RelationshipKind::HostedOn,
+        });
+    }
     for process in &snapshot.processes {
         let process_id = EntityId::Process {
             pid: process.pid,
@@ -7059,6 +7967,31 @@ fn apply_view_filters(
         snapshot
             .services
             .retain(|item| mode.matches(&item.name, name));
+        snapshot
+            .containers
+            .retain(|item| mode.matches(&item.name, name) || mode.matches(&item.id, name));
+    }
+    if let Some(runtime) = args.container_runtime.as_deref() {
+        snapshot
+            .containers
+            .retain(|item| item.runtime.eq_ignore_ascii_case(runtime));
+    }
+    if let Some(image) = args.image.as_deref() {
+        snapshot
+            .containers
+            .retain(|item| mode.matches(&item.image, image));
+    }
+    if let Some(status) = args.status.as_deref() {
+        snapshot
+            .containers
+            .retain(|item| mode.matches(&item.status, status));
+    }
+    if let Some(state) = args.state.as_deref() {
+        let expected = containers::normalize_state(state);
+        snapshot.containers.retain(|item| {
+            item.state.eq_ignore_ascii_case(&expected)
+                || containers::normalize_state(&item.status) == expected
+        });
     }
     if let Some(active) = args.active.as_deref() {
         snapshot
@@ -7075,6 +8008,19 @@ fn apply_view_filters(
         matches(&format!(
             "{} {} {} {}",
             item.name, item.active, item.sub, item.description
+        ))
+    });
+    snapshot.containers.retain(|item| {
+        matches(&format!(
+            "{} {} {} {} {} {} {} {}",
+            item.runtime,
+            item.id,
+            item.name,
+            item.image,
+            item.status,
+            item.state,
+            item.created,
+            item.ports
         ))
     });
     if let Some(service) = args.service.as_deref() {
@@ -7287,6 +8233,7 @@ fn apply_view_filters(
     if limit > 0 {
         snapshot.processes.truncate(limit);
         snapshot.services.truncate(limit);
+        snapshot.containers.truncate(limit);
         snapshot.logs.truncate(limit);
         snapshot.mounts.truncate(limit);
         snapshot.block_devices.truncate(limit);
@@ -7452,6 +8399,33 @@ fn render_plain(view: View, snapshot: &SystemSnapshot, out: &mut dyn Write) -> R
                         .map_or_else(|| "-".into(), |count| count.to_string()),
                     item.description
                 )?;
+            }
+        }
+        View::Containers => {
+            writeln!(
+                out,
+                "RUNTIME  NAME                             STATE        IMAGE                            PORTS"
+            )?;
+            for item in &snapshot.containers {
+                writeln!(
+                    out,
+                    "{:<8} {:<32} {:<12} {:<32} {}",
+                    item.runtime,
+                    item.name,
+                    item.state,
+                    item.image,
+                    if item.ports.is_empty() {
+                        "-"
+                    } else {
+                        item.ports.as_str()
+                    }
+                )?;
+            }
+            if !snapshot.collection_warnings.is_empty() {
+                writeln!(out)?;
+                for warning in &snapshot.collection_warnings {
+                    writeln!(out, "warning: {warning}")?;
+                }
             }
         }
         View::Logs => {
@@ -7886,6 +8860,29 @@ pub fn demo_snapshot() -> SystemSnapshot {
             restart_count: Some(0),
         },
     ];
+    snapshot.containers = vec![
+        Container {
+            runtime: "docker".into(),
+            id: "a1b2c3d4e5f6789012345678abcdef01".into(),
+            name: "edge-mqtt".into(),
+            image: "eclipse-mosquitto:2".into(),
+            status: "Up 2 hours".into(),
+            state: "running".into(),
+            created: "2026-08-08 08:00:00 +0000 UTC".into(),
+            ports: "0.0.0.0:1883->1883/tcp".into(),
+        },
+        Container {
+            runtime: "podman".into(),
+            id: "f0e1d2c3b4a5968778695a4b3c2d1e0f".into(),
+            name: "metrics-agent".into(),
+            image: "ghcr.io/example/metrics:1.4".into(),
+            status: "Exited (0) 3 days ago".into(),
+            state: "exited".into(),
+            created: "2026-08-01 12:00:00 +0000 UTC".into(),
+            ports: String::new(),
+        },
+    ];
+    snapshot.containers_runtime_live = true;
     snapshot.log_sources = vec![LogSource {
         id: "systemd-journal".into(),
         kind: "journal".into(),
@@ -8254,10 +9251,15 @@ mod tests {
 
     #[test]
     fn cockpit_storage_selection_routes_to_lens_disk() {
-        let storage = View::ALL[3];
+        let storage_index = View::ALL
+            .iter()
+            .position(|view| *view == View::Disk)
+            .expect("storage view");
+        let storage = View::ALL[storage_index];
         assert_eq!(storage, View::Disk);
         assert_eq!(storage.title(), "Storage");
         assert_eq!(storage.binary(), "lens-disk");
+        assert_eq!(storage_index, 4, "Containers inserts ahead of Storage");
     }
 
     #[test]
@@ -8326,14 +9328,19 @@ mod tests {
         .expect("compact cockpit");
         let compact_output = String::from_utf8(compact_output).expect("UTF-8");
         assert!(!compact_output.contains("BUSIEST PROCESSES"));
-        assert!(compact_output.matches('\n').count() <= 20);
+        // Compact height still lists every specialist; nine explore rows need a little more room.
+        assert!(compact_output.matches('\n').count() <= 24);
 
+        let storage_index = View::ALL
+            .iter()
+            .position(|view| *view == View::Disk)
+            .expect("storage view");
         let mut complete_output = Vec::new();
         render_cockpit(
             &snapshot,
             &cpu_activity,
             &network_activity,
-            3,
+            storage_index,
             false,
             30,
             &mut complete_output,
@@ -8343,6 +9350,7 @@ mod tests {
         assert!(complete_output.contains("critical ·"));
         assert!(complete_output.contains("▶ Storage"));
         assert!(complete_output.contains("root filesystem · 97% used"));
+        assert!(complete_output.contains("Containers"));
     }
 
     #[test]
@@ -8756,6 +9764,62 @@ mod tests {
     }
 
     #[test]
+    fn explore_column_layout_covers_every_specialist() {
+        for columns in [1usize, 2, 3] {
+            let row_count = View::ALL.len().div_ceil(columns);
+            let mut seen = vec![false; View::ALL.len()];
+            for row_index in 0..row_count {
+                for column in 0..columns {
+                    let index = row_index + column * row_count;
+                    if let Some(slot) = seen.get_mut(index) {
+                        *slot = true;
+                    }
+                }
+            }
+            assert!(
+                seen.iter().all(|present| *present),
+                "columns={columns} missed a specialist tile"
+            );
+        }
+    }
+
+    #[test]
+    fn container_list_gains_status_and_ports_on_wide_terminals() {
+        let snapshot = demo_snapshot();
+        let mut standard = Vec::new();
+        render_container_specialist(&snapshot, 0, false, 30, 80, &mut standard)
+            .expect("standard containers");
+        let standard = String::from_utf8(standard).expect("UTF-8");
+        assert!(standard.contains("RUNTIME"));
+        assert!(standard.contains("IMAGE"));
+        assert!(!standard.contains("PORTS"));
+
+        let mut wide = Vec::new();
+        render_container_specialist(&snapshot, 0, false, 30, 140, &mut wide)
+            .expect("wide containers");
+        let wide = String::from_utf8(wide).expect("UTF-8");
+        assert!(wide.contains("STATUS"));
+        assert!(wide.contains("PORTS"));
+        assert!(wide.contains("edge-mqtt"));
+        assert!(wide.contains("1883"));
+
+        let mut detail = Vec::new();
+        render_container_specialist(&snapshot, 0, true, 30, 120, &mut detail)
+            .expect("container detail");
+        let detail = String::from_utf8(detail).expect("UTF-8");
+        assert!(
+            detail
+                .lines()
+                .any(|line| line.contains("RUNTIME") && line.contains("STATE"))
+        );
+        assert!(
+            detail
+                .lines()
+                .any(|line| line.contains("STATUS") && line.contains("CREATED"))
+        );
+    }
+
+    #[test]
     fn service_action_requires_a_separate_review_step() {
         let mut dialog = ServiceActionDialog {
             target: "nginx.service".into(),
@@ -8924,6 +9988,7 @@ mod tests {
     fn demo_contract_has_every_specialist_domain() {
         let snapshot = demo_snapshot();
         assert!(!snapshot.services.is_empty());
+        assert!(!snapshot.containers.is_empty());
         assert!(!snapshot.logs.is_empty());
         assert!(!snapshot.mounts.is_empty());
         assert!(!snapshot.interfaces.is_empty());

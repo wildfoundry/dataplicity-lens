@@ -130,6 +130,8 @@ impl MacOsCollector {
             },
             processes,
             services: Vec::new(),
+            containers: Vec::new(),
+            containers_runtime_live: false,
             log_sources: Vec::new(),
             logs: Vec::new(),
             mounts: Vec::new(),

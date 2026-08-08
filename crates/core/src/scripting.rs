@@ -94,6 +94,7 @@ impl MatchMode {
 pub enum PrimaryDomain {
     Processes,
     Services,
+    Containers,
     Logs,
     Mounts,
     Sockets,
@@ -108,6 +109,7 @@ impl PrimaryDomain {
         match self {
             Self::Processes | Self::CockpitProcesses => snapshot.processes.len(),
             Self::Services => snapshot.services.len(),
+            Self::Containers => snapshot.containers.len(),
             Self::Logs => snapshot.logs.len(),
             Self::Mounts => snapshot.mounts.len(),
             Self::Sockets => snapshot.sockets.len(),
@@ -123,6 +125,7 @@ impl PrimaryDomain {
         match self {
             Self::Processes | Self::CockpitProcesses => "processes",
             Self::Services => "services",
+            Self::Containers => "containers",
             Self::Logs => "logs",
             Self::Mounts => "mounts",
             Self::Sockets => "sockets",
@@ -279,6 +282,7 @@ impl FailOnSeverity {
 pub const PROJECTABLE_FIELDS: &[&str] = &[
     "processes",
     "services",
+    "containers",
     "log_sources",
     "logs",
     "mounts",
@@ -385,6 +389,8 @@ mod tests {
             },
             processes: Vec::new(),
             services: Vec::new(),
+            containers: Vec::new(),
+            containers_runtime_live: false,
             log_sources: Vec::new(),
             logs: Vec::new(),
             mounts: Vec::new(),

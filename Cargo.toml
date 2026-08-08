@@ -3,6 +3,7 @@ members = [
     "apps/lens",
     "apps/lens-top",
     "apps/lens-services",
+    "apps/lens-containers",
     "apps/lens-logs",
     "apps/lens-disk",
     "apps/lens-net",

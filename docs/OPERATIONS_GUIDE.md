@@ -17,6 +17,7 @@ Open a selected domain with the arrow keys and `Enter`, or start its command dir
 | What needs attention on this device? | `lens` |
 | Which process is consuming CPU or memory? | `lens-top` |
 | Did a service fail or restart repeatedly? | `lens-services` |
+| Is a Docker/Podman container missing, exited or stuck? | `lens-containers` |
 | What was logged around a failure? | `lens-logs` |
 | Which filesystem is under pressure? | `lens-disk` |
 | Does the device have the expected address, route, listener or modem? | `lens-net` |

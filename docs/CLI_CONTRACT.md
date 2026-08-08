@@ -33,7 +33,8 @@ it does not wait for unrelated services, logs, disks or network probes.
 `--filter` is a case-insensitive match over the values rendered by that specialist. `--match contains|exact`
 controls how `--filter` and name selectors bind (default `contains`). Domain-specific options are
 rejected when used with the wrong command rather than ignored. For example, `--severity` belongs to
-`lens-logs`, while `--name` / `--active` belong to `lens-services`.
+`lens-logs`, while `--name` / `--active` belong to `lens-services` and `--runtime` / `--state` belong
+to `lens-containers`.
 
 `lens-top` samples twice to calculate process CPU and I/O rates. Its implicit one-shot sampling window
 is capped at 250 ms for shell use. An explicit `--interval`, such as `--interval 2s`, is honoured as
@@ -86,6 +87,7 @@ The non-interactive action contract is deliberately explicit:
 
 - `lens-top --signal SIGNAL` targets one process via `--pid` and/or filters that resolve to exactly one match.
 - `lens-services --action ACTION` targets one unit via `--target` or selectors that resolve to exactly one match.
+- `lens-containers --action ACTION` targets one container via `--target` or selectors that resolve to exactly one match (`start` / `stop` / `restart` only).
 - Zero or multiple matches refuse to act with exit status `2`.
 - `--dry-run` prints the planned target and action without changing state.
 - Execution requires `--yes`; absence of confirmation is an error.
