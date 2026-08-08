@@ -17,11 +17,18 @@ use clap::{CommandFactory, Parser};
 use cli::{Args, CompletionShell, SignalArg};
 use config::EffectiveConfig;
 use demo::DemoSource;
-use lens_core::{GroupMode, ProcessFilter, SortDirection, SortKey, parse_state, select_processes};
+use lens_core::{
+    AssertionError, AssertionPolicy, GroupMode, PrimaryDomain, ProcessFilter, SortDirection,
+    SortKey, UsageError, exit_code_from_error, parse_fields_list, parse_state,
+    project_snapshot_value, select_processes,
+};
 use lens_diagnostics::evaluate;
 use lens_history::HistoryStore;
 use lens_model::{BuildInfo, EntityId, Relationship, RelationshipKind, Snapshot};
-use lens_output::{OutputFormat, PlainOptions, write_snapshot};
+use lens_output::{
+    OutputFormat, PlainOptions, jsonl_record_types_for_fields, write_json_lines_filtered,
+    write_json_value, write_snapshot,
+};
 #[cfg(target_os = "linux")]
 use lens_platform_linux::LinuxCollector;
 #[cfg(target_os = "macos")]
@@ -33,8 +40,16 @@ use tracing_subscriber::EnvFilter;
 fn main() {
     if let Err(error) = run() {
         let _ = writeln!(io::stderr(), "lens-top: {error:#}");
-        std::process::exit(1);
+        std::process::exit(exit_code_from_error(error.as_ref()));
     }
+}
+
+fn usage_err(message: impl Into<String>) -> anyhow::Error {
+    anyhow::Error::new(UsageError::new(message))
+}
+
+fn assertion_err(message: impl Into<String>) -> anyhow::Error {
+    anyhow::Error::new(AssertionError::new(message))
 }
 
 fn run() -> Result<()> {
@@ -63,6 +78,13 @@ fn run() -> Result<()> {
 
     validate_threshold("--min-cpu", args.min_cpu)?;
     validate_threshold("--min-memory", args.min_memory)?;
+    let policy = assertion_policy_from_args(&args);
+    policy
+        .validate()
+        .map_err(|error| usage_err(error.message))?;
+    if args.fields.is_some() && !args.json && !args.jsonl {
+        return Err(usage_err("--fields requires --json or --jsonl"));
+    }
     let effective = EffectiveConfig::resolve(&args)?;
     let filter = process_filter(&args)?;
     let build = build_info();
@@ -73,7 +95,7 @@ fn run() -> Result<()> {
         build,
     );
     if args.signal.is_some() {
-        return run_process_action(&args, &mut sampler);
+        return run_process_action(&args, &filter, &mut sampler);
     }
 
     let output_format = if args.json {
@@ -86,7 +108,12 @@ fn run() -> Result<()> {
         None
     };
     let terminal = io::stdout().is_terminal();
-    let interactive = terminal && output_format.is_none() && !args.once;
+    let interactive = terminal
+        && output_format.is_none()
+        && !args.once
+        && !args.quiet
+        && args.fields.is_none()
+        && !policy.is_active();
 
     if interactive {
         let initial = sampler.collect()?;
@@ -125,20 +152,64 @@ fn run() -> Result<()> {
         effective.group,
         effective.limit,
     );
-    let format = output_format.unwrap_or(OutputFormat::Plain);
-    let width = std::env::var("COLUMNS")
-        .ok()
-        .and_then(|value| value.parse().ok())
-        .unwrap_or(120);
-    let result = write_snapshot(
-        &mut io::stdout().lock(),
-        &snapshot,
-        format,
-        PlainOptions {
-            width,
-            limit: effective.limit,
-        },
-    );
+    emit_top_output(&args, &snapshot, effective.limit)?;
+    match policy.evaluate(&snapshot, PrimaryDomain::Processes) {
+        Ok(()) => Ok(()),
+        Err(error) => Err(assertion_err(error.message)),
+    }
+}
+
+fn assertion_policy_from_args(args: &Args) -> AssertionPolicy {
+    AssertionPolicy {
+        fail_if_empty: args.fail_if_empty,
+        fail_if_any: args.fail_if_any,
+        expect_count: args.expect_count,
+        expect_count_min: args.expect_count_min,
+        expect_count_max: args.expect_count_max,
+        fail_on: args.fail_on,
+        fail_on_collection_warnings: args.fail_on_collection_warnings,
+    }
+}
+
+fn emit_top_output(args: &Args, snapshot: &Snapshot, limit: Option<usize>) -> Result<()> {
+    if args.quiet {
+        return Ok(());
+    }
+    let fields = match &args.fields {
+        Some(raw) => Some(parse_fields_list(raw).map_err(|error| usage_err(error.message))?),
+        None => None,
+    };
+    let result = if args.json {
+        if let Some(fields) = fields {
+            let value = project_snapshot_value(snapshot, &fields).context("project JSON fields")?;
+            write_json_value(&mut io::stdout().lock(), &value)
+        } else {
+            write_snapshot(
+                &mut io::stdout().lock(),
+                snapshot,
+                OutputFormat::Json,
+                PlainOptions::default(),
+            )
+        }
+    } else if args.jsonl {
+        let record_types = if let Some(fields) = fields.as_ref() {
+            jsonl_record_types_for_fields(fields)
+        } else {
+            vec!["host", "process", "finding"]
+        };
+        write_json_lines_filtered(&mut io::stdout().lock(), snapshot, &record_types)
+    } else {
+        let width = std::env::var("COLUMNS")
+            .ok()
+            .and_then(|value| value.parse().ok())
+            .unwrap_or(120);
+        write_snapshot(
+            &mut io::stdout().lock(),
+            snapshot,
+            OutputFormat::Plain,
+            PlainOptions { width, limit },
+        )
+    };
     match result {
         Ok(()) => Ok(()),
         Err(error) if error.kind() == io::ErrorKind::BrokenPipe => Ok(()),
@@ -163,24 +234,43 @@ struct ProcessActionOutcome {
     verified: String,
 }
 
-fn run_process_action(args: &Args, sampler: &mut Sampler) -> Result<()> {
-    let signal = args.signal.context("missing --signal")?;
-    let pid = args.pid.context("missing --pid")?;
+fn run_process_action(args: &Args, filter: &ProcessFilter, sampler: &mut Sampler) -> Result<()> {
+    let signal = args.signal.ok_or_else(|| usage_err("missing --signal"))?;
+    if !args.dry_run && !args.yes {
+        return Err(usage_err(
+            "process signals require --yes; use --dry-run to inspect the plan safely",
+        ));
+    }
+    if args.demo && !args.dry_run {
+        return Err(usage_err("--demo only supports --dry-run process actions"));
+    }
+    let snapshot = sampler.collect()?;
+    let mut candidates: Vec<_> = snapshot
+        .processes
+        .iter()
+        .filter(|process| filter.matches(process))
+        .collect();
+    if let Some(pid) = args.pid {
+        candidates.retain(|process| process.pid.0 == pid);
+    }
+    let target = match candidates.as_slice() {
+        [process] => *process,
+        [] => {
+            return Err(usage_err(
+                "process action selector matched no processes; refuse to act",
+            ));
+        }
+        _ => {
+            return Err(usage_err(format!(
+                "process action selector matched {} processes; refuse to act without a unique target",
+                candidates.len()
+            )));
+        }
+    };
+    let pid = target.pid.0;
     if matches!(pid, 0 | 1) || pid == std::process::id() {
         bail!("refusing to signal PID {pid}");
     }
-    if !args.dry_run && !args.yes {
-        bail!("process signals require --yes; use --dry-run to inspect the plan safely");
-    }
-    if args.demo && !args.dry_run {
-        bail!("--demo only supports --dry-run process actions");
-    }
-    let snapshot = sampler.collect()?;
-    let target = snapshot
-        .processes
-        .iter()
-        .find(|process| process.pid.0 == pid)
-        .with_context(|| format!("PID {pid} is not running or is not visible"))?;
     let identity = target.identity();
     let process = target.name.clone();
     if args
@@ -188,6 +278,13 @@ fn run_process_action(args: &Args, sampler: &mut Sampler) -> Result<()> {
         .is_some_and(|expected| expected != identity.1)
     {
         bail!("PID {pid} changed or exited before confirmation; no signal was sent");
+    }
+    if let Some(expected_name) = args.expect_name.as_deref()
+        && !process.eq_ignore_ascii_case(expected_name)
+    {
+        return Err(usage_err(format!(
+            "PID {pid} name is '{process}', expected '{expected_name}'; no signal was sent"
+        )));
     }
     if args.dry_run {
         return write_process_action(
@@ -202,12 +299,19 @@ fn run_process_action(args: &Args, sampler: &mut Sampler) -> Result<()> {
         );
     }
     let current = sampler.collect()?;
-    if !current
+    let current_match = current
         .processes
         .iter()
-        .any(|candidate| candidate.identity() == identity)
-    {
+        .find(|candidate| candidate.identity() == identity);
+    let Some(current_match) = current_match else {
         bail!("PID {pid} changed or exited before confirmation; no signal was sent");
+    };
+    if let Some(expected_name) = args.expect_name.as_deref()
+        && !current_match.name.eq_ignore_ascii_case(expected_name)
+    {
+        return Err(usage_err(format!(
+            "PID {pid} name changed before confirmation; no signal was sent"
+        )));
     }
     let status = std::process::Command::new("/bin/kill")
         .args([format!("-{}", signal.name()), pid.to_string()])
@@ -241,6 +345,9 @@ fn run_process_action(args: &Args, sampler: &mut Sampler) -> Result<()> {
 }
 
 fn write_process_action(args: &Args, outcome: &ProcessActionOutcome) -> Result<()> {
+    if args.quiet {
+        return Ok(());
+    }
     if args.json {
         serde_json::to_writer_pretty(io::stdout().lock(), outcome)?;
         println!();
@@ -344,8 +451,10 @@ fn attach_finding_relationships(snapshot: &mut Snapshot) {
 
 fn process_filter(args: &Args) -> Result<ProcessFilter> {
     let state = match args.filter_state.as_deref() {
-        Some(value) => Some(parse_state(value).with_context(|| {
-            format!("invalid process state {value:?}; use running, sleeping, disk-sleep, stopped, zombie, idle or dead")
+        Some(value) => Some(parse_state(value).ok_or_else(|| {
+            usage_err(format!(
+                "invalid process state {value:?}; use running, sleeping, disk-sleep, stopped, zombie, idle or dead"
+            ))
         })?),
         None => None,
     };
@@ -356,7 +465,12 @@ fn process_filter(args: &Args) -> Result<ProcessFilter> {
         min_cpu: args.min_cpu,
         min_memory: args.min_memory,
         name: args.filter_name.clone(),
+        exact_name: args.exact_name.clone(),
         service_or_cgroup: args.filter_service.clone(),
+        cgroup: args.cgroup.clone(),
+        pid: args.pid.filter(|_| args.signal.is_none()),
+        ppid: args.ppid,
+        match_mode: args.r#match,
     })
 }
 

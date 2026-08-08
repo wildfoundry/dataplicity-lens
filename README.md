@@ -117,17 +117,19 @@ Start with `lens` for the cockpit, or open a specialist directly. Common flags a
 
 - `--once` / `--plain` — one human-readable snapshot (redirected stdout is plain automatically)
 - `--json` / `--jsonl` — structured output for automation
-- `--filter` / `--limit` — narrow results (`--limit 0` returns every available row)
+- `--fields LIST` / `--quiet` — project JSON or assert with exit codes only
+- `--filter` / `--match` / `--limit` — narrow results (`--limit 0` returns every available row)
+- Opt-in asserts: `--fail-if-empty`, `--fail-if-any`, `--expect-count*`, `--fail-on`, `--fail-on-collection-warnings` (exit `3` on miss)
 - Logs also support `--service`, `--process`, `--severity`, `--since`, and repeatable `--log-file`
 
 ```sh
 lens --once
-lens-services --service nginx
+lens-services --name nginx.service --active active --fail-if-empty --quiet
 lens-logs --since "1 hour ago" --severity error
-lens-disk --filter /var
-lens-net --filter 443
-lens-hardware --filter serial
-lens-health --json
+lens-disk --mount /var --min-used-percent 80 --fail-if-any --quiet
+lens-net --listening --port 22 --expect-count-min 1 --json --fields sockets
+lens-hardware --class usb --serial ABC --match exact
+lens-health --fail-on critical --fail-on-collection-warnings --quiet
 ```
 
 ### Process explorer (`lens-top`)
@@ -159,9 +161,10 @@ then `--yes`). Lens does not run itself as root; system policy decides whether t
 
 ```sh
 lens-top --signal term --pid 4242 --dry-run
+lens-top --signal term --exact-name nginx --expect-name nginx --dry-run
 lens-top --signal term --pid 4242 --yes
 lens-services --action restart --target nginx.service --dry-run
-lens-services --action restart --target nginx.service --yes
+lens-services --action restart --name nginx.service --match exact --expect-active active --yes
 ```
 
 Practical fault-finding sequences: [`docs/OPERATIONS_GUIDE.md`](docs/OPERATIONS_GUIDE.md) ·

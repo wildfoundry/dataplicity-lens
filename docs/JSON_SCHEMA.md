@@ -115,7 +115,11 @@ when the host does not expose them.
 
 ## Collection completeness and exit status
 
-Collection warnings do not change the process exit status. A command that produced a partial snapshot
-exits successfully and names the missing source in `collection_warnings`; a command that could not
-produce its requested result exits with status `1`. Argument parsing errors exit with status `2`.
-See [`CLI_CONTRACT.md`](CLI_CONTRACT.md) for the complete stdout, stderr and action contract.
+Collection warnings do not change the process exit status unless `--fail-on-collection-warnings` is
+set. A command that produced a partial snapshot exits successfully by default and names the missing
+source in `collection_warnings`; a command that could not produce its requested result exits with
+status `1`. Argument parsing errors and ambiguous action targets exit with status `2`. Opt-in
+assertion flags (`--fail-if-*`, `--expect-count*`, `--fail-on`) exit with status `3` when the policy
+misses. `--fields` projects the JSON document at output time and always retains `schema_version`,
+`generated_at` and `host`. See [`CLI_CONTRACT.md`](CLI_CONTRACT.md) for the complete stdout, stderr
+and action contract.

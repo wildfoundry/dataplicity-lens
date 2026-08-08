@@ -1,7 +1,7 @@
 use std::path::PathBuf;
 
 use clap::{Parser, ValueEnum};
-use lens_core::{GroupMode, SortKey};
+use lens_core::{FailOnSeverity, GroupMode, MatchMode, SortKey};
 use serde::Serialize;
 
 #[derive(Debug, Clone, Copy, ValueEnum)]
@@ -110,6 +110,14 @@ pub struct Args {
     #[arg(long, conflicts_with_all = ["plain", "json"])]
     pub jsonl: bool,
 
+    /// Suppress stdout on success (errors still go to stderr).
+    #[arg(long)]
+    pub quiet: bool,
+
+    /// Project JSON/JSONL to these top-level snapshot fields (comma-separated).
+    #[arg(long, value_name = "LIST")]
+    pub fields: Option<String>,
+
     /// Sample briefly, print one snapshot and exit instead of opening the TUI.
     #[arg(long)]
     pub once: bool,
@@ -126,21 +134,41 @@ pub struct Args {
     #[arg(long, value_enum)]
     pub group: Option<GroupArg>,
 
+    /// How name/user/service filters bind (default: contains).
+    #[arg(long, value_enum, default_value_t = MatchMode::Contains)]
+    pub r#match: MatchMode,
+
     /// Show processes owned by a matching user name or UID.
     #[arg(long, value_name = "USER")]
     pub filter_user: Option<String>,
 
-    /// Show processes whose name contains this value.
+    /// Show processes whose name matches this value.
     #[arg(long, value_name = "NAME")]
     pub filter_name: Option<String>,
+
+    /// Show processes whose name equals this value exactly.
+    #[arg(long, value_name = "NAME")]
+    pub exact_name: Option<String>,
 
     /// Show processes in a matching service or cgroup.
     #[arg(long, value_name = "SERVICE")]
     pub filter_service: Option<String>,
 
+    /// Show processes in a matching cgroup path.
+    #[arg(long, value_name = "CGROUP")]
+    pub cgroup: Option<String>,
+
     /// Show processes in the given state, such as running, sleeping or zombie.
     #[arg(long, value_name = "STATE")]
     pub filter_state: Option<String>,
+
+    /// Filter to one process ID (also used with --signal).
+    #[arg(long, value_name = "PID")]
+    pub pid: Option<u32>,
+
+    /// Filter to children of this parent PID.
+    #[arg(long, value_name = "PID")]
+    pub ppid: Option<u32>,
 
     /// Minimum process CPU percentage.
     #[arg(long, value_name = "PERCENT")]
@@ -154,17 +182,45 @@ pub struct Args {
     #[arg(long, value_name = "COUNT")]
     pub limit: Option<usize>,
 
+    /// Exit 3 when the filtered process set is empty.
+    #[arg(long)]
+    pub fail_if_empty: bool,
+
+    /// Exit 3 when any filtered processes remain.
+    #[arg(long)]
+    pub fail_if_any: bool,
+
+    /// Exit 3 unless the filtered process count equals N.
+    #[arg(long, value_name = "N")]
+    pub expect_count: Option<usize>,
+
+    /// Exit 3 unless the filtered process count is at least N.
+    #[arg(long, value_name = "N")]
+    pub expect_count_min: Option<usize>,
+
+    /// Exit 3 unless the filtered process count is at most N.
+    #[arg(long, value_name = "N")]
+    pub expect_count_max: Option<usize>,
+
+    /// Exit 3 when findings reach this severity (warning or critical).
+    #[arg(long, value_enum)]
+    pub fail_on: Option<FailOnSeverity>,
+
+    /// Exit 3 when collection_warnings is non-empty.
+    #[arg(long)]
+    pub fail_on_collection_warnings: bool,
+
     /// Send a named signal to one process.
-    #[arg(long, value_enum, requires = "pid")]
+    #[arg(long, value_enum)]
     pub signal: Option<SignalArg>,
 
-    /// Exact process ID targeted by --signal.
-    #[arg(long, requires = "signal")]
-    pub pid: Option<u32>,
-
     /// Expected process start time used to reject a recycled PID.
-    #[arg(long, hide = true, requires = "signal")]
+    #[arg(long, value_name = "TICKS", requires = "signal")]
     pub expect_start_ticks: Option<u64>,
+
+    /// Expected process name re-checked immediately before signalling.
+    #[arg(long, value_name = "NAME", requires = "signal")]
+    pub expect_name: Option<String>,
 
     /// Confirm a requested process signal for non-interactive use.
     #[arg(long, requires = "signal")]

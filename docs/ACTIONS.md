@@ -13,12 +13,16 @@ The equivalent non-interactive commands are:
 lens-top --signal term --pid 4242 --dry-run
 lens-top --signal term --pid 4242 --yes
 lens-top --signal hup --pid 4242 --yes --json
+lens-top --signal term --exact-name nginx --expect-name nginx --dry-run
 ```
 
 Supported signals are `term`, `kill`, `hup`, `int`, `stop` and `cont`. Lens refuses PID 0, PID 1 and
-its own PID. It resolves the process, records its PID/start-time identity, resolves it again just
-before execution, and stops if the identity changed. A successful signal delivery does not imply the
-process exited; the result states whether the same process remains and its observed state.
+its own PID. Target a process with `--pid` and/or filters (`--exact-name`, `--filter-name`,
+`--filter-user`, `--filter-service`, …). The selector must resolve to exactly one process; zero or
+multiple matches exit `2` before mutation. Lens records PID/start-time identity, optionally checks
+`--expect-start-ticks` and `--expect-name`, resolves again just before execution, and stops if the
+identity changed. A successful signal delivery does not imply the process exited; the result states
+whether the same process remains and its observed state.
 
 ## systemd services
 
@@ -28,13 +32,17 @@ review the exact unit name and press `y` to confirm. The same operations are ava
 ```sh
 lens-services --action restart --target nginx.service --dry-run
 lens-services --action restart --target nginx.service --yes
+lens-services --action restart --name nginx.service --match exact --expect-active active --yes
 lens-services --action stop --target my-worker.service --yes --json
 ```
 
-Supported actions are `start`, `stop`, `restart`, `enable` and `disable`. The target must be one exact
-unit name with no whitespace or option prefix. Lens invokes `systemctl` as the current user, applies
-a 15-second deadline and reads service state again after the command. Existing system policy decides
-whether the user is authorised; Lens does not embed credentials or elevate its whole process.
+Supported actions are `start`, `stop`, `restart`, `enable` and `disable`. Provide `--target` as one
+exact unit name, or a selector (`--name`, `--service`, `--filter`, `--active`) that resolves to
+exactly one unit. Ambiguous or empty selectors exit `2`. After execution, `--expect-active STATE`
+polls until the unit reaches that active state or `--wait` elapses (default `2s`), then exits `3` on
+miss. Lens invokes `systemctl` as the current user, applies a 15-second deadline and reads service
+state again after the command. Existing system policy decides whether the user is authorised; Lens
+does not embed credentials or elevate its whole process.
 
 launchd actions are not currently enabled. The command fails before changing state on macOS.
 
@@ -53,7 +61,8 @@ service operation.
 
 - `--dry-run` does not require `--yes` and never changes state.
 - A real action without `--yes` exits non-zero before execution.
-- `--json` returns one action outcome object on stdout.
-- Invalid targets, stale processes, permission denial, command failure and verification failure exit
-  non-zero with an explanation on stderr.
+- `--json` returns one action outcome object on stdout; `--quiet` suppresses stdout.
+- Invalid targets, ambiguous selectors, stale processes, permission denial, command failure and
+  verification failure exit non-zero with an explanation on stderr (`2` for usage/ambiguity, `1` for
+  execution failure, `3` for unmet `--expect-active`).
 - Lens does not retry a state-changing action automatically.

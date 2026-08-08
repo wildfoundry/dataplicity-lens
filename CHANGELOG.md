@@ -5,11 +5,19 @@ versioning once the first public release is tagged.
 
 ## [Unreleased]
 
+### Added
+
+- Suite-wide scripting depth: `--jsonl`, `--fields`, `--quiet`, `--match`, domain selectors, and
+  opt-in assertion flags (`--fail-if-*`, `--expect-count*`, `--fail-on*`) with exit status `3`.
+- Safer scripted actions: unique-match resolution for `lens-top --signal` and
+  `lens-services --action`, plus `--expect-name`, `--expect-active`, and `--wait`.
+
 ### Changed
 
 - Homebrew install docs require `brew trust` for the third-party formula, matching `dataplicity-cli`.
 - The Homebrew tap formula now installs macOS archives directly from Lens GitHub Releases instead of
   mirroring them onto the tap release.
+- Exit-status contract documents status `3` for assertion / expect policy failures.
 
 ## [0.3.0] - 2026-08-06
 

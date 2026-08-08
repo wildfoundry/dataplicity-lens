@@ -36,6 +36,7 @@ lens-platform-macos = { version = "=0.3.0", path = "../../crates/platform-macos"
 
 [dev-dependencies]
 insta.workspace = true
+serde_json.workspace = true
 
 [[bench]]
 name = "process_pipeline"
