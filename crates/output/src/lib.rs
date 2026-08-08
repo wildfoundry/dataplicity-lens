@@ -189,7 +189,7 @@ pub fn write_json_lines_filtered(
     record_types: &[&str],
 ) -> io::Result<()> {
     let emit_all = record_types.is_empty();
-    let want = |name: &str| emit_all || record_types.iter().any(|item| *item == name);
+    let want = |name: &str| emit_all || record_types.contains(&name);
     if want("host") {
         write_json_line(writer, snapshot, "host", &snapshot.host)?;
     }
