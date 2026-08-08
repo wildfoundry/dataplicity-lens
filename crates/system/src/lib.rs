@@ -735,9 +735,9 @@ fn run_service_action(view: View, args: &ViewArgs) -> Result<()> {
     #[cfg(target_os = "macos")]
     {
         let _ = action;
-        return Err(usage_err(format!(
+        Err(usage_err(format!(
             "service actions are not yet supported safely for launchd; no change was made to {target}"
-        )));
+        )))
     }
     #[cfg(target_os = "linux")]
     {
