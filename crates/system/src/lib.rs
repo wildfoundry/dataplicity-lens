@@ -759,16 +759,14 @@ fn run_service_action(view: View, args: &ViewArgs) -> Result<()> {
         {
             bail!("{}", warnings.join("; "));
         }
-        let wait =
-            parse_wait_duration(args.wait.as_deref()).map_err(|message| usage_err(message))?;
+        let wait = parse_wait_duration(args.wait.as_deref()).map_err(usage_err)?;
         let deadline = Instant::now() + wait;
-        let mut verified_state = None;
-        loop {
+        let verified_state = loop {
             let mut verify_warnings = Vec::new();
             let service = collect_services(&mut verify_warnings)
                 .into_iter()
                 .find(|service| service.name == target);
-            verified_state = service
+            let state = service
                 .as_ref()
                 .map(|service| format!("{} / {}", service.active, service.sub));
             if let Some(expected) = args.expect_active.as_deref() {
@@ -776,7 +774,7 @@ fn run_service_action(view: View, args: &ViewArgs) -> Result<()> {
                     .as_ref()
                     .is_some_and(|item| item.active.eq_ignore_ascii_case(expected))
                 {
-                    break;
+                    break state;
                 }
                 if Instant::now() >= deadline {
                     return Err(assertion_err(format!(
@@ -787,8 +785,8 @@ fn run_service_action(view: View, args: &ViewArgs) -> Result<()> {
                 thread::sleep(Duration::from_millis(100));
                 continue;
             }
-            break;
-        }
+            break state;
+        };
         write_action_outcome(
             args,
             &ActionOutcome {
