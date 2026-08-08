@@ -11,7 +11,7 @@ done
 [[ $(find "$directory" -maxdepth 1 -type f -name 'dataplicity-lens-*.rpm' | wc -l) -ge 3 ]] || { echo "expected three RPM packages" >&2; exit 1; }
 for archive in "$directory"/dataplicity-lens-v*-*.tar.gz; do
   listing="$(tar -tzf "$archive")"
-  for binary in lens lens-top lens-services lens-logs lens-disk lens-net lens-hardware lens-system lens-health; do
+  for binary in lens lens-top lens-services lens-containers lens-logs lens-disk lens-net lens-hardware lens-system lens-health; do
     grep -q "/bin/${binary}$" <<<"$listing" || { echo "$archive is missing $binary" >&2; exit 1; }
     grep -q "/${binary}.1$" <<<"$listing" || { echo "$archive is missing the $binary man page" >&2; exit 1; }
     grep -q "/completions/${binary}.bash$" <<<"$listing" || { echo "$archive is missing $binary completions" >&2; exit 1; }

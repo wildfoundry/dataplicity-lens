@@ -102,7 +102,7 @@ lens-health --json
 ```
 
 Open the interactive process explorer with `lens-top` and press `q` to exit. The other native
-collectors are `lens-services`, `lens-logs`, `lens-disk`, `lens-net`, `lens-hardware`, `lens-system`
+collectors are `lens-services`, `lens-containers`, `lens-logs`, `lens-disk`, `lens-net`, `lens-hardware`, `lens-system`
 and `lens-health`.
 
 macOS privacy controls can hide some unified-log or per-process details. Lens preserves normal user

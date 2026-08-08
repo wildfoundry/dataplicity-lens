@@ -217,6 +217,19 @@ pub struct Service {
     pub restart_count: Option<u64>,
 }
 
+/// Inventory row for a Docker or Podman container.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Container {
+    pub runtime: String,
+    pub id: String,
+    pub name: String,
+    pub image: String,
+    pub status: String,
+    pub state: String,
+    pub created: String,
+    pub ports: String,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct LogSource {
     pub id: String,
@@ -418,6 +431,12 @@ pub struct Snapshot {
     pub host: Host,
     pub processes: Vec<Process>,
     pub services: Vec<Service>,
+    #[serde(default)]
+    pub containers: Vec<Container>,
+    /// True when at least one container runtime (docker/podman) responded as live.
+    /// Not serialized; used for cockpit summary when inventory is empty.
+    #[serde(skip)]
+    pub containers_runtime_live: bool,
     pub log_sources: Vec<LogSource>,
     pub logs: Vec<LogEntry>,
     pub mounts: Vec<Mount>,
@@ -473,6 +492,8 @@ impl Snapshot {
             },
             processes: Vec::new(),
             services: Vec::new(),
+            containers: Vec::new(),
+            containers_runtime_live: false,
             log_sources: Vec::new(),
             logs: Vec::new(),
             mounts: Vec::new(),

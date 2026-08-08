@@ -203,6 +203,11 @@ pub fn write_json_lines_filtered(
             write_json_line(writer, snapshot, "service", service)?;
         }
     }
+    if want("container") {
+        for container in &snapshot.containers {
+            write_json_line(writer, snapshot, "container", container)?;
+        }
+    }
     if want("log_source") {
         for source in &snapshot.log_sources {
             write_json_line(writer, snapshot, "log_source", source)?;
@@ -277,6 +282,7 @@ pub fn jsonl_record_types_for_fields(fields: &[String]) -> Vec<&'static str> {
         let record = match field.as_str() {
             "processes" => "process",
             "services" => "service",
+            "containers" => "container",
             "log_sources" => "log_source",
             "logs" => "log",
             "mounts" => "mount",
@@ -488,6 +494,8 @@ mod tests {
             },
             processes: Vec::new(),
             services: Vec::new(),
+            containers: Vec::new(),
+            containers_runtime_live: false,
             log_sources: Vec::new(),
             logs: Vec::new(),
             mounts: Vec::new(),

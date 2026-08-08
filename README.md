@@ -40,6 +40,7 @@ devices.
 | Host overview | `lens` | Cockpit summary of the machine |
 | Process monitor | `lens-top` | Live TUI process explorer (CPU, memory, I/O, state, signals) |
 | Services | `lens-services` | systemd / launchd state, restart loops, related processes |
+| Containers | `lens-containers` | Docker/Podman inventory and safe start/stop/restart |
 | Logs | `lens-logs` | Recent journal, unified log, and local file messages |
 | Storage | `lens-disk` | Block devices, filesystems, mounts, inodes, deleted-open files |
 | Networking | `lens-net` | Interfaces, routes, listeners, live receive/transmit charts |
@@ -93,6 +94,7 @@ Run as your normal user — Lens does not need `sudo` to inspect the host:
 lens
 lens-top --once
 lens-services
+lens-containers
 lens-logs --since "1 hour ago"
 lens-disk
 lens-net
@@ -125,6 +127,7 @@ Start with `lens` for the cockpit, or open a specialist directly. Common flags a
 ```sh
 lens --once
 lens-services --name nginx.service --active active --fail-if-empty --quiet
+lens-containers --runtime docker --state running --fail-if-empty --quiet
 lens-logs --since "1 hour ago" --severity error
 lens-disk --mount /var --min-used-percent 80 --fail-if-any --quiet
 lens-net --listening --port 22 --expect-count-min 1 --json --fields sockets
@@ -156,8 +159,9 @@ lens-top --group tree --theme light
 | `!` | Responsive diagnostic shell |
 | `?` / `q` | Help / quit |
 
-Process signals and systemd service actions use an explicit plan → confirm → result flow (`--dry-run`,
-then `--yes`). Lens does not run itself as root; system policy decides whether the account may act.
+Process signals, systemd service actions and container actions use an explicit plan → confirm →
+result flow (`--dry-run`, then `--yes`). Lens does not run itself as root; system policy decides
+whether the account may act.
 
 ```sh
 lens-top --signal term --pid 4242 --dry-run
@@ -165,6 +169,8 @@ lens-top --signal term --exact-name nginx --expect-name nginx --dry-run
 lens-top --signal term --pid 4242 --yes
 lens-services --action restart --target nginx.service --dry-run
 lens-services --action restart --name nginx.service --match exact --expect-active active --yes
+lens-containers --action restart --name edge-mqtt --match exact --dry-run
+lens-containers --action start --name metrics-agent --match exact --expect-status running --yes
 ```
 
 Practical fault-finding sequences: [`docs/OPERATIONS_GUIDE.md`](docs/OPERATIONS_GUIDE.md) ·

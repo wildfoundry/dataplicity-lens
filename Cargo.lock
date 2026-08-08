@@ -964,6 +964,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "lens-containers"
+version = "0.3.0"
+dependencies = [
+ "lens-system",
+ "serde_json",
+]
+
+[[package]]
 name = "lens-core"
 version = "0.3.0"
 dependencies = [

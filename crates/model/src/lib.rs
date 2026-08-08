@@ -11,8 +11,9 @@ pub use entity::{
 pub use finding::{Evidence, Finding, Severity};
 pub use snapshot::{
     AccountInfo, BlockDevice, BuildInfo, CellularModem, CellularSim, CertificateInfo, ClockContext,
-    DeletedOpenFile, DnsContext, Filesystem, GroupInfo, HardwareDevice, HardwareIdentity, Host,
-    Interface, IoCounters, LoadAverage, LogEntry, LogSource, Memory, Metric, MetricPoint,
-    MetricSeries, Mount, Process, ProcessCounts, ProcessState, RaspberryPiStatus, Route,
-    SchemaVersion, Service, Snapshot, Socket, TemperatureSensor, Timestamp,
+    Container, DeletedOpenFile, DnsContext, Filesystem, GroupInfo, HardwareDevice,
+    HardwareIdentity, Host, Interface, IoCounters, LoadAverage, LogEntry, LogSource, Memory,
+    Metric, MetricPoint, MetricSeries, Mount, Process, ProcessCounts, ProcessState,
+    RaspberryPiStatus, Route, SchemaVersion, Service, Snapshot, Socket, TemperatureSensor,
+    Timestamp,
 };

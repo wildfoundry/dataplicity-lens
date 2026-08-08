@@ -46,6 +46,26 @@ does not embed credentials or elevate its whole process.
 
 launchd actions are not currently enabled. The command fails before changing state on macOS.
 
+## Containers
+
+In the interactive `lens-containers` view, select a container and press `a`. Choose start, stop or
+restart, review the runtime and target, then press `y` to confirm. Scriptable equivalents:
+
+```sh
+lens-containers --action restart --target a1b2c3d4e5f6 --dry-run
+lens-containers --action restart --name edge-mqtt --match exact --runtime docker --yes
+lens-containers --action start --name metrics-agent --match exact --expect-status running --yes
+```
+
+Supported actions are `start`, `stop` and `restart`. Provide `--target` as one exact container id or
+name, or a selector (`--name`, `--runtime`, `--image`, `--status`, `--state`, `--filter`) that
+resolves to exactly one container. Ambiguous or empty selectors exit `2`. After execution,
+`--expect-status STATE` polls until the container reaches that normalized status/state or `--wait`
+elapses (default `2s`), then exits `3` on miss. Lens invokes `docker` or `podman` as the current
+user with a 15-second deadline. If the runtime is installed but not usable (socket/group access),
+Lens refuses the action and explains why. Runtimes that are not installed or not live are hidden
+from inventory rather than treated as empty fleets.
+
 ## Diagnostic shell
 
 Press `!` in an interactive view to open a local command panel. On a wide terminal it occupies a
