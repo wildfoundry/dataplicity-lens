@@ -9251,10 +9251,15 @@ mod tests {
 
     #[test]
     fn cockpit_storage_selection_routes_to_lens_disk() {
-        let storage = View::ALL[3];
+        let storage_index = View::ALL
+            .iter()
+            .position(|view| *view == View::Disk)
+            .expect("storage view");
+        let storage = View::ALL[storage_index];
         assert_eq!(storage, View::Disk);
         assert_eq!(storage.title(), "Storage");
         assert_eq!(storage.binary(), "lens-disk");
+        assert_eq!(storage_index, 4, "Containers inserts ahead of Storage");
     }
 
     #[test]
@@ -9323,14 +9328,19 @@ mod tests {
         .expect("compact cockpit");
         let compact_output = String::from_utf8(compact_output).expect("UTF-8");
         assert!(!compact_output.contains("BUSIEST PROCESSES"));
-        assert!(compact_output.matches('\n').count() <= 20);
+        // Compact height still lists every specialist; nine explore rows need a little more room.
+        assert!(compact_output.matches('\n').count() <= 24);
 
+        let storage_index = View::ALL
+            .iter()
+            .position(|view| *view == View::Disk)
+            .expect("storage view");
         let mut complete_output = Vec::new();
         render_cockpit(
             &snapshot,
             &cpu_activity,
             &network_activity,
-            3,
+            storage_index,
             false,
             30,
             &mut complete_output,
@@ -9340,6 +9350,7 @@ mod tests {
         assert!(complete_output.contains("critical ·"));
         assert!(complete_output.contains("▶ Storage"));
         assert!(complete_output.contains("root filesystem · 97% used"));
+        assert!(complete_output.contains("Containers"));
     }
 
     #[test]
