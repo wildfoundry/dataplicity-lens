@@ -5951,11 +5951,7 @@ fn show_missing_specialist(stdout: &mut impl Write, view: View) -> Result<()> {
         terminal::Clear(ClearType::All)
     )?;
     writeln!(stdout, "Cannot open {}\n", view.title())?;
-    writeln!(
-        stdout,
-        "`{}` was not found on PATH.",
-        view.binary()
-    )?;
+    writeln!(stdout, "`{}` was not found on PATH.", view.binary())?;
     writeln!(
         stdout,
         "Install the full Dataplicity Lens package (not only the `lens` binary),"
@@ -5971,11 +5967,7 @@ fn show_missing_specialist(stdout: &mut impl Write, view: View) -> Result<()> {
     Ok(())
 }
 
-fn launch_in_process(
-    view: View,
-    query: Option<&str>,
-    stdout: &mut impl Write,
-) -> Result<()> {
+fn launch_in_process(view: View, query: Option<&str>, stdout: &mut impl Write) -> Result<()> {
     if view == View::Processes {
         return show_missing_specialist(stdout, view);
     }
