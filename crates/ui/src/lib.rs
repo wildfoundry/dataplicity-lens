@@ -14,7 +14,7 @@ use std::{
 };
 
 use app::{Action, App, ProcessSignal};
-use crossterm::event::{self, Event, KeyCode, KeyModifiers};
+use crossterm::event::{self, Event, KeyCode, KeyEventKind, KeyModifiers};
 use lens_core::{GroupMode, ProcessFilter, SortDirection, SortKey};
 use lens_model::Snapshot;
 use thiserror::Error;
@@ -145,6 +145,9 @@ where
             let Event::Key(key) = event else {
                 continue;
             };
+            if key.kind != KeyEventKind::Press {
+                continue;
+            }
             if key.code == KeyCode::Char('c') && key.modifiers.contains(KeyModifiers::CONTROL) {
                 break;
             }
