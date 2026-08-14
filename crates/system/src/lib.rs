@@ -24,7 +24,7 @@ use anyhow::{Context, Result};
 use clap::{CommandFactory, FromArgMatches, Parser, ValueEnum};
 use crossterm::{
     cursor,
-    event::{self, Event, KeyCode, KeyModifiers},
+    event::{self, Event, KeyCode, KeyEventKind, KeyModifiers},
     execute,
     style::ResetColor,
     terminal::{self, ClearType},
@@ -1407,6 +1407,9 @@ fn cockpit_loop(
             let Event::Key(key) = event else {
                 continue;
             };
+            if key.kind != KeyEventKind::Press {
+                continue;
+            }
             if diagnostic.open {
                 diagnostic.handle_key(key);
                 redraw = true;
@@ -1417,7 +1420,7 @@ fn cockpit_loop(
                     KeyCode::Esc => search_query = None,
                     KeyCode::Enter if !query.is_empty() => {
                         let query = search_query.take().unwrap_or_default();
-                        launch_search(View::ALL[selected], &query)?;
+                        launch_search(View::ALL[selected], &query, stdout)?;
                     }
                     KeyCode::Backspace => {
                         query.pop();
@@ -1444,7 +1447,7 @@ fn cockpit_loop(
                     redraw = true;
                 }
                 KeyCode::Enter => {
-                    launch(View::ALL[selected])?;
+                    launch(View::ALL[selected], stdout)?;
                     redraw = true;
                 }
                 KeyCode::Char('/') => {
@@ -1730,6 +1733,7 @@ fn send_specialist_update(
         .is_ok()
 }
 
+#[cfg(test)]
 fn filter_snapshot(
     snapshot: SystemSnapshot,
     filter: Option<&str>,
@@ -4993,6 +4997,9 @@ fn render_system_specialist(
 }
 
 fn specialist_loop(view: View, args: &ViewArgs, stdout: &mut impl Write) -> Result<()> {
+    // Discard focus / resize noise left over from parent→child terminal handoff so the first
+    // real keypress is not misread as Esc (which would bounce straight back to the cockpit).
+    drain_pending_input();
     let mut active_args = args.clone();
     let mut snapshot = SystemSnapshot::empty(hostname());
     let mut receiver = spawn_specialist_collection(view, active_args.clone());
@@ -5115,6 +5122,9 @@ fn specialist_loop(view: View, args: &ViewArgs, stdout: &mut impl Write) -> Resu
             let Event::Key(key) = event else {
                 continue;
             };
+            if key.kind != KeyEventKind::Press {
+                continue;
+            }
             if let Some(dialog) = service_action.as_mut() {
                 let completed = dialog.stage == ServiceActionStage::Result;
                 if dialog.handle_key(key) {
@@ -5222,7 +5232,7 @@ fn specialist_loop(view: View, args: &ViewArgs, stdout: &mut impl Write) -> Resu
                             })
                     });
                     if let Some(target) = mount {
-                        launch_search(View::Disk, &target)?;
+                        launch_search(View::Disk, &target, stdout)?;
                         redraw = true;
                     }
                 }
@@ -5890,42 +5900,109 @@ fn show_cockpit_help(stdout: &mut impl Write) -> Result<()> {
     Ok(())
 }
 
-fn launch_search(view: View, query: &str) -> Result<()> {
+fn drain_pending_input() {
+    while event::poll(Duration::ZERO).unwrap_or(false) {
+        let _ = event::read();
+    }
+}
+
+fn suspend_cockpit_for_child() -> Result<()> {
+    let mut out = io::stdout();
+    execute!(
+        out,
+        ResetColor,
+        cursor::Show,
+        terminal::LeaveAlternateScreen
+    )?;
+    let _ = out.flush();
     terminal::disable_raw_mode()?;
+    drain_pending_input();
+    Ok(())
+}
+
+fn resume_cockpit_after_child() -> Result<()> {
+    terminal::enable_raw_mode()?;
+    let mut out = io::stdout();
+    execute!(out, terminal::EnterAlternateScreen, cursor::Hide)?;
+    let _ = out.flush();
+    drain_pending_input();
+    Ok(())
+}
+
+fn specialist_on_path(binary: &str) -> bool {
+    env::var_os("PATH")
+        .map(|paths| {
+            env::split_paths(&paths).any(|directory| {
+                let candidate = directory.join(binary);
+                candidate.is_file()
+            })
+        })
+        .unwrap_or(false)
+}
+
+fn default_specialist_args(view: View) -> ViewArgs {
+    ViewArgs::try_parse_from([view.binary()]).unwrap_or_else(|error| error.exit())
+}
+
+fn show_missing_specialist(stdout: &mut impl Write, view: View) -> Result<()> {
+    execute!(
+        stdout,
+        cursor::MoveTo(0, 0),
+        terminal::Clear(ClearType::All)
+    )?;
+    writeln!(stdout, "Cannot open {}\n", view.title())?;
+    writeln!(stdout, "`{}` was not found on PATH.", view.binary())?;
+    writeln!(
+        stdout,
+        "Install the full Dataplicity Lens package (not only the `lens` binary),"
+    )?;
+    writeln!(
+        stdout,
+        "or run specialists from the same directory as `lens`."
+    )?;
+    writeln!(stdout, "\nPress any key to return")?;
+    stdout.flush()?;
+    let _ = event::read()?;
+    drain_pending_input();
+    Ok(())
+}
+
+fn launch_in_process(view: View, query: Option<&str>, stdout: &mut impl Write) -> Result<()> {
+    if view == View::Processes {
+        return show_missing_specialist(stdout, view);
+    }
+    let mut args = default_specialist_args(view);
+    if let Some(query) = query {
+        args.filter = Some(query.to_owned());
+    }
+    specialist_loop(view, &args, stdout)
+}
+
+fn launch_search(view: View, query: &str, stdout: &mut impl Write) -> Result<()> {
+    if !specialist_on_path(view.binary()) {
+        return launch_in_process(view, Some(query), stdout);
+    }
     let argument = if view == View::Processes {
         "--filter-name"
     } else {
         "--filter"
     };
+    suspend_cockpit_for_child()?;
     let status = Command::new(view.binary()).args([argument, query]).status();
-    terminal::enable_raw_mode()?;
-    match status {
-        Ok(_) => Ok(()),
-        Err(error) if error.kind() == io::ErrorKind::NotFound => {
-            let snapshot = filter_snapshot(collect(), Some(query), None, None, None, 100);
-            render_plain(view, &snapshot, &mut io::stdout().lock())
-        }
-        Err(error) => Err(error).context("launch filtered specialist view"),
-    }
+    resume_cockpit_after_child()?;
+    status.context("launch filtered specialist view")?;
+    Ok(())
 }
 
-fn launch(view: View) -> Result<()> {
-    terminal::disable_raw_mode()?;
-    let status = Command::new(view.binary()).status();
-    terminal::enable_raw_mode()?;
-    match status {
-        Ok(_) => Ok(()),
-        Err(error) if error.kind() == io::ErrorKind::NotFound => {
-            let snapshot = collect();
-            execute!(
-                io::stdout(),
-                cursor::MoveTo(0, 0),
-                terminal::Clear(ClearType::All)
-            )?;
-            render_plain(view, &snapshot, &mut io::stdout().lock())
-        }
-        Err(error) => Err(error).context("launch specialist view"),
+fn launch(view: View, stdout: &mut impl Write) -> Result<()> {
+    if !specialist_on_path(view.binary()) {
+        return launch_in_process(view, None, stdout);
     }
+    suspend_cockpit_for_child()?;
+    let status = Command::new(view.binary()).status();
+    resume_cockpit_after_child()?;
+    status.context("launch specialist view")?;
+    Ok(())
 }
 
 pub fn collect() -> SystemSnapshot {
