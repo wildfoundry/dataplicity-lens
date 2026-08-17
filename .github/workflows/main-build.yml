@@ -58,7 +58,7 @@ jobs:
           sudo gem install --no-document fpm
       - name: Install cross for Raspberry Pi builds
         if: matrix.cross
-        uses: taiki-e/install-action@13608cbb45b01feb47ef444ab1a42dc41ad56f1a # v2.79.11
+        uses: taiki-e/install-action@82cd3e7658a6f96c86c0234aeeda1748937cb0a1 # v2.85.13
         with:
           tool: cross@0.2.5
       - name: Build GNU and musl binaries
