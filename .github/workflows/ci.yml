@@ -62,7 +62,7 @@ jobs:
       - name: Activate pinned toolchain
         run: rustup show active-toolchain
       - name: Install security tools
-        uses: taiki-e/install-action@13608cbb45b01feb47ef444ab1a42dc41ad56f1a # v2.79.11
+        uses: taiki-e/install-action@37f7c5781271959fb65b6b35224e28652ff2b63d # v2.87.0
         with:
           tool: cargo-deny@0.20.2,cargo-audit@0.22.2
       - run: cargo deny check
@@ -87,7 +87,7 @@ jobs:
       - name: Activate pinned toolchain
         run: rustup show active-toolchain
       - name: Install cross
-        uses: taiki-e/install-action@13608cbb45b01feb47ef444ab1a42dc41ad56f1a # v2.79.11
+        uses: taiki-e/install-action@37f7c5781271959fb65b6b35224e28652ff2b63d # v2.87.0
         with:
           tool: cross@0.2.5
       - name: Build release target from clean source
