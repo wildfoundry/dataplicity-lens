@@ -6286,7 +6286,7 @@ fn show_cockpit_help(stdout: &mut impl Write) -> Result<()> {
     writeln!(stdout, "Lens cockpit help\n")?;
     writeln!(
         stdout,
-        "{}/{} or j/k   select a view",
+        "{}/{} or j/k    select a view",
         glyphs.transmit, glyphs.receive
     )?;
     writeln!(stdout, "Enter         open selected view")?;

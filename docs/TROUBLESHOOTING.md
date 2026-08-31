@@ -48,8 +48,43 @@ lens --theme light
 export LENS_THEME=dark
 ```
 
-Use `lens-top --no-color` for uncoloured process output and `lens-top --ascii` when line-drawing
-characters are not displayed correctly.
+Use `lens-top --no-color` for uncoloured process output.
+
+## Frames are drawn as strings of accented characters
+
+Rules and sparklines arriving as `â”€â”€â”€` or similar mean the terminal is not decoding UTF-8. This is
+usual on the Raspberry Pi and other embedded consoles attached to HDMI or a serial line, where the
+kernel console only leaves UTF-8 mode when a UTF-8 locale is configured.
+
+Lens checks `TERM` and the locale and draws ASCII rules, bars and keycaps on a console that reports
+no UTF-8 locale. Override the choice per command or for the current shell when the detection is
+wrong in either direction:
+
+```sh
+lens --ascii             # every command, lens-top included, accepts --ascii
+lens --unicode           # keep Unicode on a console Lens judged unable to show it
+export LENS_ASCII=1      # applies to every Lens command in this shell
+```
+
+The console itself can also be switched to UTF-8, which restores the Unicode frames:
+
+```sh
+sudo raspi-config nonint do_change_locale en_GB.UTF-8   # Raspberry Pi OS
+sudo dpkg-reconfigure locales                           # Debian and Ubuntu
+```
+
+## Kernel messages are printed over the screen
+
+The Linux console shares the screen with kernel log output, so `audit:` or driver messages land on
+top of a frame. On a virtual or serial console Lens draws a complete frame every second, which
+removes them without any action. `Ctrl+L` redraws the screen immediately, in any terminal.
+
+Either of these stops the kernel writing to the console at all, without affecting the journal:
+
+```sh
+sudo dmesg --console-level 1
+sudo setterm --msg off
+```
 
 ## Terminal content remains after exit
 

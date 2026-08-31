@@ -15,8 +15,15 @@ versioning once the first public release is tagged.
   `status`, `state`, `created`, `ports`) with silent hide when runtimes are absent/not live,
   permission warnings when the socket/group blocks access, and safe `start` / `stop` / `restart`
   actions.
+- ASCII drawing fallback for terminals that cannot display Unicode, detected from `TERM` and the
+  locale, with `--ascii` / `--unicode` per command and `LENS_ASCII` for a shell. The cockpit passes
+  its conclusion to the specialists it launches.
+- `Ctrl+L` redraws the screen in every interactive view.
 
 ### Changed
+
+- Interactive views on a virtual or serial console draw a complete frame every second, so kernel log
+  output printed over a frame no longer stays on screen.
 
 - Homebrew install docs require `brew trust` for the third-party formula, matching `dataplicity-cli`.
 - The Homebrew tap formula now installs macOS archives directly from Lens GitHub Releases instead of
