@@ -239,8 +239,12 @@ pub struct Args {
     pub theme: Option<ThemeArg>,
 
     /// Force ASCII rendering instead of Unicode line and graph characters.
-    #[arg(long)]
+    #[arg(long, conflicts_with = "unicode")]
     pub ascii: bool,
+
+    /// Keep Unicode drawing characters even when the terminal looks unable to display them.
+    #[arg(long)]
+    pub unicode: bool,
 
     /// Run against deterministic committed demo data.
     #[arg(long, hide = true)]

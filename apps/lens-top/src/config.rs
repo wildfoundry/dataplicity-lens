@@ -5,7 +5,7 @@ use std::{
 };
 
 use anyhow::{Context, Result, bail};
-use lens_core::{GroupMode, SortKey};
+use lens_core::{GlyphMode, GroupMode, SortKey};
 use serde::{Deserialize, Serialize};
 
 use crate::cli::{Args, ThemeArg};
@@ -60,7 +60,7 @@ pub struct EffectiveConfig {
     pub limit: Option<usize>,
     pub no_color: bool,
     pub theme: ThemeMode,
-    pub ascii: bool,
+    pub glyphs: GlyphMode,
 }
 
 impl EffectiveConfig {
@@ -86,12 +86,28 @@ impl EffectiveConfig {
                 || env_bool("LENS_TOP_NO_COLOR")?.unwrap_or(false)
                 || file.colour_mode.eq_ignore_ascii_case("never"),
             theme: resolve_theme(args.theme, &file.theme)?,
-            ascii: args.ascii
-                || env_bool("LENS_TOP_ASCII")?
-                    .or(env_bool("LENS_ASCII")?)
-                    .unwrap_or(false),
+            glyphs: resolve_glyphs(args)?,
         })
     }
+}
+
+/// Decide between Unicode and ASCII drawing, or leave the choice to terminal detection.
+///
+/// `LENS_TOP_ASCII` states the choice for this command alone; the suite-wide `LENS_ASCII` is read
+/// during detection, so a cockpit that judged the console unable to display Unicode passes its own
+/// conclusion to the specialists it launches.
+fn resolve_glyphs(args: &Args) -> Result<GlyphMode> {
+    if args.ascii {
+        return Ok(GlyphMode::Ascii);
+    }
+    if args.unicode {
+        return Ok(GlyphMode::Unicode);
+    }
+    Ok(match env_bool("LENS_TOP_ASCII")? {
+        Some(true) => GlyphMode::Ascii,
+        Some(false) => GlyphMode::Unicode,
+        None => GlyphMode::Auto,
+    })
 }
 
 fn resolve_theme(argument: Option<ThemeArg>, configured: &str) -> Result<ThemeMode> {
@@ -223,6 +239,7 @@ fn env_bool(name: &str) -> Result<Option<bool>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use clap::Parser;
 
     #[test]
     fn parses_duration_units() {
@@ -238,6 +255,22 @@ mod tests {
             parse_duration("1m").expect("duration"),
             Duration::from_secs(60)
         );
+    }
+
+    #[test]
+    fn drawing_flags_state_the_glyph_choice() {
+        let ascii = Args::parse_from(["lens-top", "--ascii"]);
+        assert_eq!(resolve_glyphs(&ascii).expect("glyphs"), GlyphMode::Ascii);
+        let unicode = Args::parse_from(["lens-top", "--unicode"]);
+        assert_eq!(
+            resolve_glyphs(&unicode).expect("glyphs"),
+            GlyphMode::Unicode
+        );
+    }
+
+    #[test]
+    fn ascii_and_unicode_cannot_be_requested_together() {
+        assert!(Args::try_parse_from(["lens-top", "--ascii", "--unicode"]).is_err());
     }
 
     #[test]

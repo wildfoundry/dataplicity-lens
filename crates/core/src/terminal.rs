@@ -45,6 +45,16 @@ impl TerminalEnvironment {
             interactive: io::stdout().is_terminal(),
         }
     }
+
+    /// Whether the kernel prints its log to the screen Lens is drawing on.
+    ///
+    /// `printk` writes to every registered console, so a frame on a virtual or serial console can
+    /// be overwritten by driver or audit messages at any moment. Commands drawing there repaint
+    /// often enough to remove that text without waiting for the operator.
+    #[must_use]
+    pub fn shares_screen_with_kernel_log(&self) -> bool {
+        self.interactive && is_legacy_console(&self.term)
+    }
 }
 
 /// Resolve whether Unicode glyphs may be used.
@@ -181,6 +191,25 @@ mod tests {
         };
         assert!(unicode_available(GlyphMode::Auto, &environment));
         assert!(!unicode_available(GlyphMode::Ascii, &environment));
+    }
+
+    #[test]
+    fn only_a_console_is_treated_as_sharing_the_screen_with_the_kernel() {
+        assert!(console("en_GB.UTF-8").shares_screen_with_kernel_log());
+        assert!(
+            !TerminalEnvironment {
+                term: "xterm-256color".to_owned(),
+                ..console("en_GB.UTF-8")
+            }
+            .shares_screen_with_kernel_log()
+        );
+        assert!(
+            !TerminalEnvironment {
+                interactive: false,
+                ..console("en_GB.UTF-8")
+            }
+            .shares_screen_with_kernel_log()
+        );
     }
 
     #[test]

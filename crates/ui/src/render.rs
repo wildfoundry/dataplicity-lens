@@ -1097,6 +1097,7 @@ fn draw_help(frame: &mut Frame<'_>, area: Rect, capabilities: TerminalCapabiliti
         ),
         help_line("space", "Pause or resume", capabilities),
         help_line("r", "Refresh now", capabilities),
+        help_line("ctrl-l", "Redraw the screen", capabilities),
         help_line("!", "Open diagnostic shell", capabilities),
         help_line("?", "Open this guide", capabilities),
         help_line("q / ctrl-c", "Quit safely", capabilities),
@@ -1585,7 +1586,7 @@ fn severity_style(severity: Severity, capabilities: TerminalCapabilities) -> Sty
 
 #[cfg(test)]
 mod tests {
-    use lens_core::{GroupMode, ProcessFilter, SortDirection, SortKey};
+    use lens_core::{GlyphMode, GroupMode, ProcessFilter, SortDirection, SortKey};
     use lens_model::Snapshot;
     use ratatui::{Terminal, backend::TestBackend};
 
@@ -1616,9 +1617,9 @@ mod tests {
             history_length: 10,
             color_mode: ColorMode::Never,
             theme_mode: crate::ThemeMode::Auto,
-            ascii: true,
+            glyphs: GlyphMode::Ascii,
         };
-        let capabilities = TerminalCapabilities::detect(ColorMode::Never, true);
+        let capabilities = TerminalCapabilities::detect(ColorMode::Never, GlyphMode::Ascii);
         let mut app = App::new(Snapshot::empty("fixture"), options, capabilities);
         terminal
             .draw(|frame| draw(frame, &mut app))
@@ -1643,9 +1644,9 @@ mod tests {
             history_length: 10,
             color_mode: ColorMode::Never,
             theme_mode: crate::ThemeMode::Auto,
-            ascii: true,
+            glyphs: GlyphMode::Ascii,
         };
-        let capabilities = TerminalCapabilities::detect(ColorMode::Never, true);
+        let capabilities = TerminalCapabilities::detect(ColorMode::Never, GlyphMode::Ascii);
         let mut app = App::new(Snapshot::empty("fixture"), options, capabilities);
         terminal
             .draw(|frame| draw(frame, &mut app))
@@ -1674,7 +1675,7 @@ mod tests {
             history_length: 10,
             color_mode: ColorMode::Always,
             theme_mode: crate::ThemeMode::Dark,
-            ascii: false,
+            glyphs: GlyphMode::Unicode,
         };
         let capabilities = TerminalCapabilities {
             color: true,
@@ -1709,7 +1710,7 @@ mod tests {
             history_length: 10,
             color_mode: ColorMode::Never,
             theme_mode: crate::ThemeMode::Auto,
-            ascii: true,
+            glyphs: GlyphMode::Ascii,
         };
         let capabilities = TerminalCapabilities {
             color: false,
@@ -1823,9 +1824,9 @@ mod tests {
             history_length: 10,
             color_mode: ColorMode::Never,
             theme_mode: crate::ThemeMode::Auto,
-            ascii: true,
+            glyphs: GlyphMode::Ascii,
         };
-        let capabilities = TerminalCapabilities::detect(ColorMode::Never, true);
+        let capabilities = TerminalCapabilities::detect(ColorMode::Never, GlyphMode::Ascii);
         let mut app = App::new(Snapshot::empty("fixture"), options, capabilities);
         app.diagnostic_open = true;
 

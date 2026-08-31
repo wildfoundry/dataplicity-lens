@@ -15,7 +15,7 @@ use std::{
 
 use app::{Action, App, ProcessSignal};
 use crossterm::event::{self, Event, KeyCode, KeyEventKind, KeyModifiers};
-use lens_core::{GroupMode, ProcessFilter, SortDirection, SortKey};
+use lens_core::{GlyphMode, GroupMode, ProcessFilter, SortDirection, SortKey, TerminalEnvironment};
 use lens_model::Snapshot;
 use thiserror::Error;
 
@@ -32,7 +32,7 @@ pub struct UiOptions {
     pub history_length: usize,
     pub color_mode: ColorMode,
     pub theme_mode: ThemeMode,
-    pub ascii: bool,
+    pub glyphs: GlyphMode,
 }
 
 #[derive(Debug, Error)]
@@ -69,11 +69,13 @@ where
     E: Display + 'static,
 {
     let mut terminal = terminal::TerminalSession::enter()?;
+    let environment = TerminalEnvironment::detect();
     let capabilities = TerminalCapabilities::detect_with_theme(
         options.color_mode,
-        options.ascii,
+        options.glyphs,
         options.theme_mode,
     );
+    let kernel_log_shares_screen = environment.shares_screen_with_kernel_log();
     let mut app = App::new(initial, options, capabilities);
     let (request_tx, result_rx) = spawn_collection_worker(collect);
     let (diagnostic_tx, diagnostic_rx) = mpsc::channel();
@@ -83,6 +85,7 @@ where
     let mut refresh_in_flight = false;
     let mut collector_available = true;
     let mut dirty = true;
+    let mut repaint = true;
 
     loop {
         if let Ok(output) = diagnostic_rx.try_recv() {
@@ -126,13 +129,19 @@ where
         }
 
         if dirty {
-            terminal.draw(|frame| {
+            let render = |frame: &mut ratatui::Frame<'_>| {
                 render::draw(frame, &mut app);
                 if !capabilities.unicode {
                     render::enforce_ascii(frame.buffer_mut());
                 }
-            })?;
+            };
+            if repaint {
+                terminal.repaint(render)?;
+            } else {
+                terminal.draw(render)?;
+            }
             dirty = false;
+            repaint = false;
         }
 
         let now = Instant::now();
@@ -155,6 +164,11 @@ where
             }
             if key.code == KeyCode::Char('c') && key.modifiers.contains(KeyModifiers::CONTROL) {
                 break;
+            }
+            if key.code == KeyCode::Char('l') && key.modifiers.contains(KeyModifiers::CONTROL) {
+                dirty = true;
+                repaint = true;
+                continue;
             }
             match app.handle_key(key) {
                 Action::Quit => break,
@@ -196,6 +210,9 @@ where
         if Instant::now() >= next_clock {
             next_clock = Instant::now() + Duration::from_secs(1);
             dirty = true;
+            // A console shared with the kernel log needs the whole screen rewritten to remove
+            // messages printed over the frame; elsewhere nothing overwrites Lens.
+            repaint |= kernel_log_shares_screen;
         }
 
         if !app.paused()

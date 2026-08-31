@@ -1457,6 +1457,9 @@ fn cockpit_loop(
                 KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => {
                     return Ok(());
                 }
+                KeyCode::Char('l') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                    redraw = true;
+                }
                 KeyCode::Up | KeyCode::Char('k') => {
                     selected = selected.saturating_sub(1);
                     redraw = true;
@@ -5334,7 +5337,14 @@ fn specialist_loop(view: View, args: &ViewArgs, stdout: &mut impl Write) -> Resu
     let mut network_activity = NetworkActivity::default();
     let mut activity_receiver: Option<Receiver<Vec<(String, u64, u64)>>> = None;
     let mut next_network_sample = Instant::now() + Duration::from_secs(1);
-    let clock_interval = if view == View::Net { 1 } else { 60 };
+    // Kernel log output lands on top of a frame on a virtual or serial console, and only a new
+    // frame removes it, so draw as often there as the network view already does.
+    let clock_interval =
+        if view == View::Net || TerminalEnvironment::detect().shares_screen_with_kernel_log() {
+            1
+        } else {
+            60
+        };
     let mut next_clock = Instant::now() + Duration::from_secs(clock_interval);
     let mut redraw = true;
     loop {
@@ -5519,6 +5529,9 @@ fn specialist_loop(view: View, args: &ViewArgs, stdout: &mut impl Write) -> Resu
                 KeyCode::Esc => return Ok(()),
                 KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => {
                     return Ok(());
+                }
+                KeyCode::Char('l') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                    redraw = true;
                 }
                 KeyCode::Tab if view == View::System && !inspecting => {
                     selected = move_system_section(&snapshot, selected, 1);
@@ -6280,6 +6293,7 @@ fn show_cockpit_help(stdout: &mut impl Write) -> Result<()> {
     writeln!(stdout, "/             search selected view")?;
     writeln!(stdout, "!             open diagnostic shell")?;
     writeln!(stdout, "r             refresh")?;
+    writeln!(stdout, "Ctrl+L        redraw the screen")?;
     writeln!(stdout, "q or Ctrl+C   quit safely")?;
     writeln!(stdout, "\nPress any key to return")?;
     stdout.flush()?;

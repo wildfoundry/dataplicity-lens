@@ -7,8 +7,8 @@ use crossterm::{
     cursor, execute,
     style::ResetColor,
     terminal::{
-        Clear, ClearType, EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode,
-        enable_raw_mode,
+        BeginSynchronizedUpdate, Clear, ClearType, EndSynchronizedUpdate, EnterAlternateScreen,
+        LeaveAlternateScreen, disable_raw_mode, enable_raw_mode,
     },
 };
 use lens_core::{GlyphMode, TerminalEnvironment, unicode_available};
@@ -37,13 +37,13 @@ pub struct TerminalCapabilities {
 }
 
 impl TerminalCapabilities {
-    pub fn detect(color_mode: ColorMode, force_ascii: bool) -> Self {
-        Self::detect_with_theme(color_mode, force_ascii, ThemeMode::Auto)
+    pub fn detect(color_mode: ColorMode, glyph_mode: GlyphMode) -> Self {
+        Self::detect_with_theme(color_mode, glyph_mode, ThemeMode::Auto)
     }
 
     pub fn detect_with_theme(
         color_mode: ColorMode,
-        force_ascii: bool,
+        glyph_mode: GlyphMode,
         theme_mode: ThemeMode,
     ) -> Self {
         let term = env::var("TERM").unwrap_or_default();
@@ -52,11 +52,6 @@ impl TerminalCapabilities {
             ColorMode::Always => true,
             ColorMode::Never => false,
             ColorMode::Auto => env::var_os("NO_COLOR").is_none() && term != "dumb",
-        };
-        let glyph_mode = if force_ascii {
-            GlyphMode::Ascii
-        } else {
-            GlyphMode::Auto
         };
         Self {
             color,
@@ -119,6 +114,25 @@ impl TerminalSession {
         F: FnOnce(&mut ratatui::Frame<'_>),
     {
         self.terminal.draw(render).map(|_| ())
+    }
+
+    /// Draw a complete frame over every cell of the screen.
+    ///
+    /// Normal drawing sends only the cells that changed, so text written by another writer — kernel
+    /// log output on a Linux console, most often — survives until Lens happens to change those
+    /// cells. Clearing first is the only way to remove it. The clear and the frame are published as
+    /// one synchronized update, so a terminal that supports that never displays the cleared screen.
+    pub fn repaint<F>(&mut self, render: F) -> io::Result<()>
+    where
+        F: FnOnce(&mut ratatui::Frame<'_>),
+    {
+        execute!(self.terminal.backend_mut(), BeginSynchronizedUpdate)?;
+        let result = self
+            .terminal
+            .clear()
+            .and_then(|()| self.terminal.draw(render).map(|_| ()));
+        execute!(self.terminal.backend_mut(), EndSynchronizedUpdate)?;
+        result
     }
 }
 
