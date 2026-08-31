@@ -5,6 +5,8 @@ versioning once the first public release is tagged.
 
 ## [Unreleased]
 
+## [0.3.1] - 2026-08-31
+
 ### Added
 
 - Suite-wide scripting depth: `--jsonl`, `--fields`, `--quiet`, `--match`, domain selectors, and
