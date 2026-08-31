@@ -126,7 +126,12 @@ where
         }
 
         if dirty {
-            terminal.draw(|frame| render::draw(frame, &mut app))?;
+            terminal.draw(|frame| {
+                render::draw(frame, &mut app);
+                if !capabilities.unicode {
+                    render::enforce_ascii(frame.buffer_mut());
+                }
+            })?;
             dirty = false;
         }
 

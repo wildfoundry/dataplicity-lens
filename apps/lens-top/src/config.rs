@@ -86,7 +86,10 @@ impl EffectiveConfig {
                 || env_bool("LENS_TOP_NO_COLOR")?.unwrap_or(false)
                 || file.colour_mode.eq_ignore_ascii_case("never"),
             theme: resolve_theme(args.theme, &file.theme)?,
-            ascii: args.ascii || env_bool("LENS_TOP_ASCII")?.unwrap_or(false),
+            ascii: args.ascii
+                || env_bool("LENS_TOP_ASCII")?
+                    .or(env_bool("LENS_ASCII")?)
+                    .unwrap_or(false),
         })
     }
 }

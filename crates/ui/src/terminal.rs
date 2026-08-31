@@ -11,6 +11,7 @@ use crossterm::{
         enable_raw_mode,
     },
 };
+use lens_core::{GlyphMode, TerminalEnvironment, unicode_available};
 use ratatui::{Terminal, backend::CrosstermBackend};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -52,12 +53,17 @@ impl TerminalCapabilities {
             ColorMode::Never => false,
             ColorMode::Auto => env::var_os("NO_COLOR").is_none() && term != "dumb",
         };
+        let glyph_mode = if force_ascii {
+            GlyphMode::Ascii
+        } else {
+            GlyphMode::Auto
+        };
         Self {
             color,
             true_color: color
                 && (color_term.eq_ignore_ascii_case("truecolor")
                     || color_term.eq_ignore_ascii_case("24bit")),
-            unicode: !force_ascii && term != "dumb",
+            unicode: unicode_available(glyph_mode, &TerminalEnvironment::detect()),
             light_background: detect_light_background(theme_mode),
         }
     }

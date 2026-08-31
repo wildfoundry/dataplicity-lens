@@ -1,12 +1,14 @@
 #![forbid(unsafe_code)]
 
 mod scripting;
+mod terminal;
 
 pub use scripting::{
     AssertionError, AssertionPolicy, EXIT_ASSERTION, EXIT_FAILURE, EXIT_SUCCESS, EXIT_USAGE,
     FailOnSeverity, MatchMode, PROJECTABLE_FIELDS, PrimaryDomain, UsageError, exit_code_from_error,
     parse_fields_list, project_snapshot_value,
 };
+pub use terminal::{GlyphMode, TerminalEnvironment, parse_boolean, unicode_available};
 
 use std::{cmp::Ordering, collections::HashMap};
 

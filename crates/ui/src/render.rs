@@ -3,8 +3,10 @@ use lens_model::{EntityId, Severity};
 use lens_output::{format_bytes, format_duration, format_rate, truncate};
 use ratatui::{
     Frame,
+    buffer::Buffer,
     layout::{Alignment, Constraint, Direction, Layout, Rect},
     style::{Color, Modifier, Style},
+    symbols::{bar, border},
     text::{Line, Span},
     widgets::{
         Block, BorderType, Borders, Cell, Clear, List, ListItem, ListState, Paragraph, Row,
@@ -18,10 +20,97 @@ use crate::{
     app::{App, InputMode, ProcessActionStage, ProcessSignal, View},
 };
 
+/// Box drawing for terminals without Unicode support, notably a Linux console that is not running
+/// in UTF-8 mode: it shows Unicode line drawing as mojibake instead.
+const ASCII_BORDER: border::Set<'static> = border::Set {
+    top_left: "+",
+    top_right: "+",
+    bottom_left: "+",
+    bottom_right: "+",
+    vertical_left: "|",
+    vertical_right: "|",
+    horizontal_top: "-",
+    horizontal_bottom: "-",
+};
+
+const ASCII_BARS: bar::Set<'static> = bar::Set {
+    full: "#",
+    seven_eighths: "%",
+    three_quarters: "*",
+    five_eighths: "+",
+    half: "=",
+    three_eighths: "-",
+    one_quarter: ":",
+    one_eighth: ".",
+    empty: " ",
+};
+
+fn frame_border(capabilities: TerminalCapabilities) -> border::Set<'static> {
+    if capabilities.unicode {
+        BorderType::Rounded.to_border_set()
+    } else {
+        ASCII_BORDER
+    }
+}
+
+fn spark_bars(capabilities: TerminalCapabilities) -> bar::Set<'static> {
+    if capabilities.unicode {
+        bar::NINE_LEVELS
+    } else {
+        ASCII_BARS
+    }
+}
+
+fn enter_key(capabilities: TerminalCapabilities) -> &'static str {
+    if capabilities.unicode { "↵" } else { "Ent" }
+}
+
+fn separator(capabilities: TerminalCapabilities) -> &'static str {
+    if capabilities.unicode { "·" } else { "-" }
+}
+
+fn ellipsis(capabilities: TerminalCapabilities) -> &'static str {
+    if capabilities.unicode { "…" } else { "..." }
+}
+
+/// Replace any remaining non-ASCII cell in a rendered frame.
+///
+/// Frames carry text Lens does not author — process names, command lines, log messages — and a
+/// terminal without Unicode support shows those bytes as mojibake, which also breaks column
+/// alignment. Substituting one character per cell keeps the layout ratatui computed intact.
+pub fn enforce_ascii(buffer: &mut Buffer) {
+    for cell in &mut buffer.content {
+        let symbol = cell.symbol();
+        if symbol.is_ascii() {
+            continue;
+        }
+        let replacement = match symbol.chars().next() {
+            Some('·' | '─' | '━' | '–' | '—') => "-",
+            Some('•' | '●' | '◆' | '◇') => "*",
+            Some('…') => ".",
+            Some('×') => "x",
+            Some('→' | '▸' | '▶' | '›' | '⇒') => ">",
+            Some('←') => "<",
+            Some('↑') => "^",
+            Some('↓') => "v",
+            Some('↵' | '⏎' | '⇥') => "|",
+            Some('│' | '┃') => "|",
+            Some('╭' | '╮' | '╰' | '╯' | '├' | '┤' | '┌' | '┐' | '└' | '┘' | '┼') => {
+                "+"
+            }
+            Some('▁'..='█') => "#",
+            Some('‘' | '’') => "'",
+            Some('“' | '”') => "\"",
+            _ => "?",
+        };
+        cell.set_symbol(replacement);
+    }
+}
+
 pub fn draw(frame: &mut Frame<'_>, app: &mut App) {
     let area = frame.area();
     if area.width < 36 || area.height < 10 {
-        draw_too_small(frame, area);
+        draw_too_small(frame, area, app.capabilities);
         return;
     }
 
@@ -215,7 +304,7 @@ fn draw_summary(frame: &mut Frame<'_>, area: Rect, app: &App) {
         .block(
             Block::default()
                 .borders(Borders::ALL)
-                .border_type(BorderType::Rounded)
+                .border_set(frame_border(app.capabilities))
                 .border_style(border_style(app.capabilities))
                 .title(Line::from(vec![
                     Span::styled(" CPU  ", label_style(app.capabilities)),
@@ -227,6 +316,7 @@ fn draw_summary(frame: &mut Frame<'_>, area: Rect, app: &App) {
         )
         .data(&cpu_data)
         .max(100)
+        .bar_set(spark_bars(app.capabilities))
         .style(info_style(app.capabilities));
     frame.render_widget(cpu, columns[0]);
 
@@ -234,7 +324,7 @@ fn draw_summary(frame: &mut Frame<'_>, area: Rect, app: &App) {
         .block(
             Block::default()
                 .borders(Borders::ALL)
-                .border_type(BorderType::Rounded)
+                .border_set(frame_border(app.capabilities))
                 .border_style(border_style(app.capabilities))
                 .title(Line::from(vec![
                     Span::styled(" MEMORY  ", label_style(app.capabilities)),
@@ -246,6 +336,7 @@ fn draw_summary(frame: &mut Frame<'_>, area: Rect, app: &App) {
         )
         .data(&memory_data)
         .max(100)
+        .bar_set(spark_bars(app.capabilities))
         .style(attention_style(app.capabilities));
     frame.render_widget(memory, columns[1]);
 
@@ -291,7 +382,7 @@ fn draw_summary(frame: &mut Frame<'_>, area: Rect, app: &App) {
         Paragraph::new(summary).block(
             Block::default()
                 .borders(Borders::ALL)
-                .border_type(BorderType::Rounded)
+                .border_set(frame_border(app.capabilities))
                 .border_style(border_style(app.capabilities))
                 .title(Span::styled(
                     " SYSTEM PULSE ",
@@ -422,7 +513,7 @@ fn draw_processes(frame: &mut Frame<'_>, area: Rect, app: &App) {
         .block(
             Block::default()
                 .borders(Borders::ALL)
-                .border_type(BorderType::Rounded)
+                .border_set(frame_border(app.capabilities))
                 .border_style(border_style(app.capabilities))
                 .title(Span::styled(
                     format!(" PROCESSES  {} visible ", visible.len()),
@@ -573,11 +664,12 @@ fn draw_detail(frame: &mut Frame<'_>, area: Rect, app: &App) {
                 .block(
                     Block::default()
                         .borders(Borders::ALL)
-                        .border_type(BorderType::Rounded)
+                        .border_set(frame_border(app.capabilities))
                         .border_style(border_style(app.capabilities))
                         .title(Span::styled(" CPU HISTORY ", label_style(app.capabilities))),
                 )
                 .data(&cpu_data)
+                .bar_set(spark_bars(app.capabilities))
                 .style(info_style(app.capabilities)),
             charts[0],
         );
@@ -587,7 +679,7 @@ fn draw_detail(frame: &mut Frame<'_>, area: Rect, app: &App) {
                 .block(
                     Block::default()
                         .borders(Borders::ALL)
-                        .border_type(BorderType::Rounded)
+                        .border_set(frame_border(app.capabilities))
                         .border_style(border_style(app.capabilities))
                         .title(Span::styled(
                             " RSS HISTORY  KiB ",
@@ -595,6 +687,7 @@ fn draw_detail(frame: &mut Frame<'_>, area: Rect, app: &App) {
                         )),
                 )
                 .data(&memory_data)
+                .bar_set(spark_bars(app.capabilities))
                 .style(attention_style(app.capabilities)),
             charts[1],
         );
@@ -666,7 +759,7 @@ fn draw_detail(frame: &mut Frame<'_>, area: Rect, app: &App) {
             .block(
                 Block::default()
                     .borders(Borders::ALL)
-                    .border_type(BorderType::Rounded)
+                    .border_set(frame_border(app.capabilities))
                     .border_style(border_style(app.capabilities))
                     .title(Span::styled(
                         " CONTEXT & FINDINGS ",
@@ -712,7 +805,7 @@ fn draw_footer(frame: &mut Frame<'_>, area: Rect, app: &App) {
 fn footer_text(app: &App, width: u16) -> Line<'static> {
     let mut spans = vec![Span::raw(" ")];
     let mut actions = vec![
-        ("↵", "inspect"),
+        (enter_key(app.capabilities), "inspect"),
         ("a", "action"),
         ("r", "refresh"),
         ("q", "quit"),
@@ -752,7 +845,7 @@ fn draw_input(frame: &mut Frame<'_>, area: Rect, app: &App, mode: InputMode) {
             .block(
                 Block::default()
                     .borders(Borders::ALL)
-                    .border_type(BorderType::Rounded)
+                    .border_set(frame_border(app.capabilities))
                     .border_style(brand_style(app.capabilities))
                     .style(canvas_style(app.capabilities))
                     .title(Span::styled(title, label_style(app.capabilities))),
@@ -772,7 +865,7 @@ fn draw_process_action(frame: &mut Frame<'_>, area: Rect, app: &App) {
     let signal = ProcessSignal::ALL[dialog.selection];
     let block = Block::default()
         .borders(Borders::ALL)
-        .border_type(BorderType::Rounded)
+        .border_set(frame_border(app.capabilities))
         .border_style(brand_style(app.capabilities))
         .style(canvas_style(app.capabilities))
         .title(Span::styled(
@@ -789,8 +882,10 @@ fn draw_process_action(frame: &mut Frame<'_>, area: Rect, app: &App) {
             let list = List::new(items)
                 .block(block.title_bottom(Span::styled(
                     format!(
-                        " {} · PID {} · Enter review · Esc cancel ",
-                        dialog.process, dialog.pid
+                        " {} {sep} PID {} {sep} Enter review {sep} Esc cancel ",
+                        dialog.process,
+                        dialog.pid,
+                        sep = separator(app.capabilities)
                     ),
                     muted_style(app.capabilities),
                 )))
@@ -817,8 +912,10 @@ fn draw_process_action(frame: &mut Frame<'_>, area: Rect, app: &App) {
                         title_style(app.capabilities).add_modifier(Modifier::BOLD),
                     )),
                     Line::from(format!(
-                        "PID {} · start identity {}",
-                        dialog.pid, dialog.start_time_ticks
+                        "PID {} {} start identity {}",
+                        dialog.pid,
+                        separator(app.capabilities),
+                        dialog.start_time_ticks
                     )),
                     Line::from(""),
                     Line::from(Span::styled(warning, attention_style(app.capabilities))),
@@ -838,10 +935,11 @@ fn draw_process_action(frame: &mut Frame<'_>, area: Rect, app: &App) {
         ProcessActionStage::Running => {
             frame.render_widget(
                 Paragraph::new(format!(
-                    "\nSending {} to {} (PID {})…\n\nWaiting for operating-system verification.",
+                    "\nSending {} to {} (PID {}){}\n\nWaiting for operating-system verification.",
                     signal.short_name(),
                     dialog.process,
-                    dialog.pid
+                    dialog.pid,
+                    ellipsis(app.capabilities)
                 ))
                 .alignment(Alignment::Center)
                 .block(block),
@@ -878,9 +976,16 @@ fn draw_diagnostic(frame: &mut Frame<'_>, area: Rect, app: &App) {
     };
     frame.render_widget(Clear, panel);
     let status = if app.diagnostic_running {
-        " Running command… · Esc close "
+        format!(
+            " Running command{} {} Esc close ",
+            ellipsis(app.capabilities),
+            separator(app.capabilities)
+        )
     } else {
-        " Results appear here · Esc close "
+        format!(
+            " Results appear here {} Esc close ",
+            separator(app.capabilities)
+        )
     };
     let inner_height = panel.height.saturating_sub(4) as usize;
     let output = if app.diagnostic_output.is_empty() {
@@ -909,7 +1014,7 @@ fn draw_diagnostic(frame: &mut Frame<'_>, area: Rect, app: &App) {
             .block(
                 Block::default()
                     .borders(Borders::ALL)
-                    .border_type(BorderType::Rounded)
+                    .border_set(frame_border(app.capabilities))
                     .border_style(brand_style(app.capabilities))
                     .style(canvas_style(app.capabilities))
                     .title(Span::styled(
@@ -921,7 +1026,7 @@ fn draw_diagnostic(frame: &mut Frame<'_>, area: Rect, app: &App) {
         rows[0],
     );
     let prompt = if app.diagnostic_running {
-        "Running…".to_owned()
+        format!("Running{}", ellipsis(app.capabilities))
     } else {
         format!("$ {}", app.diagnostic_input)
     };
@@ -931,7 +1036,7 @@ fn draw_diagnostic(frame: &mut Frame<'_>, area: Rect, app: &App) {
             .block(
                 Block::default()
                     .borders(Borders::ALL)
-                    .border_type(BorderType::Rounded)
+                    .border_set(frame_border(app.capabilities))
                     .border_style(border_style(app.capabilities))
                     .style(canvas_style(app.capabilities))
                     .title(Span::styled(" COMMAND ", label_style(app.capabilities)))
@@ -961,15 +1066,35 @@ fn draw_help(frame: &mut Frame<'_>, area: Rect, capabilities: TerminalCapabiliti
     let popup = centered_rect(76, 22, area);
     frame.render_widget(Clear, popup);
     let help = vec![
-        help_line("↑/↓  j/k", "Move through processes", capabilities),
-        help_line("↵", "Inspect selected process", capabilities),
+        help_line(
+            if capabilities.unicode {
+                "↑/↓  j/k"
+            } else {
+                "up/dn j/k"
+            },
+            "Move through processes",
+            capabilities,
+        ),
+        help_line(
+            enter_key(capabilities),
+            "Inspect selected process",
+            capabilities,
+        ),
         help_line("a", "Act on selected process", capabilities),
         help_line("esc", "Go back or close", capabilities),
         help_line("/", "Search everything", capabilities),
         help_line("f", "Filter expression", capabilities),
         help_line("s", "Choose sort order", capabilities),
         help_line("g", "Cycle grouping", capabilities),
-        help_line("⇥ / ⇧⇥", "Next / previous", capabilities),
+        help_line(
+            if capabilities.unicode {
+                "⇥ / ⇧⇥"
+            } else {
+                "Tab / S-Tab"
+            },
+            "Next / previous",
+            capabilities,
+        ),
         help_line("space", "Pause or resume", capabilities),
         help_line("r", "Refresh now", capabilities),
         help_line("!", "Open diagnostic shell", capabilities),
@@ -990,7 +1115,7 @@ fn draw_help(frame: &mut Frame<'_>, area: Rect, capabilities: TerminalCapabiliti
         Paragraph::new(help).block(
             Block::default()
                 .borders(Borders::ALL)
-                .border_type(BorderType::Rounded)
+                .border_set(frame_border(capabilities))
                 .border_style(brand_style(capabilities))
                 .style(canvas_style(capabilities))
                 .title(Span::styled(" COMMAND PALETTE ", brand_style(capabilities))),
@@ -1015,7 +1140,7 @@ fn draw_sort(frame: &mut Frame<'_>, area: Rect, app: &App) {
         .block(
             Block::default()
                 .borders(Borders::ALL)
-                .border_type(BorderType::Rounded)
+                .border_set(frame_border(app.capabilities))
                 .border_style(brand_style(app.capabilities))
                 .style(canvas_style(app.capabilities))
                 .title(Line::from(vec![
@@ -1037,7 +1162,7 @@ fn draw_sort(frame: &mut Frame<'_>, area: Rect, app: &App) {
     frame.render_stateful_widget(list, popup, &mut state);
 }
 
-fn draw_too_small(frame: &mut Frame<'_>, area: Rect) {
+fn draw_too_small(frame: &mut Frame<'_>, area: Rect, capabilities: TerminalCapabilities) {
     frame.render_widget(
         Paragraph::new(vec![
             Line::from(Span::styled(
@@ -1055,7 +1180,7 @@ fn draw_too_small(frame: &mut Frame<'_>, area: Rect) {
         .block(
             Block::default()
                 .borders(Borders::ALL)
-                .border_type(BorderType::Rounded),
+                .border_set(frame_border(capabilities)),
         ),
         area,
     );
@@ -1422,7 +1547,7 @@ fn state_style(state: lens_model::ProcessState, capabilities: TerminalCapabiliti
 fn panel(title: &'static str, capabilities: TerminalCapabilities) -> Block<'static> {
     Block::default()
         .borders(Borders::ALL)
-        .border_type(BorderType::Rounded)
+        .border_set(frame_border(capabilities))
         .border_style(border_style(capabilities))
         .title(Span::styled(title, label_style(capabilities)))
 }
