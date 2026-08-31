@@ -3254,7 +3254,8 @@ fn truncate_text(text: &str, width: usize) -> String {
     let ellipsis = glyphs().ellipsis;
     let ellipsis_width = ellipsis.chars().count();
     if width <= ellipsis_width {
-        return ellipsis.chars().take(width).collect();
+        // Too narrow to mark the cut and still show anything: prefer the text.
+        return text.chars().take(width).collect();
     }
     let mut value: String = text.chars().take(width - ellipsis_width).collect();
     value.push_str(ellipsis);
@@ -10467,6 +10468,151 @@ mod tests {
              en0 1500 192.0.2 192.0.2.8 12 - 4096 8 - 2048 -\n",
         );
         assert_eq!(counters, vec![("en0".into(), 4_096, 2_048)]);
+    }
+
+    /// Pin the glyph mode for the current test. Renderers read process-wide state, so each test
+    /// sets its own thread-local rather than racing the others through the atomic.
+    fn with_glyphs<T>(ascii: bool, body: impl FnOnce() -> T) -> T {
+        TEST_ASCII.with(|value| value.set(Some(ascii)));
+        let result = body();
+        TEST_ASCII.with(|value| value.set(None));
+        result
+    }
+
+    #[test]
+    fn ascii_mode_draws_the_cockpit_without_unicode() {
+        let snapshot = demo_snapshot();
+        let output = with_glyphs(true, || {
+            let mut output = Vec::new();
+            render_cockpit(
+                &snapshot,
+                &CpuActivity {
+                    history: (0..60).collect(),
+                    ..CpuActivity::default()
+                },
+                &NetworkActivity::default(),
+                4,
+                false,
+                40,
+                &mut output,
+            )
+            .expect("cockpit");
+            String::from_utf8(output).expect("UTF-8")
+        });
+
+        assert!(
+            output.is_ascii(),
+            "cockpit frame still carries non-ASCII characters: {output:?}"
+        );
+        assert!(output.contains("DATAPLICITY"));
+        assert!(output.contains("> Storage"), "selection marker is drawn");
+        assert!(output.contains("+---"), "frame rules are drawn");
+    }
+
+    #[test]
+    fn ascii_mode_draws_specialists_without_unicode() {
+        let snapshot = demo_snapshot();
+        for view in View::ALL {
+            let output = with_glyphs(true, || {
+                let mut output = Vec::new();
+                render_specialist(
+                    view,
+                    &snapshot,
+                    &NetworkActivity::default(),
+                    0,
+                    false,
+                    false,
+                    "ready",
+                    40,
+                    &mut output,
+                )
+                .expect("specialist");
+                String::from_utf8(output).expect("UTF-8")
+            });
+            assert!(
+                output.is_ascii(),
+                "{} frame still carries non-ASCII characters: {output:?}",
+                view.binary()
+            );
+        }
+    }
+
+    #[test]
+    fn ascii_mode_keeps_columns_aligned() {
+        let snapshot = demo_snapshot();
+        let cpu = CpuActivity {
+            history: (0..60).map(|value| value * 100 / 59).collect(),
+            ..CpuActivity::default()
+        };
+        let render = |ascii| {
+            with_glyphs(ascii, || {
+                let mut output = Vec::new();
+                render_cockpit_content(
+                    &snapshot,
+                    &cpu,
+                    &NetworkActivity::default(),
+                    0,
+                    false,
+                    40,
+                    &mut output,
+                )
+                .expect("cockpit");
+                String::from_utf8(output).expect("UTF-8")
+            })
+        };
+        let ascii = render(true);
+        let unicode = render(false);
+        for (ascii_line, unicode_line) in ascii.lines().zip(unicode.lines()) {
+            // ASCII spells the ellipsis and the Enter keycap out in words. Every other row is
+            // padded or ruled to the frame width, so its column count must not move.
+            if unicode_line.contains('\u{2026}') || unicode_line.contains('\u{21b5}') {
+                continue;
+            }
+            assert_eq!(
+                ascii_line.chars().count(),
+                unicode_line.chars().count(),
+                "{unicode_line:?} changed width"
+            );
+        }
+    }
+
+    #[test]
+    fn ascii_mode_translates_text_lens_does_not_author() {
+        let mut snapshot = demo_snapshot();
+        snapshot.host.hostname = "café–pi".into();
+        let output = with_glyphs(true, || {
+            let mut output = Vec::new();
+            render_cockpit(
+                &snapshot,
+                &CpuActivity::default(),
+                &NetworkActivity::default(),
+                0,
+                false,
+                40,
+                &mut output,
+            )
+            .expect("cockpit");
+            String::from_utf8(output).expect("UTF-8")
+        });
+        assert!(output.contains("caf?-pi"), "got {output:?}");
+    }
+
+    #[test]
+    fn ascii_mode_shortens_text_with_a_plain_ellipsis() {
+        assert_eq!(with_glyphs(false, || truncate_text("abcdef", 4)), "abc…");
+        assert_eq!(with_glyphs(true, || truncate_text("abcdef", 4)), "a...");
+        assert_eq!(with_glyphs(true, || truncate_text("abcdef", 2)), "ab");
+    }
+
+    #[test]
+    fn glyph_mode_follows_the_requested_flags() {
+        let ascii = ViewArgs::try_parse_from(["lens", "--ascii"]).expect("ascii args");
+        assert_eq!(glyph_mode_from_args(&ascii), GlyphMode::Ascii);
+        let unicode = ViewArgs::try_parse_from(["lens", "--unicode"]).expect("unicode args");
+        assert_eq!(glyph_mode_from_args(&unicode), GlyphMode::Unicode);
+        let automatic = ViewArgs::try_parse_from(["lens"]).expect("default args");
+        assert_eq!(glyph_mode_from_args(&automatic), GlyphMode::Auto);
+        assert!(ViewArgs::try_parse_from(["lens", "--ascii", "--unicode"]).is_err());
     }
 
     #[test]

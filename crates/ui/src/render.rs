@@ -1696,6 +1696,71 @@ mod tests {
     }
 
     #[test]
+    fn ascii_capabilities_render_a_frame_without_unicode() {
+        let backend = TestBackend::new(180, 50);
+        let mut terminal = Terminal::new(backend).expect("test terminal");
+        let options = UiOptions {
+            interval: std::time::Duration::from_secs(1),
+            sort_key: SortKey::Cpu,
+            sort_direction: SortDirection::Descending,
+            group: GroupMode::None,
+            filter: ProcessFilter::default(),
+            limit: None,
+            history_length: 10,
+            color_mode: ColorMode::Never,
+            theme_mode: crate::ThemeMode::Auto,
+            ascii: true,
+        };
+        let capabilities = TerminalCapabilities {
+            color: false,
+            true_color: false,
+            unicode: false,
+            light_background: false,
+        };
+        let mut snapshot = Snapshot::empty("café–pi");
+        snapshot.host.cpu_percent = 42.0;
+        let mut app = App::new(snapshot, options, capabilities);
+        app.show_help = true;
+
+        terminal
+            .draw(|frame| {
+                draw(frame, &mut app);
+                enforce_ascii(frame.buffer_mut());
+            })
+            .expect("render ascii frame");
+
+        let rendered = rendered_text(&terminal);
+        assert!(
+            rendered.is_ascii(),
+            "frame still carries non-ASCII characters"
+        );
+        assert!(rendered.contains("+---"), "ASCII borders are drawn");
+        assert!(rendered.contains("caf?-pi"), "foreign text is translated");
+    }
+
+    #[test]
+    fn ascii_border_and_bar_sets_replace_the_unicode_ones() {
+        let unicode = TerminalCapabilities {
+            color: false,
+            true_color: false,
+            unicode: true,
+            light_background: false,
+        };
+        let ascii = TerminalCapabilities {
+            unicode: false,
+            ..unicode
+        };
+
+        assert_eq!(frame_border(unicode), BorderType::Rounded.to_border_set());
+        assert_eq!(frame_border(ascii).top_left, "+");
+        assert_eq!(spark_bars(unicode).full, bar::NINE_LEVELS.full);
+        assert_eq!(spark_bars(ascii).full, "#");
+        assert_eq!(enter_key(ascii), "Ent");
+        assert_eq!(separator(ascii), "-");
+        assert_eq!(ellipsis(ascii), "...");
+    }
+
+    #[test]
     fn light_theme_uses_dark_primary_text() {
         let capabilities = TerminalCapabilities {
             color: true,
