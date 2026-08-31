@@ -58,8 +58,18 @@ devices and process list always describe the namespace in which Lens is running.
 Lens responds to terminal resizing and progressively removes secondary columns on compact displays.
 Colour defaults to automatic background detection; use `--theme light`, `--theme dark` or the
 `LENS_THEME` environment variable when a browser terminal, serial link or multiplexer does not expose
-reliable colour metadata. `lens-top --ascii` is available where Unicode drawing characters are not
-rendered correctly.
+reliable colour metadata.
+
+Drawing characters are chosen the same way. Every command draws Unicode rules, block sparklines and
+arrow keycaps in a terminal that can display them, and ASCII equivalents on a Linux virtual or serial
+console that reports no UTF-8 locale — the Raspberry Pi and embedded-image case, where the console
+font shows Unicode line drawing as mojibake. `--ascii` and `--unicode` state the choice for one
+command and `LENS_ASCII=1` states it for a shell; output redirected to a file or pipe is unaffected
+by the detection and stays byte-identical.
+
+A console shared with the kernel log is also drawn differently: Lens repaints the whole screen every
+second there, so `printk` output landing on a frame disappears on its own. `Ctrl+L` forces the same
+repaint in any terminal.
 
 Minimum tier-1 operating-system releases, the stable 1.x surface and deprecation rules are defined
 in [`SUPPORT_POLICY.md`](SUPPORT_POLICY.md).

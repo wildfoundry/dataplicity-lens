@@ -11,7 +11,7 @@ use std::{
     path::{Path, PathBuf},
     process::{Command, Stdio},
     sync::{
-        atomic::{AtomicU8, Ordering as AtomicOrdering},
+        atomic::{AtomicBool, AtomicU8, Ordering as AtomicOrdering},
         mpsc::{self, Receiver, TryRecvError},
     },
     thread,
@@ -30,8 +30,9 @@ use crossterm::{
     terminal::{self, ClearType},
 };
 use lens_core::{
-    AssertionError, AssertionPolicy, FailOnSeverity, MatchMode, PrimaryDomain, UsageError,
-    exit_code_from_error, parse_fields_list, project_snapshot_value,
+    AssertionError, AssertionPolicy, FailOnSeverity, GlyphMode, MatchMode, PrimaryDomain,
+    TerminalEnvironment, UsageError, exit_code_from_error, parse_fields_list,
+    project_snapshot_value, unicode_available,
 };
 use lens_model::{
     AccountInfo, CellularModem, CellularSim, CertificateInfo, Cgroup, ClockContext, DnsContext,
@@ -209,6 +210,12 @@ pub struct ViewArgs {
     /// Choose colours for an auto-detected, dark or light terminal background.
     #[arg(long, value_enum, default_value_t = ThemeMode::Auto)]
     pub theme: ThemeMode,
+    /// Draw with ASCII instead of Unicode characters (detected automatically on the Linux console).
+    #[arg(long, conflicts_with = "unicode")]
+    pub ascii: bool,
+    /// Keep Unicode drawing characters even when the terminal looks unable to display them.
+    #[arg(long)]
+    pub unicode: bool,
     /// Use deterministic committed sample data.
     #[arg(long, hide = true)]
     pub demo: bool,
@@ -387,10 +394,21 @@ fn assertion_err(message: impl Into<String>) -> anyhow::Error {
     anyhow::Error::new(AssertionError::new(message))
 }
 
+const fn glyph_mode_from_args(args: &ViewArgs) -> GlyphMode {
+    if args.ascii {
+        GlyphMode::Ascii
+    } else if args.unicode {
+        GlyphMode::Unicode
+    } else {
+        GlyphMode::Auto
+    }
+}
+
 pub fn run_view(view: View) -> Result<()> {
     let args = parse_view_args(view.binary());
     validate_view_args(view, &args)?;
     set_terminal_theme(args.theme);
+    set_terminal_glyphs(glyph_mode_from_args(&args));
     if generate_assets(view.binary(), &args)? {
         return Ok(());
     }
@@ -437,6 +455,7 @@ pub fn run_cockpit() -> Result<()> {
     let args = parse_view_args("lens");
     validate_view_args_cockpit(&args)?;
     set_terminal_theme(args.theme);
+    set_terminal_glyphs(glyph_mode_from_args(&args));
     if generate_assets("lens", &args)? {
         return Ok(());
     }
@@ -1438,6 +1457,9 @@ fn cockpit_loop(
                 KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => {
                     return Ok(());
                 }
+                KeyCode::Char('l') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                    redraw = true;
+                }
                 KeyCode::Up | KeyCode::Char('k') => {
                     selected = selected.saturating_sub(1);
                     redraw = true;
@@ -1676,31 +1698,31 @@ fn push_bounded(values: &mut VecDeque<u64>, value: u64, capacity: usize) {
 }
 
 fn activity_sparkline(values: &VecDeque<u64>, width: usize) -> String {
-    const BARS: [char; 8] = ['▁', '▂', '▃', '▄', '▅', '▆', '▇', '█'];
+    let bars = glyphs().bars;
     let start = values.len().saturating_sub(width);
     let visible = values.iter().skip(start);
     let maximum = visible.clone().copied().max().unwrap_or(0);
     visible
         .map(|value| {
             if maximum == 0 {
-                BARS[0]
+                bars[0]
             } else {
                 let index = ((*value as u128 * 7) / maximum as u128) as usize;
-                BARS[index]
+                bars[index]
             }
         })
         .collect()
 }
 
 fn percentage_sparkline(values: &VecDeque<u64>, width: usize) -> String {
-    const BARS: [char; 8] = ['▁', '▂', '▃', '▄', '▅', '▆', '▇', '█'];
+    let bars = glyphs().bars;
     let start = values.len().saturating_sub(width);
     values
         .iter()
         .skip(start)
         .map(|value| {
             let index = ((*value).min(100) as usize * 7) / 100;
-            BARS[index]
+            bars[index]
         })
         .collect()
 }
@@ -1969,8 +1991,8 @@ fn render_cockpit_content(
     }
     let width = usize::from(columns);
     let colour = terminal_colour_enabled();
-    let rule = "─".repeat(width.saturating_sub(2));
-    writeln!(stdout, "{}", ink(&format!("╭{rule}╮"), Ink::Border, colour))?;
+    let glyphs = glyphs();
+    writeln!(stdout, "{}", ink(&frame_top(width), Ink::Border, colour))?;
     if width >= 64 {
         writeln!(
             stdout,
@@ -1978,7 +2000,7 @@ fn render_cockpit_content(
             ink("DATAPLICITY", Ink::Brand, colour),
             ink(" / ", Ink::Muted, colour),
             ink("LENS", Ink::Bright, colour),
-            ink("◆", Ink::Border, colour),
+            ink(&glyphs.brand.to_string(), Ink::Border, colour),
             ink(
                 &truncate_text(
                     &host.hostname,
@@ -2009,7 +2031,7 @@ fn render_cockpit_content(
                 colour
             ),
             if loading {
-                badge(" … ", Ink::Attention, colour)
+                badge(&format!(" {} ", glyphs.ellipsis), Ink::Attention, colour)
             } else {
                 badge(" LIVE ", Ink::Success, colour)
             },
@@ -2026,12 +2048,16 @@ fn render_cockpit_content(
                         .as_deref()
                         .unwrap_or("Operating system unknown"),
                     if width >= 72 {
-                        format!("  •  kernel {}", host.kernel)
+                        format!("  {}  kernel {}", glyphs.bullet, host.kernel)
                     } else {
                         String::new()
                     },
                     if width >= 52 {
-                        format!("  •  up {}", human_duration(host.uptime_seconds))
+                        format!(
+                            "  {}  up {}",
+                            glyphs.bullet,
+                            human_duration(host.uptime_seconds)
+                        )
                     } else {
                         String::new()
                     }
@@ -2041,7 +2067,11 @@ fn render_cockpit_content(
             )
         )?;
     }
-    writeln!(stdout, "{}", ink(&format!("├{rule}┤"), Ink::Border, colour))?;
+    writeln!(
+        stdout,
+        "{}",
+        ink(&frame_divider(width), Ink::Border, colour)
+    )?;
     writeln!(
         stdout,
         "  {} {}    {} {}    {} {}",
@@ -2214,7 +2244,10 @@ fn render_cockpit_content(
             badge(&format!(" {critical} CRITICAL "), Ink::Critical, colour),
             badge(&format!(" {attention} ATTENTION "), Ink::Attention, colour),
             ink(
-                &format!("{critical} critical · {attention} attention"),
+                &format!(
+                    "{critical} critical {} {attention} attention",
+                    glyphs.separator
+                ),
                 Ink::Muted,
                 colour,
             ),
@@ -2226,7 +2259,7 @@ fn render_cockpit_content(
                 writeln!(
                     stdout,
                     "  {} {}",
-                    ink("•", Ink::Critical, colour),
+                    ink(&glyphs.bullet.to_string(), Ink::Critical, colour),
                     ink(
                         &truncate_text(&finding.title, width.saturating_sub(6)),
                         Ink::Muted,
@@ -2299,14 +2332,18 @@ fn render_cockpit_content(
     } else {
         writeln!(stdout)?;
     }
-    writeln!(stdout, "{}", ink(&format!("├{rule}┤"), Ink::Border, colour))?;
+    writeln!(
+        stdout,
+        "{}",
+        ink(&frame_divider(width), Ink::Border, colour)
+    )?;
     if width >= 82 {
         writeln!(
             stdout,
             "  {} {}   {} {}   {} {}   {} {}   {} {}   {} {}",
-            keycap("↑↓", colour),
+            keycap(glyphs.key_move, colour),
             ink("move", Ink::Muted, colour),
-            keycap("↵", colour),
+            keycap(glyphs.key_enter, colour),
             ink("open", Ink::Muted, colour),
             keycap("/", colour),
             ink("search", Ink::Muted, colour),
@@ -2321,16 +2358,16 @@ fn render_cockpit_content(
         writeln!(
             stdout,
             "  {} {}   {} {}   {} {}",
-            keycap("↑↓", colour),
+            keycap(glyphs.key_move, colour),
             ink("move", Ink::Muted, colour),
-            keycap("↵", colour),
+            keycap(glyphs.key_enter, colour),
             ink("open", Ink::Muted, colour),
             keycap("q", colour),
             ink("quit", Ink::Muted, colour)
         )?;
     }
     if rows >= 22 {
-        write!(stdout, "{}", ink(&format!("╰{rule}╯"), Ink::Border, colour))?;
+        write!(stdout, "{}", ink(&frame_bottom(width), Ink::Border, colour))?;
     }
     Ok(())
 }
@@ -2342,7 +2379,7 @@ fn cockpit_explore_cell(
     loading: bool,
     width: usize,
 ) -> String {
-    let marker = if selected { "▶" } else { " " };
+    let marker = if selected { glyphs().pointer } else { ' ' };
     let summary = cockpit_view_summary(view, snapshot, loading);
     let row = if width >= 48 {
         format!(
@@ -2378,6 +2415,7 @@ fn render_cockpit_activity(
         );
     }
     let colour = terminal_colour_enabled();
+    let glyphs = glyphs();
     let chart_width = width.saturating_sub(44).div_ceil(2).clamp(8, 32);
     let cpu_chart = percentage_sparkline(&cpu_activity.history, chart_width);
     let cpu_chart = if cpu_chart.is_empty() {
@@ -2389,13 +2427,18 @@ fn render_cockpit_activity(
     writeln!(
         stdout,
         "\n  {}",
-        ink("LIVE ACTIVITY · 60s", Ink::Label, colour)
+        ink(
+            &format!("LIVE ACTIVITY {} 60s", glyphs.separator),
+            Ink::Label,
+            colour
+        )
     )?;
     if snapshot.host.cpu_count == 0 {
         writeln!(
             stdout,
-            "  {} collecting host counters…",
-            ink("CPU", Ink::Label, colour)
+            "  {} collecting host counters{}",
+            ink("CPU", Ink::Label, colour),
+            glyphs.ellipsis
         )?;
     } else if width >= 64 {
         writeln!(
@@ -2438,27 +2481,32 @@ fn render_cockpit_activity(
         if width >= 64 {
             writeln!(
                 stdout,
-                "  {} ↓ {:>8}/s {}  ↑ {:>8}/s {}",
+                "  {} {} {:>8}/s {}  {} {:>8}/s {}",
                 ink("NET", Ink::Label, colour),
+                glyphs.receive,
                 human_bytes(rx),
                 ink(&rx_chart, Ink::Info, colour),
+                glyphs.transmit,
                 human_bytes(tx),
                 ink(&tx_chart, Ink::Attention, colour),
             )?;
         } else {
             writeln!(
                 stdout,
-                "  {} ↓ {}/s  ↑ {}/s",
+                "  {} {} {}/s  {} {}/s",
                 ink("NET", Ink::Label, colour),
+                glyphs.receive,
                 human_bytes(rx),
+                glyphs.transmit,
                 human_bytes(tx),
             )?;
         }
     } else {
         writeln!(
             stdout,
-            "  {} collecting interface counters…",
-            ink("NET", Ink::Label, colour)
+            "  {} collecting interface counters{}",
+            ink("NET", Ink::Label, colour),
+            glyphs.ellipsis
         )?;
     }
     Ok(())
@@ -2479,13 +2527,16 @@ fn render_wide_cockpit_activity(
     let cpu_graph_width = cpu_width.saturating_sub(11);
     let network_graph_width = network_width.saturating_sub(12);
 
+    let glyphs = glyphs();
+    let separator = glyphs.separator;
+    let axis = glyphs.chart_axis;
     let cpu_peak = cpu_activity.history.iter().copied().max().unwrap_or(0);
     let cpu_graph = block_chart_rows(&cpu_activity.history, cpu_graph_width, 100, 4);
     let cpu_lines = panel_lines(
-        "CPU PULSE · ● LIVE · 60s",
+        &format!("CPU PULSE {separator} {} LIVE {separator} 60s", glyphs.live),
         &[
             format!(
-                "{:>5.1}% current  ·  {:>3}% peak  ·  {} logical CPU{}",
+                "{:>5.1}% current  {separator}  {:>3}% peak  {separator}  {} logical CPU{}",
                 snapshot.host.cpu_percent,
                 cpu_peak,
                 snapshot.host.cpu_count,
@@ -2495,10 +2546,10 @@ fn render_wide_cockpit_activity(
                     "s"
                 }
             ),
-            format!("100 ┤{}", cpu_graph[0]),
-            format!(" 75 ┤{}", cpu_graph[1]),
-            format!(" 50 ┤{}", cpu_graph[2]),
-            format!(" 25 ┤{}", cpu_graph[3]),
+            format!("100 {axis}{}", cpu_graph[0]),
+            format!(" 75 {axis}{}", cpu_graph[1]),
+            format!(" 50 {axis}{}", cpu_graph[2]),
+            format!(" 25 {axis}{}", cpu_graph[3]),
         ],
         cpu_width,
     );
@@ -2529,19 +2580,24 @@ fn render_wide_cockpit_activity(
         2,
     );
     let network_lines = panel_lines(
-        "NETWORK FLOW · ● LIVE · 60s",
+        &format!(
+            "NETWORK FLOW {separator} {} LIVE {separator} 60s",
+            glyphs.live
+        ),
         &[
             format!(
-                "↓ {}/s  peak {}/s  ·  ↑ {}/s  peak {}/s",
+                "{} {}/s  peak {}/s  {separator}  {} {}/s  peak {}/s",
+                glyphs.receive,
                 human_bytes(rx),
                 human_bytes(rx_peak),
+                glyphs.transmit,
                 human_bytes(tx),
                 human_bytes(tx_peak),
             ),
-            format!("RX max ┤{}", rx_graph[0]),
-            format!("RX   0 ┤{}", rx_graph[1]),
-            format!("TX max ┤{}", tx_graph[0]),
-            format!("TX   0 ┤{}", tx_graph[1]),
+            format!("RX max {axis}{}", rx_graph[0]),
+            format!("RX   0 {axis}{}", rx_graph[1]),
+            format!("TX max {axis}{}", tx_graph[0]),
+            format!("TX   0 {axis}{}", tx_graph[1]),
         ],
         network_width,
     );
@@ -2559,19 +2615,32 @@ fn render_wide_cockpit_activity(
 }
 
 fn panel_lines(title: &str, content: &[String], width: usize) -> Vec<String> {
+    let glyphs = glyphs();
     let mut lines = Vec::with_capacity(content.len() + 2);
     let title_width = title.chars().count();
     lines.push(format!(
-        "╭─ {title} {}╮",
-        "─".repeat(width.saturating_sub(title_width + 5))
+        "{}{} {title} {}{}",
+        glyphs.frame_top_left,
+        glyphs.frame_horizontal,
+        glyphs.rule(width.saturating_sub(title_width + 5)),
+        glyphs.frame_top_right,
     ));
     let content_width = width.saturating_sub(4);
     for line in content {
         let line = truncate_text(line, content_width);
         let padding = content_width.saturating_sub(line.chars().count());
-        lines.push(format!("│ {line}{} │", " ".repeat(padding)));
+        lines.push(format!(
+            "{bar} {line}{} {bar}",
+            " ".repeat(padding),
+            bar = glyphs.frame_vertical,
+        ));
     }
-    lines.push(format!("╰{}╯", "─".repeat(width.saturating_sub(2))));
+    lines.push(format!(
+        "{}{}{}",
+        glyphs.frame_bottom_left,
+        glyphs.rule(width.saturating_sub(2)),
+        glyphs.frame_bottom_right,
+    ));
     lines
 }
 
@@ -2590,7 +2659,7 @@ fn block_chart_rows(
     maximum: u64,
     height: usize,
 ) -> Vec<String> {
-    const BLOCKS: [char; 9] = [' ', '▁', '▂', '▃', '▄', '▅', '▆', '▇', '█'];
+    let blocks = glyphs().blocks;
     let visible_start = values.len().saturating_sub(width);
     let visible: Vec<_> = values.iter().skip(visible_start).copied().collect();
     let left_padding = width.saturating_sub(visible.len());
@@ -2607,9 +2676,9 @@ fn block_chart_rows(
                 };
                 let row_fill = filled.saturating_sub(lower_level).min(8);
                 output.push(if row == height.saturating_sub(1) && row_fill == 0 {
-                    BLOCKS[1]
+                    blocks[1]
                 } else {
-                    BLOCKS[row_fill]
+                    blocks[row_fill]
                 });
             }
             output
@@ -2617,7 +2686,61 @@ fn block_chart_rows(
         .collect()
 }
 
+/// Rewrite a frame for terminals without Unicode support.
+///
+/// Frames also carry text Lens does not author — hostnames, log messages, service descriptions —
+/// so translating the whole frame is the only way to keep mojibake out of it. Decorative characters
+/// become their ASCII counterparts and anything else outside ASCII becomes `?`, which also keeps
+/// each cell one column wide so columns stay aligned.
+fn ascii_frame(frame: &[u8]) -> Vec<u8> {
+    ascii_text(&String::from_utf8_lossy(frame)).into_bytes()
+}
+
+/// Translate `text` when the terminal cannot display Unicode, otherwise pass it through.
+fn console_text(text: &str) -> String {
+    if terminal_unicode_enabled() {
+        text.to_owned()
+    } else {
+        ascii_text(text)
+    }
+}
+
+fn ascii_text(text: &str) -> String {
+    let mut output = String::with_capacity(text.len());
+    for character in text.chars() {
+        if character.is_ascii() {
+            output.push(character);
+            continue;
+        }
+        match character {
+            '…' => output.push_str("..."),
+            '·' | '─' | '━' => output.push('-'),
+            '•' | '●' | '◆' | '◇' => output.push('*'),
+            '×' => output.push('x'),
+            '°' => {}
+            '→' | '⇒' => output.push_str("->"),
+            '←' => output.push_str("<-"),
+            '↑' => output.push('^'),
+            '↓' => output.push('v'),
+            '↵' | '⏎' => output.push_str("Ent"),
+            '▶' | '▸' | '›' => output.push('>'),
+            '│' | '┃' => output.push('|'),
+            '╭' | '╮' | '╰' | '╯' | '├' | '┤' | '┌' | '┐' | '└' | '┘' | '┼' => {
+                output.push('+')
+            }
+            '▁'..='█' => output.push('#'),
+            '‘' | '’' => output.push('\''),
+            '“' | '”' => output.push('"'),
+            '–' | '—' => output.push('-'),
+            _ => output.push('?'),
+        }
+    }
+    output
+}
+
 fn present_frame(stdout: &mut impl Write, frame: &[u8]) -> Result<()> {
+    let translated = (!terminal_unicode_enabled()).then(|| ascii_frame(frame));
+    let frame = translated.as_deref().unwrap_or(frame);
     let mut update = Vec::with_capacity(frame.len().saturating_add(256));
     execute!(update, cursor::MoveTo(0, 0))?;
     execute!(update, terminal::Clear(ClearType::CurrentLine))?;
@@ -2646,8 +2769,9 @@ fn clear_gap_and_anchor_footer(stdout: &mut impl Write, rows: u16) -> Result<()>
 }
 
 fn cockpit_view_summary(view: View, snapshot: &SystemSnapshot, loading: bool) -> String {
+    let separator = glyphs().separator;
     if loading && (view != View::Processes || snapshot.processes.is_empty()) {
-        return "checking…".into();
+        return format!("checking{}", glyphs().ellipsis);
     }
     match view {
         View::Processes => format!("{} processes", snapshot.processes.len()),
@@ -2663,16 +2787,16 @@ fn cockpit_view_summary(view: View, snapshot: &SystemSnapshot, loading: bool) ->
             .find(|mount| mount.target == "/")
             .map_or_else(
                 || format!("{} mounts", snapshot.mounts.len()),
-                |root| format!("root filesystem · {:.0}% used", root.used_percent),
+                |root| format!("root filesystem {separator} {:.0}% used", root.used_percent),
             ),
         View::Net => format!(
-            "{} interfaces · {} listeners · {} modems",
+            "{} interfaces {separator} {} listeners {separator} {} modems",
             snapshot.interfaces.len(),
             snapshot.sockets.len(),
             snapshot.cellular_modems.len()
         ),
         View::Hardware => format!(
-            "{} sensors · {} USB · {} serial",
+            "{} sensors {separator} {} USB {separator} {} serial",
             snapshot.temperatures.len(),
             snapshot
                 .hardware_devices
@@ -2692,7 +2816,7 @@ fn cockpit_view_summary(view: View, snapshot: &SystemSnapshot, loading: bool) ->
                 None => "clock status unknown",
             };
             format!(
-                "{} · {} DNS · {} login users",
+                "{} {separator} {} DNS {separator} {} login users",
                 clock,
                 snapshot.dns.nameservers.len(),
                 interactive_accounts(snapshot).count()
@@ -2743,7 +2867,9 @@ fn cockpit_log_summary(snapshot: &SystemSnapshot) -> String {
         (0, 0, false) => "no flagged log entries".into(),
         (errors, 0, _) => format!("{errors} errors"),
         (0, warnings, _) => format!("{warnings} warnings"),
-        (errors, warnings, _) => format!("{errors} errors · {warnings} warnings"),
+        (errors, warnings, _) => {
+            format!("{errors} errors {} {warnings} warnings", glyphs().separator)
+        }
     }
 }
 
@@ -2789,7 +2915,163 @@ enum Ink {
     Border,
 }
 
+/// The characters interactive screens are drawn with.
+///
+/// Box drawing, block sparklines and arrow keycaps are unavailable on a Linux virtual console that
+/// is not in UTF-8 mode, where they arrive as mojibake instead. Every decorative character used by
+/// the cockpit and the specialists therefore has an ASCII counterpart here.
+#[derive(Debug, Clone, Copy)]
+struct Glyphs {
+    frame_top_left: char,
+    frame_top_right: char,
+    frame_bottom_left: char,
+    frame_bottom_right: char,
+    frame_horizontal: char,
+    frame_vertical: char,
+    frame_tee_left: char,
+    frame_tee_right: char,
+    chart_axis: char,
+    brand: char,
+    bullet: char,
+    separator: char,
+    live: char,
+    pointer: char,
+    key_move: &'static str,
+    key_enter: &'static str,
+    receive: char,
+    transmit: char,
+    action: &'static str,
+    ellipsis: &'static str,
+    degree: &'static str,
+    times: char,
+    mask: char,
+    bars: [char; 8],
+    blocks: [char; 9],
+}
+
+impl Glyphs {
+    const UNICODE: Self = Self {
+        frame_top_left: '╭',
+        frame_top_right: '╮',
+        frame_bottom_left: '╰',
+        frame_bottom_right: '╯',
+        frame_horizontal: '─',
+        frame_vertical: '│',
+        frame_tee_left: '├',
+        frame_tee_right: '┤',
+        chart_axis: '┤',
+        brand: '◆',
+        bullet: '•',
+        separator: '·',
+        live: '●',
+        pointer: '▶',
+        key_move: "↑↓",
+        key_enter: "↵",
+        receive: '↓',
+        transmit: '↑',
+        action: "→",
+        ellipsis: "…",
+        degree: "°",
+        times: '×',
+        mask: '•',
+        bars: ['▁', '▂', '▃', '▄', '▅', '▆', '▇', '█'],
+        blocks: [' ', '▁', '▂', '▃', '▄', '▅', '▆', '▇', '█'],
+    };
+
+    const ASCII: Self = Self {
+        frame_top_left: '+',
+        frame_top_right: '+',
+        frame_bottom_left: '+',
+        frame_bottom_right: '+',
+        frame_horizontal: '-',
+        frame_vertical: '|',
+        frame_tee_left: '+',
+        frame_tee_right: '+',
+        chart_axis: '|',
+        brand: '*',
+        bullet: '*',
+        separator: '-',
+        live: '*',
+        pointer: '>',
+        key_move: "^v",
+        key_enter: "Ent",
+        receive: 'v',
+        transmit: '^',
+        action: "->",
+        ellipsis: "...",
+        degree: "",
+        times: 'x',
+        mask: '*',
+        bars: ['.', ':', '-', '=', '+', '*', '%', '#'],
+        blocks: [' ', '.', ':', '-', '=', '+', '*', '%', '#'],
+    };
+
+    /// A horizontal rule of `width` frame characters.
+    fn rule(&self, width: usize) -> String {
+        self.frame_horizontal.to_string().repeat(width)
+    }
+}
+
+fn frame_top(width: usize) -> String {
+    let glyphs = glyphs();
+    format!(
+        "{}{}{}",
+        glyphs.frame_top_left,
+        glyphs.rule(width.saturating_sub(2)),
+        glyphs.frame_top_right
+    )
+}
+
+fn frame_divider(width: usize) -> String {
+    let glyphs = glyphs();
+    format!(
+        "{}{}{}",
+        glyphs.frame_tee_left,
+        glyphs.rule(width.saturating_sub(2)),
+        glyphs.frame_tee_right
+    )
+}
+
+fn frame_bottom(width: usize) -> String {
+    let glyphs = glyphs();
+    format!(
+        "{}{}{}",
+        glyphs.frame_bottom_left,
+        glyphs.rule(width.saturating_sub(2)),
+        glyphs.frame_bottom_right
+    )
+}
+
 static TERMINAL_THEME: AtomicU8 = AtomicU8::new(0);
+static TERMINAL_ASCII: AtomicBool = AtomicBool::new(false);
+
+#[cfg(test)]
+thread_local! {
+    /// Test-local glyph selection. The renderers read process-wide state, so tests pin the mode on
+    /// their own thread rather than racing each other through the atomic.
+    static TEST_ASCII: std::cell::Cell<Option<bool>> = const { std::cell::Cell::new(None) };
+}
+
+fn set_terminal_glyphs(mode: GlyphMode) {
+    let ascii = !unicode_available(mode, &TerminalEnvironment::detect());
+    TERMINAL_ASCII.store(ascii, AtomicOrdering::Relaxed);
+}
+
+fn terminal_unicode_enabled() -> bool {
+    #[cfg(test)]
+    if let Some(ascii) = TEST_ASCII.with(std::cell::Cell::get) {
+        return !ascii;
+    }
+    !TERMINAL_ASCII.load(AtomicOrdering::Relaxed)
+}
+
+fn glyphs() -> &'static Glyphs {
+    if terminal_unicode_enabled() {
+        &Glyphs::UNICODE
+    } else {
+        &Glyphs::ASCII
+    }
+}
 
 fn set_terminal_theme(theme: ThemeMode) {
     let value = match theme {
@@ -2972,15 +3254,19 @@ fn truncate_text(text: &str, width: usize) -> String {
     if text.chars().count() <= width {
         return text.to_owned();
     }
-    if width <= 1 {
-        return "…".chars().take(width).collect();
+    let ellipsis = glyphs().ellipsis;
+    let ellipsis_width = ellipsis.chars().count();
+    if width <= ellipsis_width {
+        // Too narrow to mark the cut and still show anything: prefer the text.
+        return text.chars().take(width).collect();
     }
-    let mut value: String = text.chars().take(width - 1).collect();
-    value.push('…');
+    let mut value: String = text.chars().take(width - ellipsis_width).collect();
+    value.push_str(ellipsis);
     value
 }
 
 fn mask_identifier(value: &str) -> String {
+    let mask = glyphs().mask;
     let visible: String = value
         .chars()
         .rev()
@@ -2990,9 +3276,9 @@ fn mask_identifier(value: &str) -> String {
         .rev()
         .collect();
     if value.chars().count() <= 4 {
-        "•".repeat(value.chars().count())
+        mask.to_string().repeat(value.chars().count())
     } else {
-        format!("••••{visible}")
+        format!("{}{visible}", mask.to_string().repeat(4))
     }
 }
 
@@ -3070,8 +3356,8 @@ fn render_specialist_content(
     }
     let width = usize::from(columns);
     let colour = terminal_colour_enabled();
-    let rule = "─".repeat(width.saturating_sub(2));
-    writeln!(stdout, "{}", ink(&format!("╭{rule}╮"), Ink::Border, colour))?;
+    let glyphs = glyphs();
+    writeln!(stdout, "{}", ink(&frame_top(width), Ink::Border, colour))?;
     if width >= 64 {
         writeln!(
             stdout,
@@ -3079,7 +3365,7 @@ fn render_specialist_content(
             ink("DATAPLICITY", Ink::Brand, colour),
             ink(" / ", Ink::Muted, colour),
             ink(&view.title().to_ascii_uppercase(), Ink::Bright, colour),
-            ink("◆", Ink::Border, colour),
+            ink(&glyphs.brand.to_string(), Ink::Border, colour),
             ink(
                 &truncate_text(
                     &snapshot.host.hostname,
@@ -3110,7 +3396,7 @@ fn render_specialist_content(
                 colour
             ),
             if loading {
-                badge(" … ", Ink::Attention, colour)
+                badge(&format!(" {} ", glyphs.ellipsis), Ink::Attention, colour)
             } else {
                 badge(" LIVE ", Ink::Success, colour)
             }
@@ -3120,18 +3406,26 @@ fn render_specialist_content(
         stdout,
         "  {}",
         ink(
-            &truncate_text(status, width.saturating_sub(4)),
+            &truncate_text(&console_text(status), width.saturating_sub(4)),
             Ink::Muted,
             colour
         )
     )?;
-    writeln!(stdout, "{}", ink(&format!("├{rule}┤"), Ink::Border, colour))?;
+    writeln!(
+        stdout,
+        "{}",
+        ink(&frame_divider(width), Ink::Border, colour)
+    )?;
 
     match view {
         View::Health if loading && !specialist_has_data(view, snapshot) => writeln!(
             stdout,
             "\n  {}",
-            ink("Running system checks…", Ink::Muted, colour)
+            ink(
+                &format!("Running system checks{}", glyphs.ellipsis),
+                Ink::Muted,
+                colour
+            )
         )?,
         View::Services => {
             render_service_specialist(snapshot, selected, inspecting, rows, width, stdout)?
@@ -3163,7 +3457,11 @@ fn render_specialist_content(
             stdout,
             "\n  {}",
             ink(
-                &format!("Loading {} data…", view.title().to_ascii_lowercase()),
+                &format!(
+                    "Loading {} data{}",
+                    view.title().to_ascii_lowercase(),
+                    glyphs.ellipsis
+                ),
                 Ink::Muted,
                 colour,
             )
@@ -3176,14 +3474,18 @@ fn render_specialist_content(
     } else {
         writeln!(stdout)?;
     }
-    writeln!(stdout, "{}", ink(&format!("├{rule}┤"), Ink::Border, colour))?;
+    writeln!(
+        stdout,
+        "{}",
+        ink(&frame_divider(width), Ink::Border, colour)
+    )?;
     if width < 64 {
         writeln!(
             stdout,
             "  {} {}   {} {}   {} {}",
-            keycap("↑↓", colour),
+            keycap(glyphs.key_move, colour),
             ink("move", Ink::Muted, colour),
-            keycap("↵", colour),
+            keycap(glyphs.key_enter, colour),
             ink("open", Ink::Muted, colour),
             keycap("q", colour),
             ink("quit", Ink::Muted, colour)
@@ -3196,13 +3498,13 @@ fn render_specialist_content(
         writeln!(
             stdout,
             "  {} {}   {} {}   {} {}   {} {}   {} {}   {} {}",
-            keycap("↑↓", colour),
+            keycap(glyphs.key_move, colour),
             ink("move", Ink::Muted, colour),
             keycap("Tab", colour),
             ink("section", Ink::Muted, colour),
             keycap("1-5", colour),
             ink("jump", Ink::Muted, colour),
-            keycap("↵", colour),
+            keycap(glyphs.key_enter, colour),
             ink("inspect", Ink::Muted, colour),
             keycap("/", colour),
             ink("search", Ink::Muted, colour),
@@ -3236,9 +3538,9 @@ fn render_specialist_content(
             writeln!(
                 stdout,
                 "  {} {}   {} {}   {} {}{}   {} {}   {} {}   {} {}",
-                keycap("↑↓", colour),
+                keycap(glyphs.key_move, colour),
                 ink("move", Ink::Muted, colour),
-                keycap("↵", colour),
+                keycap(glyphs.key_enter, colour),
                 ink("inspect", Ink::Muted, colour),
                 keycap("/", colour),
                 ink("search", Ink::Muted, colour),
@@ -3263,7 +3565,7 @@ fn render_specialist_content(
             ink("quit", Ink::Muted, colour),
         )?;
     }
-    write!(stdout, "{}", ink(&format!("╰{rule}╯"), Ink::Border, colour))?;
+    write!(stdout, "{}", ink(&frame_bottom(width), Ink::Border, colour))?;
     Ok(())
 }
 
@@ -3363,7 +3665,7 @@ fn render_log_specialist(
         let time = item.timestamp.get(11..19).unwrap_or(&item.timestamp);
         let source = item.unit.as_deref().unwrap_or(&item.source);
         let repeat = if item.repeated > 1 {
-            format!(" ×{}", item.repeated)
+            format!(" {}{}", glyphs().times, item.repeated)
         } else {
             String::new()
         };
@@ -4033,6 +4335,7 @@ fn render_net_specialist(
     out: &mut impl Write,
 ) -> Result<()> {
     let colour = terminal_colour_enabled();
+    let glyphs = glyphs();
     let interface_end = snapshot.interfaces.len();
     let route_end = interface_end + snapshot.routes.len();
     let socket_end = route_end + snapshot.sockets.len();
@@ -4075,16 +4378,19 @@ fn render_net_specialist(
             if let Some((rx, tx)) = activity.interface_rate(&interface.name) {
                 writeln!(
                     out,
-                    "  {} ↓ {}/s  ↑ {}/s",
+                    "  {} {} {}/s  {} {}/s",
                     ink("ACTIVITY", Ink::Label, colour),
+                    glyphs.receive,
                     human_bytes(rx),
+                    glyphs.transmit,
                     human_bytes(tx)
                 )?;
             } else if interface.rx_bytes.is_some() {
                 writeln!(
                     out,
-                    "  {} collecting the next sample…",
-                    ink("ACTIVITY", Ink::Label, colour)
+                    "  {} collecting the next sample{}",
+                    ink("ACTIVITY", Ink::Label, colour),
+                    glyphs.ellipsis
                 )?;
             }
         } else if selected < route_end {
@@ -4186,9 +4492,11 @@ fn render_net_specialist(
     if let Some((rx, tx)) = activity.current() {
         writeln!(
             out,
-            "  {}  ↓ {}/s  ↑ {}/s",
+            "  {}  {} {}/s  {} {}/s",
             ink("ACTIVITY", Ink::Label, colour),
+            glyphs.receive,
             human_bytes(rx),
+            glyphs.transmit,
             human_bytes(tx)
         )?;
         if width >= 70 {
@@ -4221,8 +4529,9 @@ fn render_net_specialist(
     {
         writeln!(
             out,
-            "  {} collecting the next sample…",
-            ink("ACTIVITY", Ink::Label, colour)
+            "  {} collecting the next sample{}",
+            ink("ACTIVITY", Ink::Label, colour),
+            glyphs.ellipsis
         )?;
     }
     if width >= 70 {
@@ -4395,7 +4704,11 @@ fn render_health_specialist(
                 writeln!(
                     out,
                     "  {}  {} {}",
-                    ink("•", severity_ink(finding.severity), colour),
+                    ink(
+                        &glyphs().bullet.to_string(),
+                        severity_ink(finding.severity),
+                        colour
+                    ),
                     evidence.label,
                     format!("{} {unit}", evidence.value).trim()
                 )?;
@@ -4407,7 +4720,7 @@ fn render_health_specialist(
                 writeln!(
                     out,
                     "  {}  {}",
-                    ink("→", Ink::Info, colour),
+                    ink(glyphs().action, Ink::Info, colour),
                     truncate_text(action, width.saturating_sub(6))
                 )?;
             }
@@ -4543,16 +4856,20 @@ fn hardware_rows(snapshot: &SystemSnapshot) -> Vec<(String, String, String)> {
         }
     }
     rows.extend(snapshot.temperatures.iter().map(|sensor| {
+        let glyphs = glyphs();
         let mut details = format!("Source: {}", sensor.source);
         if let Some(maximum) = sensor.max_c {
-            details.push_str(&format!("\nMaximum: {maximum:.1} °C"));
+            details.push_str(&format!("\nMaximum: {maximum:.1} {}C", glyphs.degree));
         }
         if let Some(critical) = sensor.critical_c {
-            details.push_str(&format!("\nCritical: {critical:.1} °C"));
+            details.push_str(&format!("\nCritical: {critical:.1} {}C", glyphs.degree));
         }
         (
             "TEMPERATURE".into(),
-            format!("{} · {:.1} °C", sensor.name, sensor.temperature_c),
+            format!(
+                "{} {} {:.1} {}C",
+                sensor.name, glyphs.separator, sensor.temperature_c, glyphs.degree
+            ),
             details,
         )
     }));
@@ -4779,8 +5096,13 @@ fn system_rows(snapshot: &SystemSnapshot) -> Vec<SystemRow> {
             section: SystemSection::Users,
             kind: "USER",
             value: format!(
-                "{} · uid {} · gid {} · {} · {}",
-                item.name, item.uid, item.gid, item.home, item.shell
+                "{} {sep} uid {} {sep} gid {} {sep} {} {sep} {}",
+                item.name,
+                item.uid,
+                item.gid,
+                item.home,
+                item.shell,
+                sep = glyphs().separator
             ),
         }));
     }
@@ -4805,13 +5127,14 @@ fn system_rows(snapshot: &SystemSnapshot) -> Vec<SystemRow> {
             section: SystemSection::Groups,
             kind: "GROUP",
             value: format!(
-                "{} · gid {}{}",
+                "{} {} gid {}{}",
                 item.name,
+                glyphs().separator,
                 item.gid,
                 if item.members.is_empty() {
                     String::new()
                 } else {
-                    format!(" · {}", item.members.join(","))
+                    format!(" {} {}", glyphs().separator, item.members.join(","))
                 }
             ),
         }));
@@ -4901,7 +5224,7 @@ fn certificate_summary(item: &CertificateInfo) -> String {
         .unwrap_or(&item.path);
     item.not_after.as_deref().map_or_else(
         || identity.to_owned(),
-        |expiry| format!("{identity} · expires {expiry}"),
+        |expiry| format!("{identity} {} expires {expiry}", glyphs().separator),
     )
 }
 
@@ -5014,7 +5337,14 @@ fn specialist_loop(view: View, args: &ViewArgs, stdout: &mut impl Write) -> Resu
     let mut network_activity = NetworkActivity::default();
     let mut activity_receiver: Option<Receiver<Vec<(String, u64, u64)>>> = None;
     let mut next_network_sample = Instant::now() + Duration::from_secs(1);
-    let clock_interval = if view == View::Net { 1 } else { 60 };
+    // Kernel log output lands on top of a frame on a virtual or serial console, and only a new
+    // frame removes it, so draw as often there as the network view already does.
+    let clock_interval =
+        if view == View::Net || TerminalEnvironment::detect().shares_screen_with_kernel_log() {
+            1
+        } else {
+            60
+        };
     let mut next_clock = Instant::now() + Duration::from_secs(clock_interval);
     let mut redraw = true;
     loop {
@@ -5199,6 +5529,9 @@ fn specialist_loop(view: View, args: &ViewArgs, stdout: &mut impl Write) -> Resu
                 KeyCode::Esc => return Ok(()),
                 KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => {
                     return Ok(());
+                }
+                KeyCode::Char('l') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                    redraw = true;
                 }
                 KeyCode::Tab if view == View::System && !inspecting => {
                     selected = move_system_section(&snapshot, selected, 1);
@@ -5410,11 +5743,15 @@ fn render_service_action_overlay(
     let y = rows.saturating_sub(height) / 2;
     let inner = usize::from(width.saturating_sub(2));
     let colour = terminal_colour_enabled();
+    let glyphs = glyphs();
     execute!(stdout, cursor::MoveTo(x, y))?;
     write!(
         stdout,
-        "╭─SERVICE ACTION{}╮",
-        "─".repeat(inner.saturating_sub(15))
+        "{}{}SERVICE ACTION{}{}",
+        glyphs.frame_top_left,
+        glyphs.frame_horizontal,
+        glyphs.rule(inner.saturating_sub(15)),
+        glyphs.frame_top_right,
     )?;
     let action = ServiceAction::ALL[dialog.selection];
     let mut lines = match dialog.stage {
@@ -5423,9 +5760,9 @@ fn render_service_action_overlay(
             .enumerate()
             .map(|(index, item)| {
                 let marker = if index == dialog.selection {
-                    "▶"
+                    glyphs.pointer
                 } else {
-                    " "
+                    ' '
                 };
                 format!(" {marker} {}", item.label())
             })
@@ -5440,11 +5777,16 @@ fn render_service_action_overlay(
             String::new(),
             "Lens will run one exact systemd action and verify the unit state.".into(),
             String::new(),
-            "y confirm · Esc back".into(),
+            format!("y confirm {} Esc back", glyphs.separator),
         ],
         ServiceActionStage::Running => vec![
             String::new(),
-            format!("Running {} on {}…", action.cli_name(), dialog.target),
+            format!(
+                "Running {} on {}{}",
+                action.cli_name(),
+                dialog.target,
+                glyphs.ellipsis
+            ),
             String::new(),
             "Waiting for systemd and verification.".into(),
         ],
@@ -5458,24 +5800,30 @@ fn render_service_action_overlay(
     if dialog.stage == ServiceActionStage::Choose {
         lines.push(String::new());
         lines.push(format!(
-            "Target: {} · Enter review · Esc cancel",
-            dialog.target
+            "Target: {} {} Enter review {} Esc cancel",
+            dialog.target, glyphs.separator, glyphs.separator
         ));
     }
     for row in 0..usize::from(height.saturating_sub(2)) {
         execute!(stdout, cursor::MoveTo(x, y + 1 + row as u16))?;
         let line = lines.get(row).map_or("", String::as_str);
-        let line = truncate_text(line, inner);
+        let line = truncate_text(&console_text(line), inner);
         let padded = format!("{line:<inner$}");
         let styled = if dialog.stage == ServiceActionStage::Choose && row == dialog.selection {
             selected_row(&padded, colour)
         } else {
             ink(&padded, Ink::Bright, colour)
         };
-        write!(stdout, "│{styled}│")?;
+        write!(stdout, "{bar}{styled}{bar}", bar = glyphs.frame_vertical)?;
     }
     execute!(stdout, cursor::MoveTo(x, y + height - 1))?;
-    write!(stdout, "╰{}╯", "─".repeat(inner))?;
+    write!(
+        stdout,
+        "{}{}{}",
+        glyphs.frame_bottom_left,
+        glyphs.rule(inner),
+        glyphs.frame_bottom_right
+    )?;
     stdout.flush()?;
     Ok(())
 }
@@ -5609,11 +5957,15 @@ fn render_container_action_overlay(
     let y = rows.saturating_sub(height) / 2;
     let inner = usize::from(width.saturating_sub(2));
     let colour = terminal_colour_enabled();
+    let glyphs = glyphs();
     execute!(stdout, cursor::MoveTo(x, y))?;
     write!(
         stdout,
-        "╭─CONTAINER ACTION{}╮",
-        "─".repeat(inner.saturating_sub(17))
+        "{}{}CONTAINER ACTION{}{}",
+        glyphs.frame_top_left,
+        glyphs.frame_horizontal,
+        glyphs.rule(inner.saturating_sub(17)),
+        glyphs.frame_top_right,
     )?;
     let action = ServiceAction::CONTAINER_ALL[dialog.selection];
     let mut lines = match dialog.stage {
@@ -5622,9 +5974,9 @@ fn render_container_action_overlay(
             .enumerate()
             .map(|(index, item)| {
                 let marker = if index == dialog.selection {
-                    "▶"
+                    glyphs.pointer
                 } else {
-                    " "
+                    ' '
                 };
                 format!(" {marker} {}", item.container_label())
             })
@@ -5640,15 +5992,16 @@ fn render_container_action_overlay(
             String::new(),
             "Lens will run one exact container action and verify state.".into(),
             String::new(),
-            "y confirm · Esc back".into(),
+            format!("y confirm {} Esc back", glyphs.separator),
         ],
         ServiceActionStage::Running => vec![
             String::new(),
             format!(
-                "Running {} on {} ({})…",
+                "Running {} on {} ({}){}",
                 action.cli_name(),
                 dialog.name,
-                dialog.runtime
+                dialog.runtime,
+                glyphs.ellipsis
             ),
             String::new(),
             "Waiting for the runtime and verification.".into(),
@@ -5663,24 +6016,32 @@ fn render_container_action_overlay(
     if dialog.stage == ServiceActionStage::Choose {
         lines.push(String::new());
         lines.push(format!(
-            "Target: {} · {} · Enter review · Esc cancel",
-            dialog.name, dialog.runtime
+            "Target: {} {sep} {} {sep} Enter review {sep} Esc cancel",
+            dialog.name,
+            dialog.runtime,
+            sep = glyphs.separator
         ));
     }
     for row in 0..usize::from(height.saturating_sub(2)) {
         execute!(stdout, cursor::MoveTo(x, y + 1 + row as u16))?;
         let line = lines.get(row).map_or("", String::as_str);
-        let line = truncate_text(line, inner);
+        let line = truncate_text(&console_text(line), inner);
         let padded = format!("{line:<inner$}");
         let styled = if dialog.stage == ServiceActionStage::Choose && row == dialog.selection {
             selected_row(&padded, colour)
         } else {
             ink(&padded, Ink::Bright, colour)
         };
-        write!(stdout, "│{styled}│")?;
+        write!(stdout, "{bar}{styled}{bar}", bar = glyphs.frame_vertical)?;
     }
     execute!(stdout, cursor::MoveTo(x, y + height - 1))?;
-    write!(stdout, "╰{}╯", "─".repeat(inner))?;
+    write!(
+        stdout,
+        "{}{}{}",
+        glyphs.frame_bottom_left,
+        glyphs.rule(inner),
+        glyphs.frame_bottom_right
+    )?;
     stdout.flush()?;
     Ok(())
 }
@@ -5691,21 +6052,36 @@ fn render_search_overlay(stdout: &mut impl Write, title: &str, query: &str) -> R
     let x = columns.saturating_sub(width) / 2;
     let y = rows.saturating_sub(5) / 2;
     let inner = usize::from(width.saturating_sub(2));
+    let glyphs = glyphs();
+    let bar = glyphs.frame_vertical;
     let title = truncate_text(title, inner.saturating_sub(3));
-    let input = truncate_text(&format!("> {query}"), inner);
-    let help = truncate_text("Enter search · Esc cancel", inner);
-    let rule = "─".repeat(inner.saturating_sub(title.chars().count() + 1));
+    let input = truncate_text(&console_text(&format!("> {query}")), inner);
+    let help = truncate_text(
+        &format!("Enter search {} Esc cancel", glyphs.separator),
+        inner,
+    );
+    let rule = glyphs.rule(inner.saturating_sub(title.chars().count() + 1));
 
     execute!(stdout, cursor::MoveTo(x, y))?;
-    write!(stdout, "╭─{title}{rule}╮")?;
+    write!(
+        stdout,
+        "{}{}{title}{rule}{}",
+        glyphs.frame_top_left, glyphs.frame_horizontal, glyphs.frame_top_right
+    )?;
     execute!(stdout, cursor::MoveTo(x, y.saturating_add(1)))?;
-    write!(stdout, "│{input:<inner$}│")?;
+    write!(stdout, "{bar}{input:<inner$}{bar}")?;
     execute!(stdout, cursor::MoveTo(x, y.saturating_add(2)))?;
-    write!(stdout, "│{:<inner$}│", "")?;
+    write!(stdout, "{bar}{:<inner$}{bar}", "")?;
     execute!(stdout, cursor::MoveTo(x, y.saturating_add(3)))?;
-    write!(stdout, "│{help:<inner$}│")?;
+    write!(stdout, "{bar}{help:<inner$}{bar}")?;
     execute!(stdout, cursor::MoveTo(x, y.saturating_add(4)))?;
-    write!(stdout, "╰{}╯", "─".repeat(inner))?;
+    write!(
+        stdout,
+        "{}{}{}",
+        glyphs.frame_bottom_left,
+        glyphs.rule(inner),
+        glyphs.frame_bottom_right
+    )?;
     stdout.flush()?;
     Ok(())
 }
@@ -5841,42 +6217,61 @@ fn render_diagnostic_overlay(stdout: &mut impl Write, shell: &DiagnosticShell) -
         let start = shell.output.len().saturating_sub(output_rows);
         shell.output[start..].iter().map(String::as_str).collect()
     };
+    let glyphs = glyphs();
+    let bar = glyphs.frame_vertical;
     execute!(stdout, cursor::MoveTo(x, y))?;
     let title = "COMMAND OUTPUT";
     write!(
         stdout,
-        "╭─{title}{}╮",
-        "─".repeat(inner.saturating_sub(title.len() + 1))
+        "{}{}{title}{}{}",
+        glyphs.frame_top_left,
+        glyphs.frame_horizontal,
+        glyphs.rule(inner.saturating_sub(title.len() + 1)),
+        glyphs.frame_top_right,
     )?;
     for (row, line) in visible_output.iter().take(output_rows).enumerate() {
         execute!(stdout, cursor::MoveTo(x, y + 1 + row as u16))?;
-        let line = truncate_text(line, inner);
-        write!(stdout, "│{line:<inner$}│")?;
+        let line = truncate_text(&console_text(line), inner);
+        write!(stdout, "{bar}{line:<inner$}{bar}")?;
     }
     for row in visible_output.len().min(output_rows)..output_rows {
         execute!(stdout, cursor::MoveTo(x, y + 1 + row as u16))?;
-        write!(stdout, "│{:<inner$}│", "")?;
+        write!(stdout, "{bar}{:<inner$}{bar}", "")?;
     }
     execute!(stdout, cursor::MoveTo(x, y + height - 4))?;
     let command_title = " COMMAND ";
     write!(
         stdout,
-        "├{command_title}{}┤",
-        "─".repeat(inner.saturating_sub(command_title.len()))
+        "{}{command_title}{}{}",
+        glyphs.frame_tee_left,
+        glyphs.rule(inner.saturating_sub(command_title.len())),
+        glyphs.frame_tee_right,
     )?;
     execute!(stdout, cursor::MoveTo(x, y + height - 3))?;
     let prompt = if shell.running {
-        "Running…".to_owned()
+        format!("Running{}", glyphs.ellipsis)
     } else {
         format!("$ {}", shell.input)
     };
-    let prompt = truncate_text(&prompt, inner);
-    write!(stdout, "│{prompt:<inner$}│")?;
+    let prompt = truncate_text(&console_text(&prompt), inner);
+    write!(stdout, "{bar}{prompt:<inner$}{bar}")?;
     execute!(stdout, cursor::MoveTo(x, y + height - 2))?;
-    let help = truncate_text("Enter to run · Esc to close · results appear above", inner);
-    write!(stdout, "│{help:<inner$}│")?;
+    let help = truncate_text(
+        &format!(
+            "Enter to run {sep} Esc to close {sep} results appear above",
+            sep = glyphs.separator
+        ),
+        inner,
+    );
+    write!(stdout, "{bar}{help:<inner$}{bar}")?;
     execute!(stdout, cursor::MoveTo(x, y + height - 1))?;
-    write!(stdout, "╰{}╯", "─".repeat(inner))?;
+    write!(
+        stdout,
+        "{}{}{}",
+        glyphs.frame_bottom_left,
+        glyphs.rule(inner),
+        glyphs.frame_bottom_right
+    )?;
     stdout.flush()?;
     Ok(())
 }
@@ -5887,12 +6282,18 @@ fn show_cockpit_help(stdout: &mut impl Write) -> Result<()> {
         cursor::MoveTo(0, 0),
         terminal::Clear(ClearType::All)
     )?;
+    let glyphs = glyphs();
     writeln!(stdout, "Lens cockpit help\n")?;
-    writeln!(stdout, "↑/↓ or j/k   select a view")?;
+    writeln!(
+        stdout,
+        "{}/{} or j/k    select a view",
+        glyphs.transmit, glyphs.receive
+    )?;
     writeln!(stdout, "Enter         open selected view")?;
     writeln!(stdout, "/             search selected view")?;
     writeln!(stdout, "!             open diagnostic shell")?;
     writeln!(stdout, "r             refresh")?;
+    writeln!(stdout, "Ctrl+L        redraw the screen")?;
     writeln!(stdout, "q or Ctrl+C   quit safely")?;
     writeln!(stdout, "\nPress any key to return")?;
     stdout.flush()?;
@@ -5988,10 +6389,19 @@ fn launch_search(view: View, query: &str, stdout: &mut impl Write) -> Result<()>
         "--filter"
     };
     suspend_cockpit_for_child()?;
-    let status = Command::new(view.binary()).args([argument, query]).status();
+    let status = Command::new(view.binary())
+        .args([argument, query])
+        .env("LENS_ASCII", inherited_glyph_setting())
+        .status();
     resume_cockpit_after_child()?;
     status.context("launch filtered specialist view")?;
     Ok(())
+}
+
+/// Specialists share the cockpit's terminal, so hand them the resolved glyph choice rather than
+/// letting each one detect it again.
+fn inherited_glyph_setting() -> &'static str {
+    if terminal_unicode_enabled() { "0" } else { "1" }
 }
 
 fn launch(view: View, stdout: &mut impl Write) -> Result<()> {
@@ -5999,7 +6409,9 @@ fn launch(view: View, stdout: &mut impl Write) -> Result<()> {
         return launch_in_process(view, None, stdout);
     }
     suspend_cockpit_for_child()?;
-    let status = Command::new(view.binary()).status();
+    let status = Command::new(view.binary())
+        .env("LENS_ASCII", inherited_glyph_setting())
+        .status();
     resume_cockpit_after_child()?;
     status.context("launch specialist view")?;
     Ok(())
@@ -8513,7 +8925,7 @@ fn render_plain(view: View, snapshot: &SystemSnapshot, out: &mut dyn Write) -> R
                     item.timestamp,
                     item.message,
                     if item.repeated > 1 {
-                        format!("  ×{}", item.repeated)
+                        format!("  {}{}", glyphs().times, item.repeated)
                     } else {
                         String::new()
                     }
@@ -8614,7 +9026,9 @@ fn render_plain(view: View, snapshot: &SystemSnapshot, out: &mut dyn Write) -> R
                                 .map_or_else(|| sim.path.clone(), mask_identifier),
                             sim.operator_name
                                 .as_deref()
-                                .map_or_else(String::new, |name| format!(" · {name}"))
+                                .map_or_else(String::new, |name| {
+                                    format!(" {} {name}", glyphs().separator)
+                                })
                         )?;
                     }
                 }
@@ -8669,8 +9083,11 @@ fn render_plain(view: View, snapshot: &SystemSnapshot, out: &mut dyn Write) -> R
             for sensor in &snapshot.temperatures {
                 writeln!(
                     out,
-                    "{:<32} {:>6.1} °C  {}",
-                    sensor.name, sensor.temperature_c, sensor.source
+                    "{:<32} {:>6.1} {}C  {}",
+                    sensor.name,
+                    sensor.temperature_c,
+                    glyphs().degree,
+                    sensor.source
                 )?;
             }
             writeln!(out, "\nDEVICES")?;
@@ -8773,10 +9190,15 @@ fn render_plain(view: View, snapshot: &SystemSnapshot, out: &mut dyn Write) -> R
 }
 
 fn render_overview(snapshot: &SystemSnapshot, out: &mut dyn Write) -> Result<()> {
-    writeln!(out, "Dataplicity Lens · {}", snapshot.host.hostname)?;
+    let separator = glyphs().separator;
     writeln!(
         out,
-        "{} services · {} mounts · {} interfaces · {} listeners",
+        "Dataplicity Lens {separator} {}",
+        snapshot.host.hostname
+    )?;
+    writeln!(
+        out,
+        "{} services {separator} {} mounts {separator} {} interfaces {separator} {} listeners",
         snapshot.services.len(),
         snapshot.mounts.len(),
         snapshot.interfaces.len(),
@@ -8799,7 +9221,8 @@ fn render_findings(snapshot: &SystemSnapshot, out: &mut dyn Write) -> Result<()>
             for evidence in &finding.evidence {
                 writeln!(
                     out,
-                    "  · {}: {}{}",
+                    "  {} {}: {}{}",
+                    glyphs().separator,
                     evidence.label,
                     evidence.value,
                     evidence
@@ -8818,7 +9241,7 @@ fn render_warnings(snapshot: &SystemSnapshot, out: &mut dyn Write) -> Result<()>
     if !snapshot.collection_warnings.is_empty() {
         writeln!(out, "\nUnavailable data")?;
         for warning in &snapshot.collection_warnings {
-            writeln!(out, "  · {warning}")?;
+            writeln!(out, "  {} {warning}", glyphs().separator)?;
         }
     }
     Ok(())
@@ -10059,6 +10482,151 @@ mod tests {
              en0 1500 192.0.2 192.0.2.8 12 - 4096 8 - 2048 -\n",
         );
         assert_eq!(counters, vec![("en0".into(), 4_096, 2_048)]);
+    }
+
+    /// Pin the glyph mode for the current test. Renderers read process-wide state, so each test
+    /// sets its own thread-local rather than racing the others through the atomic.
+    fn with_glyphs<T>(ascii: bool, body: impl FnOnce() -> T) -> T {
+        TEST_ASCII.with(|value| value.set(Some(ascii)));
+        let result = body();
+        TEST_ASCII.with(|value| value.set(None));
+        result
+    }
+
+    #[test]
+    fn ascii_mode_draws_the_cockpit_without_unicode() {
+        let snapshot = demo_snapshot();
+        let output = with_glyphs(true, || {
+            let mut output = Vec::new();
+            render_cockpit(
+                &snapshot,
+                &CpuActivity {
+                    history: (0..60).collect(),
+                    ..CpuActivity::default()
+                },
+                &NetworkActivity::default(),
+                4,
+                false,
+                40,
+                &mut output,
+            )
+            .expect("cockpit");
+            String::from_utf8(output).expect("UTF-8")
+        });
+
+        assert!(
+            output.is_ascii(),
+            "cockpit frame still carries non-ASCII characters: {output:?}"
+        );
+        assert!(output.contains("DATAPLICITY"));
+        assert!(output.contains("> Storage"), "selection marker is drawn");
+        assert!(output.contains("+---"), "frame rules are drawn");
+    }
+
+    #[test]
+    fn ascii_mode_draws_specialists_without_unicode() {
+        let snapshot = demo_snapshot();
+        for view in View::ALL {
+            let output = with_glyphs(true, || {
+                let mut output = Vec::new();
+                render_specialist(
+                    view,
+                    &snapshot,
+                    &NetworkActivity::default(),
+                    0,
+                    false,
+                    false,
+                    "ready",
+                    40,
+                    &mut output,
+                )
+                .expect("specialist");
+                String::from_utf8(output).expect("UTF-8")
+            });
+            assert!(
+                output.is_ascii(),
+                "{} frame still carries non-ASCII characters: {output:?}",
+                view.binary()
+            );
+        }
+    }
+
+    #[test]
+    fn ascii_mode_keeps_columns_aligned() {
+        let snapshot = demo_snapshot();
+        let cpu = CpuActivity {
+            history: (0..60).map(|value| value * 100 / 59).collect(),
+            ..CpuActivity::default()
+        };
+        let render = |ascii| {
+            with_glyphs(ascii, || {
+                let mut output = Vec::new();
+                render_cockpit_content(
+                    &snapshot,
+                    &cpu,
+                    &NetworkActivity::default(),
+                    0,
+                    false,
+                    40,
+                    &mut output,
+                )
+                .expect("cockpit");
+                String::from_utf8(output).expect("UTF-8")
+            })
+        };
+        let ascii = render(true);
+        let unicode = render(false);
+        for (ascii_line, unicode_line) in ascii.lines().zip(unicode.lines()) {
+            // ASCII spells the ellipsis and the Enter keycap out in words. Every other row is
+            // padded or ruled to the frame width, so its column count must not move.
+            if unicode_line.contains('\u{2026}') || unicode_line.contains('\u{21b5}') {
+                continue;
+            }
+            assert_eq!(
+                ascii_line.chars().count(),
+                unicode_line.chars().count(),
+                "{unicode_line:?} changed width"
+            );
+        }
+    }
+
+    #[test]
+    fn ascii_mode_translates_text_lens_does_not_author() {
+        let mut snapshot = demo_snapshot();
+        snapshot.host.hostname = "café–pi".into();
+        let output = with_glyphs(true, || {
+            let mut output = Vec::new();
+            render_cockpit(
+                &snapshot,
+                &CpuActivity::default(),
+                &NetworkActivity::default(),
+                0,
+                false,
+                40,
+                &mut output,
+            )
+            .expect("cockpit");
+            String::from_utf8(output).expect("UTF-8")
+        });
+        assert!(output.contains("caf?-pi"), "got {output:?}");
+    }
+
+    #[test]
+    fn ascii_mode_shortens_text_with_a_plain_ellipsis() {
+        assert_eq!(with_glyphs(false, || truncate_text("abcdef", 4)), "abc…");
+        assert_eq!(with_glyphs(true, || truncate_text("abcdef", 4)), "a...");
+        assert_eq!(with_glyphs(true, || truncate_text("abcdef", 2)), "ab");
+    }
+
+    #[test]
+    fn glyph_mode_follows_the_requested_flags() {
+        let ascii = ViewArgs::try_parse_from(["lens", "--ascii"]).expect("ascii args");
+        assert_eq!(glyph_mode_from_args(&ascii), GlyphMode::Ascii);
+        let unicode = ViewArgs::try_parse_from(["lens", "--unicode"]).expect("unicode args");
+        assert_eq!(glyph_mode_from_args(&unicode), GlyphMode::Unicode);
+        let automatic = ViewArgs::try_parse_from(["lens"]).expect("default args");
+        assert_eq!(glyph_mode_from_args(&automatic), GlyphMode::Auto);
+        assert!(ViewArgs::try_parse_from(["lens", "--ascii", "--unicode"]).is_err());
     }
 
     #[test]

@@ -7,7 +7,7 @@ license.workspace = true
 repository.workspace = true
 
 [dependencies]
-lens-system = { path = "../../crates/system", version = "=0.3.0" }
+lens-system = { path = "../../crates/system", version = "=0.3.1" }
 
 [dev-dependencies]
 serde_json.workspace = true

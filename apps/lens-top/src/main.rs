@@ -131,7 +131,7 @@ fn run() -> Result<()> {
                 ColorMode::Auto
             },
             theme_mode: effective.theme,
-            ascii: effective.ascii,
+            glyphs: effective.glyphs,
         };
         run_tui(initial, move || sampler.collect(), options)?;
         return Ok(());

@@ -638,7 +638,7 @@ fn merge_filter(target: &mut ProcessFilter, extra: ProcessFilter) {
 #[cfg(test)]
 mod tests {
     use crossterm::event::{KeyEvent, KeyModifiers};
-    use lens_core::{GroupMode, ProcessFilter, SortDirection, SortKey};
+    use lens_core::{GlyphMode, GroupMode, ProcessFilter, SortDirection, SortKey};
     use lens_model::{IoCounters, ProcessState, User};
 
     use super::*;
@@ -655,7 +655,7 @@ mod tests {
             history_length: 10,
             color_mode: ColorMode::Never,
             theme_mode: crate::ThemeMode::Auto,
-            ascii: true,
+            glyphs: GlyphMode::Ascii,
         }
     }
 
@@ -707,7 +707,7 @@ mod tests {
                 process(20, 200, "selected", 20.0),
             ]),
             options(),
-            TerminalCapabilities::detect(ColorMode::Never, true),
+            TerminalCapabilities::detect(ColorMode::Never, GlyphMode::Ascii),
         );
         app.handle_key(key(KeyCode::Down));
         app.handle_key(key(KeyCode::Enter));
@@ -729,7 +729,7 @@ mod tests {
         let mut app = App::new(
             snapshot(vec![process(20, 200, "selected", 20.0)]),
             options(),
-            TerminalCapabilities::detect(ColorMode::Never, true),
+            TerminalCapabilities::detect(ColorMode::Never, GlyphMode::Ascii),
         );
         app.handle_key(key(KeyCode::Enter));
 
@@ -747,7 +747,7 @@ mod tests {
                 process(20, 200, "selected", 20.0),
             ]),
             options(),
-            TerminalCapabilities::detect(ColorMode::Never, true),
+            TerminalCapabilities::detect(ColorMode::Never, GlyphMode::Ascii),
         );
         app.handle_key(key(KeyCode::Down));
 
@@ -768,7 +768,7 @@ mod tests {
         let mut app = App::new(
             snapshot(Vec::new()),
             options(),
-            TerminalCapabilities::detect(ColorMode::Never, true),
+            TerminalCapabilities::detect(ColorMode::Never, GlyphMode::Ascii),
         );
         assert_eq!(app.handle_key(key(KeyCode::Char('!'))), Action::Redraw);
         for character in "printf lens".chars() {
@@ -792,7 +792,7 @@ mod tests {
         let mut app = App::new(
             snapshot(vec![process(42, 9001, "worker", 20.0)]),
             options(),
-            TerminalCapabilities::detect(ColorMode::Never, true),
+            TerminalCapabilities::detect(ColorMode::Never, GlyphMode::Ascii),
         );
         assert_eq!(app.handle_key(key(KeyCode::Char('a'))), Action::Redraw);
         assert_eq!(app.handle_key(key(KeyCode::Enter)), Action::Redraw);
