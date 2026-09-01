@@ -91,7 +91,7 @@ lens
 
 Homebrew verifies the archive digest before installing it. Current Homebrew releases require
 `brew trust` for third-party tap formulae before install. Rust and Apple's developer tools are not
-required for this binary installation. The current published release reports `lens 0.3.1`.
+required for this binary installation. The current published release reports `lens 0.3.2`.
 
 Open the overview, then check the local machine:
 
