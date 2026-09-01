@@ -56,6 +56,8 @@ devices and process list always describe the namespace in which Lens is running.
 ## Terminal support
 
 Lens responds to terminal resizing and progressively removes secondary columns on compact displays.
+A large screen is filled rather than stretched: `lens-top` caps the process name column, spends the
+width left over on the command line and adds a host panel beside the charts.
 Colour defaults to automatic background detection; use `--theme light`, `--theme dark` or the
 `LENS_THEME` environment variable when a browser terminal, serial link or multiplexer does not expose
 reliable colour metadata.

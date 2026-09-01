@@ -191,6 +191,11 @@ impl App {
         self.interval
     }
 
+    /// How many samples the charts can ever hold, whether or not they have filled yet.
+    pub const fn history_capacity(&self) -> usize {
+        self.history_length
+    }
+
     pub const fn paused(&self) -> bool {
         self.paused
     }
