@@ -5,6 +5,8 @@ versioning once the first public release is tagged.
 
 ## [Unreleased]
 
+## [0.3.2] - 2026-09-01
+
 ### Changed
 
 - `lens-top` fills a large screen instead of stretching the process name across it: the name column
