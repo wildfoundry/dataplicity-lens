@@ -5,6 +5,15 @@ versioning once the first public release is tagged.
 
 ## [Unreleased]
 
+### Changed
+
+- `lens-top` fills a large screen instead of stretching the process name across it: the name column
+  is capped, the width it leaves over goes to a new `COMMAND` column showing the command line, and
+  the popups stop growing once their text fits.
+- `lens-top` adds a `HOST` panel with uptime, core count and swap beside the charts on a wide
+  terminal, and only adds a column group while the process name still reads comfortably beside it,
+  so names are no longer cut to a few characters just after the I/O columns appear.
+
 ## [0.3.1] - 2026-08-31
 
 ### Added
