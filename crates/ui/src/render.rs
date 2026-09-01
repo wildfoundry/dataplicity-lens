@@ -9,8 +9,8 @@ use ratatui::{
     symbols::{bar, border},
     text::{Line, Span},
     widgets::{
-        Block, BorderType, Borders, Cell, Clear, List, ListItem, ListState, Paragraph, Row,
-        Sparkline, Table, TableState, Wrap,
+        Block, BorderType, Borders, Cell, Clear, HighlightSpacing, List, ListItem, ListState,
+        Paragraph, Row, Sparkline, Table, TableState, Wrap,
     },
 };
 use time::{OffsetDateTime, macros::format_description};
@@ -290,13 +290,26 @@ fn draw_summary(frame: &mut Frame<'_>, area: Rect, app: &App) {
         );
         return;
     }
-    let columns = Layout::default()
-        .direction(Direction::Horizontal)
-        .constraints([
+    // A sparkline only ever holds as many samples as the history, so past this width the two charts
+    // would grow into blank space. Spend it on a fourth panel of host facts instead.
+    let roomy = area.width >= 150;
+    let constraints = if roomy {
+        vec![
+            Constraint::Percentage(30),
+            Constraint::Percentage(30),
+            Constraint::Percentage(20),
+            Constraint::Percentage(20),
+        ]
+    } else {
+        vec![
             Constraint::Percentage(34),
             Constraint::Percentage(33),
             Constraint::Percentage(33),
-        ])
+        ]
+    };
+    let columns = Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints(constraints)
         .split(area);
     let cpu_data = app.host_cpu_history();
     let memory_data = app.memory_history();
@@ -391,14 +404,122 @@ fn draw_summary(frame: &mut Frame<'_>, area: Rect, app: &App) {
         ),
         columns[2],
     );
+
+    if roomy {
+        let memory = &app.snapshot.host.memory;
+        let swap = if memory.swap_total_bytes == 0 {
+            "none".to_owned()
+        } else {
+            format!(
+                "{} of {}",
+                format_bytes(memory.swap_used_bytes),
+                format_bytes(memory.swap_total_bytes)
+            )
+        };
+        let host = vec![
+            detail_line(
+                "UPTIME",
+                format_duration(app.snapshot.host.uptime_seconds),
+                app.capabilities,
+            ),
+            detail_line(
+                "CPU",
+                format!("{} cores", app.snapshot.host.cpu_count),
+                app.capabilities,
+            ),
+            detail_line("SWAP", swap, app.capabilities),
+        ];
+        frame.render_widget(
+            Paragraph::new(host).block(
+                Block::default()
+                    .borders(Borders::ALL)
+                    .border_set(frame_border(app.capabilities))
+                    .border_style(border_style(app.capabilities))
+                    .title(Span::styled(" HOST ", label_style(app.capabilities))),
+            ),
+            columns[3],
+        );
+    }
+}
+
+const PID_WIDTH: u16 = 7;
+const USER_WIDTH: u16 = 14;
+const RSS_WIDTH: u16 = 9;
+const SERVICE_WIDTH: u16 = 24;
+/// A process name rarely needs more room than this, and a wider column only pushes the numbers that
+/// describe the process away from it.
+const NAME_COLUMN_MAX: u16 = 34;
+const NAME_COLUMN_MIN: u16 = 12;
+/// A column group is only worth adding while the name still reads comfortably beside it.
+const NAME_COLUMN_COMFORT: u16 = 20;
+/// Below this a command line is cut back to nothing useful, so the name column keeps the space.
+const COMMAND_COLUMN_MIN: u16 = 28;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct ProcessColumns {
+    memory: bool,
+    identity: bool,
+    lifetime: bool,
+    throughput: bool,
+    service: Option<u16>,
+    name: u16,
+    command: Option<u16>,
+}
+
+/// Choose the process table columns for a terminal of this width.
+///
+/// Every column except the name and the command line has a fixed width, so the table used to fill a
+/// wide terminal by stretching the name across the gap: a short name on the far left, its
+/// measurements on the far right and a field of blanks in between. Groups are added while they fit,
+/// the name is capped so it stays beside the numbers, and whatever remains goes to the command line.
+fn process_columns(area_width: u16) -> ProcessColumns {
+    // PID, CPU% and ST describe every process and are always drawn.
+    let mut fixed_width = PID_WIDTH + 6 + 2;
+    let mut fixed_columns = 3;
+    // Both borders, the two-cell selection marker and one space before every column after the name.
+    let mut fits = |width: u16, count: u16| {
+        let needed = 4 + fixed_columns + count + fixed_width + width + NAME_COLUMN_COMFORT;
+        let room = area_width >= needed;
+        if room {
+            fixed_width += width;
+            fixed_columns += count;
+        }
+        room
+    };
+    let memory = fits(6, 1);
+    let identity = memory && fits(USER_WIDTH + RSS_WIDTH, 2);
+    let lifetime = identity && fits(4 + 8, 2);
+    let throughput = lifetime && fits(10 + 10, 2);
+    let service = throughput && fits(SERVICE_WIDTH, 1);
+
+    // Whatever the fixed columns leave over goes to the command line, or to the service path when
+    // there is not enough of it for a command; only a terminal with neither column lets the name
+    // spread out.
+    let free = area_width.saturating_sub(4 + fixed_columns + fixed_width);
+    let name = free.clamp(NAME_COLUMN_MIN, NAME_COLUMN_MAX);
+    // One more space separates the command column from the name.
+    let slack = free.saturating_sub(name);
+    let command = (slack > COMMAND_COLUMN_MIN).then(|| slack - 1);
+    let (name, service) = match (command, service) {
+        (Some(_), service) => (name, service.then_some(SERVICE_WIDTH)),
+        (None, true) => (name, Some(SERVICE_WIDTH + slack)),
+        (None, false) => (free.max(NAME_COLUMN_MIN), None),
+    };
+    ProcessColumns {
+        memory,
+        identity,
+        lifetime,
+        throughput,
+        service,
+        name,
+        command,
+    }
 }
 
 fn draw_processes(frame: &mut Frame<'_>, area: Rect, app: &App) {
     let visible = app.visible();
-    let compact = area.width < 58;
-    let narrow = area.width < 78;
-    let wide = area.width >= 115;
-    let medium = area.width >= 88;
+    let columns = process_columns(area.width);
+
     let mut rows = Vec::with_capacity(visible.len());
     for item in &visible {
         let process = &app.snapshot.processes[item.index];
@@ -416,12 +537,11 @@ fn draw_processes(frame: &mut Frame<'_>, area: Rect, app: &App) {
         let name = format!("{group}{prefix}{}", process.name);
         let mut cells = vec![
             Cell::from(process.pid.0.to_string()).style(muted_style(app.capabilities)),
-            Cell::from(truncate(&name, area.width.saturating_sub(24) as usize))
-                .style(title_style(app.capabilities)),
+            Cell::from(truncate(&name, columns.name as usize)).style(title_style(app.capabilities)),
         ];
-        if !compact && !narrow {
+        if columns.identity {
             cells.push(
-                Cell::from(truncate(&process.user.display_name(), 14))
+                Cell::from(truncate(&process.user.display_name(), USER_WIDTH as usize))
                     .style(muted_style(app.capabilities)),
             );
         }
@@ -429,13 +549,13 @@ fn draw_processes(frame: &mut Frame<'_>, area: Rect, app: &App) {
             Cell::from(format!("{:.1}", process.cpu_percent))
                 .style(cpu_style(process.cpu_percent, app.capabilities)),
         );
-        if !compact {
+        if columns.memory {
             cells.push(
                 Cell::from(format!("{:.1}", process.memory_percent))
                     .style(memory_style(process.memory_percent, app.capabilities)),
             );
         }
-        if !compact && !narrow {
+        if columns.identity {
             cells.push(
                 Cell::from(format_bytes(process.rss_bytes)).style(metric_style(app.capabilities)),
             );
@@ -443,7 +563,7 @@ fn draw_processes(frame: &mut Frame<'_>, area: Rect, app: &App) {
         cells.push(
             Cell::from(process.state.short()).style(state_style(process.state, app.capabilities)),
         );
-        if medium {
+        if columns.lifetime {
             cells
                 .push(Cell::from(process.threads.to_string()).style(muted_style(app.capabilities)));
             cells.push(
@@ -451,9 +571,11 @@ fn draw_processes(frame: &mut Frame<'_>, area: Rect, app: &App) {
                     .style(muted_style(app.capabilities)),
             );
         }
-        if wide {
+        if columns.throughput {
             cells.push(Cell::from(format_rate(process.io.read_bytes_per_second)));
             cells.push(Cell::from(format_rate(process.io.write_bytes_per_second)));
+        }
+        if let Some(width) = columns.service {
             cells.push(Cell::from(truncate(
                 process
                     .service
@@ -461,8 +583,21 @@ fn draw_processes(frame: &mut Frame<'_>, area: Rect, app: &App) {
                     .map(|service| service.name.as_str())
                     .or_else(|| process.cgroup.as_ref().map(|cgroup| cgroup.path.as_str()))
                     .unwrap_or("-"),
-                24,
+                width as usize,
             )));
+        }
+        if let Some(command) = columns.command {
+            cells.push(
+                Cell::from(truncate(
+                    process
+                        .command_line
+                        .as_deref()
+                        .filter(|line| !line.trim().is_empty())
+                        .unwrap_or("-"),
+                    command as usize,
+                ))
+                .style(muted_style(app.capabilities)),
+            );
         }
         let row_style = if process.state == lens_model::ProcessState::Zombie {
             critical_style(app.capabilities)
@@ -475,34 +610,41 @@ fn draw_processes(frame: &mut Frame<'_>, area: Rect, app: &App) {
     }
 
     let mut header = vec!["PID", "PROCESS"];
-    let mut widths = vec![Constraint::Length(7), Constraint::Min(12)];
-    if !compact && !narrow {
+    let mut widths = vec![
+        Constraint::Length(PID_WIDTH),
+        Constraint::Length(columns.name),
+    ];
+    if columns.identity {
         header.push("USER");
-        widths.push(Constraint::Length(14));
+        widths.push(Constraint::Length(USER_WIDTH));
     }
     header.push("CPU%");
     widths.push(Constraint::Length(6));
-    if !compact {
+    if columns.memory {
         header.push("MEM%");
         widths.push(Constraint::Length(6));
     }
-    if !compact && !narrow {
+    if columns.identity {
         header.push("RSS");
-        widths.push(Constraint::Length(9));
+        widths.push(Constraint::Length(RSS_WIDTH));
     }
     header.push("ST");
     widths.push(Constraint::Length(2));
-    if medium {
+    if columns.lifetime {
         header.extend(["THR", "RUNTIME"]);
         widths.extend([Constraint::Length(4), Constraint::Length(8)]);
     }
-    if wide {
-        header.extend(["READ", "WRITE", "SERVICE/CGROUP"]);
-        widths.extend([
-            Constraint::Length(10),
-            Constraint::Length(10),
-            Constraint::Length(24),
-        ]);
+    if columns.throughput {
+        header.extend(["READ", "WRITE"]);
+        widths.extend([Constraint::Length(10), Constraint::Length(10)]);
+    }
+    if let Some(width) = columns.service {
+        header.push("SERVICE/CGROUP");
+        widths.push(Constraint::Length(width));
+    }
+    if let Some(command) = columns.command {
+        header.push("COMMAND");
+        widths.push(Constraint::Length(command));
     }
     let table = Table::new(rows, widths)
         .header(
@@ -525,7 +667,10 @@ fn draw_processes(frame: &mut Frame<'_>, area: Rect, app: &App) {
             "▸ "
         } else {
             "> "
-        });
+        })
+        // The column widths are measured with room for the marker, so keep it even with no
+        // selection: an empty process list must not shift the header two cells sideways.
+        .highlight_spacing(HighlightSpacing::Always);
     let capacity = area.height.saturating_sub(3) as usize;
     let offset = viewport_start(app.selected, visible.len(), capacity);
     let mut state = TableState::default()
@@ -565,14 +710,29 @@ fn draw_detail(frame: &mut Frame<'_>, area: Rect, app: &App) {
     };
     let show_charts = area.height >= 16;
     let identity_height = if area.width < 72 { 6 } else { 7 };
-    let sections = Layout::default()
-        .direction(Direction::Vertical)
-        .constraints([
-            Constraint::Length(identity_height),
-            Constraint::Length(if show_charts { 5 } else { 0 }),
-            Constraint::Min(6),
-        ])
-        .split(area);
+    // The identity facts are short lines and the charts are only a few rows tall, so a large screen
+    // sets them side by side instead of stacking two half-empty bands above the context panel.
+    let sections = if show_charts && area.width >= 150 {
+        let rows = Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([Constraint::Length(identity_height), Constraint::Min(6)])
+            .split(area);
+        let top = Layout::default()
+            .direction(Direction::Horizontal)
+            .constraints([Constraint::Percentage(55), Constraint::Percentage(45)])
+            .split(rows[0]);
+        vec![top[0], top[1], rows[1]]
+    } else {
+        Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([
+                Constraint::Length(identity_height),
+                Constraint::Length(if show_charts { 5 } else { 0 }),
+                Constraint::Min(6),
+            ])
+            .split(area)
+            .to_vec()
+    };
     let identity = vec![
         Line::from(vec![
             Span::styled(
@@ -833,7 +993,7 @@ fn footer_text(app: &App, width: u16) -> Line<'static> {
 }
 
 fn draw_input(frame: &mut Frame<'_>, area: Rect, app: &App, mode: InputMode) {
-    let popup = centered_rect(80, 3, area);
+    let popup = centered_rect(80, 96, 3, area);
     frame.render_widget(Clear, popup);
     let title = match mode {
         InputMode::Search => " Search name, command, PID, user, service or cgroup ",
@@ -860,7 +1020,7 @@ fn draw_process_action(frame: &mut Frame<'_>, area: Rect, app: &App) {
     let Some(dialog) = app.process_action.as_ref() else {
         return;
     };
-    let popup = centered_rect(62, 13, area);
+    let popup = centered_rect(62, 72, 13, area);
     frame.render_widget(Clear, popup);
     let signal = ProcessSignal::ALL[dialog.selection];
     let block = Block::default()
@@ -1063,7 +1223,7 @@ fn local_clock() -> String {
 }
 
 fn draw_help(frame: &mut Frame<'_>, area: Rect, capabilities: TerminalCapabilities) {
-    let popup = centered_rect(76, 22, area);
+    let popup = centered_rect(76, 48, 22, area);
     frame.render_widget(Clear, popup);
     let help = vec![
         help_line(
@@ -1126,7 +1286,7 @@ fn draw_help(frame: &mut Frame<'_>, area: Rect, capabilities: TerminalCapabiliti
 }
 
 fn draw_sort(frame: &mut Frame<'_>, area: Rect, app: &App) {
-    let popup = centered_rect(44, 14, area);
+    let popup = centered_rect(44, 36, 14, area);
     frame.render_widget(Clear, popup);
     let items: Vec<ListItem<'_>> = SortKey::ALL
         .iter()
@@ -1187,7 +1347,11 @@ fn draw_too_small(frame: &mut Frame<'_>, area: Rect, capabilities: TerminalCapab
     );
 }
 
-fn centered_rect(percent_x: u16, height: u16, area: Rect) -> Rect {
+/// Centre a popup, taking a share of the width but never more than its content can fill.
+///
+/// A share alone stretches a dialog holding a short list of keys across a large screen, leaving the
+/// text stranded at the left of an otherwise empty box.
+fn centered_rect(percent_x: u16, max_width: u16, height: u16, area: Rect) -> Rect {
     let vertical = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
@@ -1196,12 +1360,15 @@ fn centered_rect(percent_x: u16, height: u16, area: Rect) -> Rect {
             Constraint::Fill(1),
         ])
         .split(area);
+    let width = (area.width * percent_x / 100)
+        .min(max_width)
+        .min(area.width);
     let horizontal = Layout::default()
         .direction(Direction::Horizontal)
         .constraints([
-            Constraint::Percentage((100 - percent_x) / 2),
-            Constraint::Percentage(percent_x),
-            Constraint::Percentage((100 - percent_x) / 2),
+            Constraint::Fill(1),
+            Constraint::Length(width),
+            Constraint::Fill(1),
         ])
         .split(vertical[1]);
     horizontal[1]
@@ -1603,6 +1770,59 @@ mod tests {
             .collect()
     }
 
+    fn rendered_lines(terminal: &Terminal<TestBackend>) -> Vec<String> {
+        let buffer = terminal.backend().buffer();
+        (0..buffer.area.height)
+            .map(|y| {
+                (0..buffer.area.width)
+                    .map(|x| buffer[(x, y)].symbol())
+                    .collect()
+            })
+            .collect()
+    }
+
+    fn process_fixture() -> lens_model::Process {
+        lens_model::Process {
+            pid: lens_model::ProcessId(8421),
+            parent_pid: Some(lens_model::ProcessId(1)),
+            name: "image-worker".to_owned(),
+            command_line: Some(
+                "/usr/local/bin/image-worker --config /etc/image-worker.toml".to_owned(),
+            ),
+            executable: Some("/usr/local/bin/image-worker".to_owned()),
+            user: lens_model::User {
+                uid: 1000,
+                name: Some("service".to_owned()),
+            },
+            state: lens_model::ProcessState::Running,
+            cpu_percent: 12.5,
+            memory_percent: 4.25,
+            rss_bytes: 812 * 1024 * 1024,
+            virtual_memory_bytes: 1_624 * 1024 * 1024,
+            threads: 8,
+            io: lens_model::IoCounters {
+                read_bytes: 4_096,
+                write_bytes: 2_048,
+                read_bytes_per_second: 1_024.0,
+                write_bytes_per_second: 512.0,
+            },
+            runtime_seconds: 7_200,
+            cgroup: Some(lens_model::Cgroup {
+                path: "/system.slice/image-worker.service".to_owned(),
+            }),
+            service: Some(lens_model::ServiceReference {
+                name: "image-worker.service".to_owned(),
+                inferred: true,
+            }),
+            container: None,
+            file_descriptor_count: Some(32),
+            child_pids: Vec::new(),
+            unavailable_fields: Vec::new(),
+            cpu_time_ticks: 4_200,
+            start_time_ticks: 9_421,
+        }
+    }
+
     #[test]
     fn narrow_screen_renders_without_panic() {
         let backend = TestBackend::new(36, 10);
@@ -1651,6 +1871,175 @@ mod tests {
         terminal
             .draw(|frame| draw(frame, &mut app))
             .expect("render");
+    }
+
+    /// The width the table asks ratatui for: every column, one space between them, both borders and
+    /// the selection marker.
+    fn table_width(columns: ProcessColumns) -> u16 {
+        let mut width = PID_WIDTH + 6 + 2 + columns.name;
+        let mut count = 4;
+        if columns.memory {
+            width += 6;
+            count += 1;
+        }
+        if columns.identity {
+            width += USER_WIDTH + RSS_WIDTH;
+            count += 2;
+        }
+        if columns.lifetime {
+            width += 4 + 8;
+            count += 2;
+        }
+        if columns.throughput {
+            width += 10 + 10;
+            count += 2;
+        }
+        if let Some(service) = columns.service {
+            width += service;
+            count += 1;
+        }
+        if let Some(command) = columns.command {
+            width += command;
+            count += 1;
+        }
+        width + (count - 1) + 4
+    }
+
+    #[test]
+    fn process_columns_fill_the_terminal_exactly() {
+        for width in 36..=400u16 {
+            assert_eq!(
+                table_width(process_columns(width)),
+                width,
+                "table leaves blank columns at width {width}"
+            );
+        }
+    }
+
+    #[test]
+    fn process_columns_grow_in_one_order() {
+        let mut previous = process_columns(36);
+        for width in 37..=400u16 {
+            let columns = process_columns(width);
+            assert!(columns.memory >= previous.memory);
+            assert!(columns.identity >= previous.identity);
+            assert!(columns.lifetime >= previous.lifetime);
+            assert!(columns.throughput >= previous.throughput);
+            assert!(columns.service.is_some() >= previous.service.is_some());
+            assert!(columns.identity <= columns.memory, "width {width}");
+            assert!(columns.lifetime <= columns.identity, "width {width}");
+            assert!(columns.throughput <= columns.lifetime, "width {width}");
+            assert!(
+                columns.service.is_some() <= columns.throughput,
+                "width {width}"
+            );
+            previous = columns;
+        }
+    }
+
+    #[test]
+    fn a_wide_terminal_spends_its_width_on_content_not_on_the_name_column() {
+        let columns = process_columns(210);
+        assert!(columns.name <= NAME_COLUMN_MAX);
+        assert!(columns.command.is_some_and(|command| command >= 40));
+    }
+
+    #[test]
+    fn a_terminal_without_room_for_a_command_widens_the_service_column() {
+        let columns = process_columns(160);
+        assert_eq!(columns.command, None);
+        assert!(columns.name <= NAME_COLUMN_MAX);
+        assert!(
+            columns
+                .service
+                .is_some_and(|service| service > SERVICE_WIDTH)
+        );
+    }
+
+    #[test]
+    fn a_large_screen_shows_the_command_line_beside_the_process() {
+        let backend = TestBackend::new(200, 24);
+        let mut terminal = Terminal::new(backend).expect("test terminal");
+        let options = UiOptions {
+            interval: std::time::Duration::from_secs(1),
+            sort_key: SortKey::Cpu,
+            sort_direction: SortDirection::Descending,
+            group: GroupMode::None,
+            filter: ProcessFilter::default(),
+            limit: None,
+            history_length: 10,
+            color_mode: ColorMode::Never,
+            theme_mode: crate::ThemeMode::Auto,
+            glyphs: GlyphMode::Ascii,
+        };
+        let capabilities = TerminalCapabilities::detect(ColorMode::Never, GlyphMode::Ascii);
+        let mut snapshot = Snapshot::empty("production-gateway-04");
+        snapshot.host.uptime_seconds = 8 * 86_400;
+        snapshot.host.cpu_count = 8;
+        snapshot.processes.push(process_fixture());
+        let mut app = App::new(snapshot, options, capabilities);
+
+        terminal
+            .draw(|frame| draw(frame, &mut app))
+            .expect("render");
+
+        let row = rendered_lines(&terminal)
+            .into_iter()
+            .find(|line| line.contains("image-worker"))
+            .expect("process row");
+        assert!(row.contains("/usr/local/bin/image-worker --config"));
+        // The name and the numbers describing it stay together.
+        assert!(!row.contains("                              "));
+        let rendered = rendered_text(&terminal);
+        assert!(rendered.contains("HOST"), "host facts fill the summary row");
+        assert!(rendered.contains("UPTIME"));
+        assert!(rendered.contains("8 cores"));
+    }
+
+    #[test]
+    fn a_large_screen_sets_the_process_charts_beside_its_facts() {
+        let backend = TestBackend::new(200, 40);
+        let mut terminal = Terminal::new(backend).expect("test terminal");
+        let options = UiOptions {
+            interval: std::time::Duration::from_secs(1),
+            sort_key: SortKey::Cpu,
+            sort_direction: SortDirection::Descending,
+            group: GroupMode::None,
+            filter: ProcessFilter::default(),
+            limit: None,
+            history_length: 10,
+            color_mode: ColorMode::Never,
+            theme_mode: crate::ThemeMode::Auto,
+            glyphs: GlyphMode::Ascii,
+        };
+        let capabilities = TerminalCapabilities::detect(ColorMode::Never, GlyphMode::Ascii);
+        let mut snapshot = Snapshot::empty("production-gateway-04");
+        snapshot.processes.push(process_fixture());
+        let mut app = App::new(snapshot, options, capabilities);
+        app.handle_key(crossterm::event::KeyEvent::from(
+            crossterm::event::KeyCode::Enter,
+        ));
+
+        terminal
+            .draw(|frame| draw(frame, &mut app))
+            .expect("render");
+
+        let titles = rendered_lines(&terminal)
+            .into_iter()
+            .find(|line| line.contains("PROCESS IDENTITY"))
+            .expect("identity panel");
+        assert!(titles.contains("CPU HISTORY"), "charts share the top row");
+    }
+
+    #[test]
+    fn a_popup_stops_growing_once_its_text_fits() {
+        let large = Rect::new(0, 0, 300, 60);
+        let popup = centered_rect(76, 48, 22, large);
+        assert_eq!(popup.width, 48);
+        assert_eq!(popup.x, (300 - 48) / 2);
+
+        let small = Rect::new(0, 0, 60, 20);
+        assert_eq!(centered_rect(76, 48, 22, small).width, 60 * 76 / 100);
     }
 
     #[test]
