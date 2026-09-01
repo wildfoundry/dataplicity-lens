@@ -250,6 +250,18 @@ fn draw_header(frame: &mut Frame<'_>, area: Rect, app: &App) {
     );
 }
 
+/// How wide a sparkline panel may be on a summary row of this width.
+///
+/// A sparkline draws one sample per column, so a panel wider than the history keeps blank columns at
+/// its right edge for as long as the command runs. The chart stops at the history instead, and the
+/// fact panels beside it take what is left: the history stays a fixed span of time rather than
+/// something the size of the terminal decides.
+fn chart_width(area_width: u16, history: usize) -> u16 {
+    let history = u16::try_from(history).unwrap_or(u16::MAX);
+    // Two columns for the panel border.
+    (area_width * 30 / 100).min(history.saturating_add(2))
+}
+
 fn draw_summary(frame: &mut Frame<'_>, area: Rect, app: &App) {
     if area.width < 78 {
         let counts = app.snapshot.host.process_counts;
@@ -294,11 +306,13 @@ fn draw_summary(frame: &mut Frame<'_>, area: Rect, app: &App) {
     // would grow into blank space. Spend it on a fourth panel of host facts instead.
     let roomy = area.width >= 150;
     let constraints = if roomy {
+        let chart = chart_width(area.width, app.history_capacity());
+        let facts = area.width.saturating_sub(chart * 2) / 2;
         vec![
-            Constraint::Percentage(30),
-            Constraint::Percentage(30),
-            Constraint::Percentage(20),
-            Constraint::Percentage(20),
+            Constraint::Length(chart),
+            Constraint::Length(chart),
+            Constraint::Length(facts),
+            Constraint::Fill(1),
         ]
     } else {
         vec![
@@ -1994,6 +2008,16 @@ mod tests {
         assert!(rendered.contains("HOST"), "host facts fill the summary row");
         assert!(rendered.contains("UPTIME"));
         assert!(rendered.contains("8 cores"));
+    }
+
+    #[test]
+    fn a_chart_never_grows_past_the_history_it_can_draw() {
+        // Room to spare: the charts stop at the 60 samples they hold, borders included.
+        assert_eq!(chart_width(300, 60), 62);
+        assert_eq!(chart_width(210, 60), 62);
+        // Below that the charts take their share of the row.
+        assert_eq!(chart_width(150, 60), 45);
+        assert_eq!(chart_width(150, 200), 45);
     }
 
     #[test]

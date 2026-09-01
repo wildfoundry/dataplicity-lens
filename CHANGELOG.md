@@ -13,6 +13,8 @@ versioning once the first public release is tagged.
 - `lens-top` adds a `HOST` panel with uptime, core count and swap beside the charts on a wide
   terminal, and only adds a column group while the process name still reads comfortably beside it,
   so names are no longer cut to a few characters just after the I/O columns appear.
+- A `lens-top` chart stops at the width its history can draw instead of trailing off into blank
+  columns. The history stays a fixed span of time on every terminal size.
 
 ## [0.3.1] - 2026-08-31
 
