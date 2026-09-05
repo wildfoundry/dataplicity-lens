@@ -5,6 +5,12 @@ versioning once the first public release is tagged.
 
 ## [Unreleased]
 
+## [0.3.4] - 2026-09-06
+
+### Fixed
+
+- Release tag `v0.3.4` republishes the nerdctl container inventory from #81 (`v0.3.3` tag was not reachable from `main` and could not be moved).
+
 ## [0.3.3] - 2026-09-06
 
 ### Added

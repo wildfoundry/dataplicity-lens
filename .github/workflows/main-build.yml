@@ -14,7 +14,7 @@ concurrency:
 env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
   CARGO_TERM_COLOR: always
-  VERSION: 0.3.3
+  VERSION: 0.3.4
 
 jobs:
   build:

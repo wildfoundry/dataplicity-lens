@@ -7,7 +7,7 @@ license.workspace = true
 repository.workspace = true
 
 [dependencies]
-lens-model = { version = "=0.3.3", path = "../model" }
+lens-model = { version = "=0.3.4", path = "../model" }
 thiserror.workspace = true
 
 [lints]

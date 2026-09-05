@@ -6,7 +6,7 @@ class DataplicityLens < Formula
   desc "Local system operations toolkit for Linux and macOS"
   homepage "https://lens.dataplicity.com/"
   url "https://github.com/wildfoundry/dataplicity-lens.git", branch: "main"
-  version "0.3.3"
+  version "0.3.4"
   license "Apache-2.0"
 
   depends_on "rust" => :build
