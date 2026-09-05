@@ -19,7 +19,7 @@ pub(crate) enum ProbeClass {
 pub(crate) fn collect_containers(warnings: &mut Vec<String>) -> (Vec<Container>, bool) {
     let mut containers = Vec::new();
     let mut runtime_live = false;
-    for runtime in ["docker", "podman"] {
+    for runtime in ["docker", "podman", "nerdctl"] {
         if !binary_on_path(runtime) {
             continue;
         }
@@ -114,6 +114,8 @@ pub(crate) fn classify_runtime_error(message: &str) -> ProbeClass {
         || lower.contains("error: unable to connect")
         || lower.contains("podman machine") && lower.contains("not running")
         || lower.contains("the system has no container")
+        || lower.contains("rootless containerd not running")
+        || lower.contains("containerd sock") && lower.contains("no such")
     {
         return ProbeClass::NotLive;
     }
@@ -343,6 +345,28 @@ mod tests {
         assert_eq!(container.state, "running");
         assert!(container.created.contains("2026-08-01"));
         assert!(container.ports.contains("8080"));
+    }
+
+    #[test]
+    fn parses_nerdctl_ps_json_line() {
+        let line = r#"{"Command":"\"python -u /app/main…\"","CreatedAt":"2026-09-05T14:03:32Z","ID":"31a89e811214","Image":"localhost/grain-silo-sim:0.1.1","Names":"dp-grain-silo-sim","Ports":"","Status":"Up"}"#;
+        let container = parse_ps_json_line("nerdctl", line).expect("parse");
+        assert_eq!(container.runtime, "nerdctl");
+        assert_eq!(container.id, "31a89e811214");
+        assert_eq!(container.name, "dp-grain-silo-sim");
+        assert_eq!(container.image, "localhost/grain-silo-sim:0.1.1");
+        assert_eq!(container.status, "Up");
+        assert_eq!(container.state, "running");
+    }
+
+    #[test]
+    fn classifies_nerdctl_rootless_as_not_live() {
+        assert_eq!(
+            classify_runtime_error(
+                "rootless containerd not running? (hint: use `containerd-rootless-setuptool.sh install`)"
+            ),
+            ProbeClass::NotLive
+        );
     }
 
     #[test]

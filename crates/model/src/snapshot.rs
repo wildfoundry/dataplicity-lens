@@ -433,7 +433,7 @@ pub struct Snapshot {
     pub services: Vec<Service>,
     #[serde(default)]
     pub containers: Vec<Container>,
-    /// True when at least one container runtime (docker/podman) responded as live.
+    /// True when at least one container runtime (docker/podman/nerdctl) responded as live.
     /// Not serialized; used for cockpit summary when inventory is empty.
     #[serde(skip)]
     pub containers_runtime_live: bool,

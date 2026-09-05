@@ -5,6 +5,12 @@ versioning once the first public release is tagged.
 
 ## [Unreleased]
 
+## [0.3.3] - 2026-09-06
+
+### Added
+
+- `lens-containers` inventories **nerdctl** the same way as Docker and Podman (Dataplicity OS Softwares).
+
 ## [0.3.2] - 2026-09-01
 
 ### Changed

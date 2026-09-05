@@ -30,7 +30,7 @@ The suite ships ten commands that share the same host snapshot and process/servi
 - `lens` — host overview
 - `lens-top` — processes and resource use
 - `lens-services` — service state (systemd / launchd)
-- `lens-containers` — Docker/Podman inventory and safe start/stop/restart
+- `lens-containers` — Docker/Podman/nerdctl inventory and safe start/stop/restart
 - `lens-logs` — recent journal, unified log, and local file messages
 - `lens-disk` — storage and mounts
 - `lens-net` — interfaces, routes, and listeners
