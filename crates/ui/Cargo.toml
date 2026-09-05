@@ -11,9 +11,9 @@ workspace = true
 
 [dependencies]
 crossterm.workspace = true
-lens-core = { version = "=0.3.2", path = "../core" }
-lens-model = { version = "=0.3.2", path = "../model" }
-lens-output = { version = "=0.3.2", path = "../output" }
+lens-core = { version = "=0.3.3", path = "../core" }
+lens-model = { version = "=0.3.3", path = "../model" }
+lens-output = { version = "=0.3.3", path = "../output" }
 ratatui.workspace = true
 thiserror.workspace = true
 time.workspace = true
