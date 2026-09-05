@@ -362,7 +362,9 @@ mod tests {
     #[test]
     fn classifies_nerdctl_rootless_as_not_live() {
         assert_eq!(
-            classify_runtime_error("rootless containerd not running? (hint: use `containerd-rootless-setuptool.sh install`)"),
+            classify_runtime_error(
+                "rootless containerd not running? (hint: use `containerd-rootless-setuptool.sh install`)"
+            ),
             ProbeClass::NotLive
         );
     }

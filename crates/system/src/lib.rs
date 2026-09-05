@@ -3837,7 +3837,10 @@ fn render_container_specialist(
         };
         writeln!(out, "\n  {}", ink(message, Ink::Muted, colour))?;
         for warning in &snapshot.collection_warnings {
-            if warning.contains("docker") || warning.contains("podman") || warning.contains("nerdctl") {
+            if warning.contains("docker")
+                || warning.contains("podman")
+                || warning.contains("nerdctl")
+            {
                 writeln!(out, "  {}", ink(warning, Ink::Attention, colour))?;
             }
         }
