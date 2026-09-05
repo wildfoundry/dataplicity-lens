@@ -1,30 +1,32 @@
-# Docker and Podman containers
+# Docker, Podman, and nerdctl containers
 
-`lens-containers` inventories containers from Docker and Podman when those tools are installed
-and live for the current user.
+`lens-containers` inventories containers from Docker, Podman, and nerdctl when those tools are
+installed and live for the current user.
 
 ```sh
 lens-containers
 lens-containers --plain
 lens-containers --json | jq '.containers'
-lens-containers --runtime docker --state running --fail-if-empty --quiet
+lens-containers --runtime nerdctl --state running --fail-if-empty --quiet
 ```
 
 ## Presence and permissions
 
 Collection follows an optional-runtime contract:
 
-- If `docker` or `podman` is not on `PATH`, that runtime contributes nothing and no warning is added.
-- If the CLI is present but the daemon is not live (connection refused / daemon not running), that
-  runtime is skipped silently.
+- If `docker`, `podman`, or `nerdctl` is not on `PATH`, that runtime contributes nothing and no
+  warning is added.
+- If the CLI is present but the daemon is not live (connection refused / daemon not running /
+  rootless containerd missing), that runtime is skipped silently.
 - If the CLI is present and the manager is live, but the current user cannot use the socket or is
-  missing the usual `docker` / `podman` group membership, Lens emits a `collection_warnings` entry
-  naming the runtime and the access problem.
-- Both runtimes may contribute rows in one snapshot. Rows are never merged across runtimes when
+  missing the usual `docker` / `podman` / `containerd` group membership (or an allowlisted sudo
+  helper for nerdctl), Lens emits a `collection_warnings` entry naming the runtime and the access
+  problem.
+- Multiple runtimes may contribute rows in one snapshot. Rows are never merged across runtimes when
   names collide.
 
-Lens invokes the CLI as the current user, so `DOCKER_HOST` and rootless Podman environments are
-honoured by the runtime itself.
+Lens invokes the CLI as the current user, so `DOCKER_HOST`, rootless Podman, and Dataplicity OS
+rootful `nerdctl` wrappers are honoured by the runtime itself.
 
 ## Row fields
 
@@ -32,7 +34,7 @@ Each container exposes:
 
 | Field | Meaning |
 | --- | --- |
-| `runtime` | `docker` or `podman` |
+| `runtime` | `docker`, `podman`, or `nerdctl` |
 | `id` | Full container ID |
 | `name` | Primary name |
 | `image` | Image reference |

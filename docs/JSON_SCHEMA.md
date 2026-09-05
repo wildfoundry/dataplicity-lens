@@ -53,7 +53,7 @@ Durations are seconds. CPU and memory are percentages. Process CPU can exceed 10
 | `host` | Hostname, kernel/OS, uptime seconds, logical CPU count, CPU percentage, load averages, memory and process counts. |
 | `processes` | Identity, parent, command, user, state, CPU/memory percentages, byte counters/rates, runtime seconds and optional service/container context. |
 | `services` | Native service name, load/active/sub state, description and optional restart count. |
-| `containers` | Docker/Podman inventory: runtime, id, name, image, status, normalized state, created and ports. |
+| `containers` | Docker/Podman/nerdctl inventory: runtime, id, name, image, status, normalized state, created and ports. |
 | `log_sources` | Stable source identifier and source kind. |
 | `logs` | Timestamp, source, optional unit/priority, message and adjacent-repeat count. |
 | `mounts` | Source, target, filesystem, total/used/available bytes, percentage and optional inode totals. |

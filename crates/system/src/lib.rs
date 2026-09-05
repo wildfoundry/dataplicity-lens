@@ -237,7 +237,7 @@ pub struct ViewArgs {
     /// Restrict services whose unit load state is loaded (true) or not (false).
     #[arg(long, value_name = "BOOL")]
     pub enabled: Option<bool>,
-    /// Container runtime filter: docker or podman (lens-containers).
+    /// Container runtime filter: docker, podman, or nerdctl (lens-containers).
     #[arg(long = "runtime", value_name = "RUNTIME")]
     pub container_runtime: Option<String>,
     /// Container image filter (lens-containers).
@@ -715,8 +715,8 @@ fn validate_view_args(view: View, args: &ViewArgs) -> Result<()> {
     }
     if let Some(runtime) = args.container_runtime.as_deref() {
         let runtime = runtime.to_ascii_lowercase();
-        if runtime != "docker" && runtime != "podman" {
-            return Err(usage_err("--runtime must be docker or podman"));
+        if runtime != "docker" && runtime != "podman" && runtime != "nerdctl" {
+            return Err(usage_err("--runtime must be docker, podman, or nerdctl"));
         }
     }
     if args.expect_status.is_some() && view != View::Containers {
@@ -2832,7 +2832,7 @@ fn cockpit_containers_summary(snapshot: &SystemSnapshot) -> String {
     }
     let access_limited = snapshot.collection_warnings.iter().any(|warning| {
         let lower = warning.to_ascii_lowercase();
-        (lower.contains("docker") || lower.contains("podman"))
+        (lower.contains("docker") || lower.contains("podman") || lower.contains("nerdctl"))
             && (lower.contains("not usable")
                 || lower.contains("access denied")
                 || lower.contains("permission"))
@@ -3837,7 +3837,7 @@ fn render_container_specialist(
         };
         writeln!(out, "\n  {}", ink(message, Ink::Muted, colour))?;
         for warning in &snapshot.collection_warnings {
-            if warning.contains("docker") || warning.contains("podman") {
+            if warning.contains("docker") || warning.contains("podman") || warning.contains("nerdctl") {
                 writeln!(out, "  {}", ink(warning, Ink::Attention, colour))?;
             }
         }

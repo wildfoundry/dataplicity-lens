@@ -61,7 +61,7 @@ Supported actions are `start`, `stop` and `restart`. Provide `--target` as one e
 name, or a selector (`--name`, `--runtime`, `--image`, `--status`, `--state`, `--filter`) that
 resolves to exactly one container. Ambiguous or empty selectors exit `2`. After execution,
 `--expect-status STATE` polls until the container reaches that normalized status/state or `--wait`
-elapses (default `2s`), then exits `3` on miss. Lens invokes `docker` or `podman` as the current
+elapses (default `2s`), then exits `3` on miss. Lens invokes `docker`, `podman`, or `nerdctl` as the current
 user with a 15-second deadline. If the runtime is installed but not usable (socket/group access),
 Lens refuses the action and explains why. Runtimes that are not installed or not live are hidden
 from inventory rather than treated as empty fleets.
