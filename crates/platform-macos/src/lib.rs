@@ -150,6 +150,7 @@ impl MacOsCollector {
             hardware: Default::default(),
             temperatures: Vec::new(),
             hardware_devices: Vec::new(),
+            ai: Default::default(),
             findings: Vec::new(),
             relationships,
             build: None,

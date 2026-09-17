@@ -27,6 +27,11 @@ composition rather than invoking or parsing system interfaces itself.
 
 No presentation crate reads `/proc`, and no collector emits terminal strings.
 
+AI diagnostics follow the same direction but intentionally do not probe hardware or model
+directories. `lens-system` reads the bounded, agent-owned AI state document once into the canonical
+model. Rendering and handoff filtering consume that copy. Lens does not create another AI state
+store, invoke vendor tools, or reconcile desired/current model state.
+
 ## Identity and PID reuse
 
 A process is identified by `(pid, start_time_ticks)`, not PID alone. Deltas and histories are joined

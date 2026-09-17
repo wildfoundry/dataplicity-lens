@@ -23,6 +23,8 @@ not JSON”. A broken downstream pipe is treated as a normal exit so commands su
 `lens-top --plain | head` do not report a failure.
 
 Assertion flags, `--quiet`, `--json`, `--jsonl` and `--fields` force one-shot mode even on a TTY.
+`lens --focus ai` also forces a one-shot diagnostic view and accepts exact `--model`, `--runtime`,
+`--accelerator` and `--source` handoff selectors. See [`AI_DIAGNOSTICS.md`](AI_DIAGNOSTICS.md).
 
 ## Limits and filters
 

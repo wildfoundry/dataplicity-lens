@@ -34,6 +34,7 @@ version.
   "hardware": {},
   "temperatures": [],
   "hardware_devices": [],
+  "ai": {},
   "findings": [],
   "relationships": [],
   "build": {},
@@ -71,6 +72,7 @@ Durations are seconds. CPU and memory are percentages. Process CPU can exceed 10
 | `hardware` | Machine/board/firmware identity and optional Raspberry Pi firmware status. |
 | `temperatures` | Sensor name/source, degrees Celsius and optional driver maximum/critical thresholds. |
 | `hardware_devices` | USB/serial kind, path and optional manufacturer, IDs and serial number. |
+| `ai` | Read-only agent-owned accelerator, model-store, runtime and availability state. |
 | `findings` | Severity, title, summary, evidence, related entities and suggested next checks. |
 | `relationships` | Typed links between entity identifiers. |
 | `build` | Optional version, commit, target and builder identity. |
@@ -89,6 +91,12 @@ counters so consumers can calculate deltas over their own sampling interval.
 `certificates` contains locally managed public certificates visible to the current user. Subject,
 issuer and expiry are populated when OpenSSL can inspect the file; Lens does not open private keys or
 enumerate the distribution's complete root CA catalogue.
+
+`ai.accelerators[].stable_id` is the durable identifier supplied by the agent. Accelerator telemetry,
+model-store desired/staged/current/previous slots and digest/cache pressure, plus runtime process,
+input freshness, queue, fallback and errors are optional. Unavailable values carry an explicit
+`missing_tool`, `absent`, `permission_denied`, `stale`, `not_reported` or `malformed` reason. Lens
+highlights runtime `active_model` / `loaded_model` divergence in plain output.
 
 Cellular ICCIDs, hardware serial numbers, account names, internal addresses, certificate paths and
 log messages can be sensitive inventory. JSON does not redact fields that the current user explicitly

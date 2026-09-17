@@ -268,6 +268,9 @@ pub fn write_json_lines_filtered(
             write_json_line(writer, snapshot, "hardware_device", device)?;
         }
     }
+    if want("ai") {
+        write_json_line(writer, snapshot, "ai", &snapshot.ai)?;
+    }
     if want("collection_warning") {
         for warning in &snapshot.collection_warnings {
             write_json_line(writer, snapshot, "collection_warning", warning)?;
@@ -295,6 +298,7 @@ pub fn jsonl_record_types_for_fields(fields: &[String]) -> Vec<&'static str> {
             "findings" => "finding",
             "relationships" => "relationship",
             "hardware_devices" => "hardware_device",
+            "ai" => "ai",
             "collection_warnings" => "collection_warning",
             _ => continue,
         };
@@ -354,6 +358,7 @@ pub fn write_json_lines(writer: &mut impl Write, snapshot: &Snapshot) -> io::Res
     for relationship in &snapshot.relationships {
         write_json_line(writer, snapshot, "relationship", relationship)?;
     }
+    write_json_line(writer, snapshot, "ai", &snapshot.ai)?;
     Ok(())
 }
 
@@ -514,6 +519,7 @@ mod tests {
             hardware: Default::default(),
             temperatures: Vec::new(),
             hardware_devices: Vec::new(),
+            ai: Default::default(),
             findings: Vec::new(),
             relationships: Vec::new(),
             build: None,
