@@ -5,6 +5,15 @@ versioning once the first public release is tagged.
 
 ## [Unreleased]
 
+## [0.3.5] - 2026-09-17
+
+### Added
+
+- Add a focused, read-only AI and accelerator diagnostic view backed by the Dataplicity agent's
+  authoritative state, including accelerator, model-store, runtime, input, fallback and error
+  evidence with explicit unavailable and stale reasons.
+- Add AI Fleet handoff selectors for model, runtime, accelerator and input source investigations.
+
 ## [0.3.4] - 2026-09-06
 
 ### Fixed
