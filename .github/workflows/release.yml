@@ -6,9 +6,9 @@ on:
   workflow_dispatch:
     inputs:
       tag:
-        description: Version to validate, for example v0.3.4
+        description: Version to validate, for example v0.3.5
         required: true
-        default: v0.3.4
+        default: v0.3.5
         type: string
       dry_run:
         description: Build and validate without publishing
