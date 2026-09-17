@@ -1,5 +1,6 @@
 #![forbid(unsafe_code)]
 
+mod ai;
 mod containers;
 mod hardware;
 
@@ -35,8 +36,9 @@ use lens_core::{
     project_snapshot_value, unicode_available,
 };
 use lens_model::{
-    AccountInfo, CellularModem, CellularSim, CertificateInfo, Cgroup, ClockContext, DnsContext,
-    GroupInfo, HardwareDevice, HardwareIdentity, IoCounters, Process, ProcessId, ProcessState,
+    Accelerator, AccountInfo, AiDiagnostics, AiRuntime, AiUnavailableField, AiUnavailableReason,
+    CellularModem, CellularSim, CertificateInfo, Cgroup, ClockContext, DnsContext, GroupInfo,
+    HardwareDevice, HardwareIdentity, IoCounters, ModelStore, Process, ProcessId, ProcessState,
     SchemaVersion, ServiceReference, TemperatureSensor, Timestamp, User,
 };
 pub use lens_model::{
@@ -120,6 +122,11 @@ pub enum ThemeMode {
     Auto,
     Dark,
     Light,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+pub enum Focus {
+    Ai,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum, Serialize)]
@@ -219,6 +226,21 @@ pub struct ViewArgs {
     /// Use deterministic committed sample data.
     #[arg(long, hide = true)]
     pub demo: bool,
+    /// Open a focused diagnostic section (currently: ai).
+    #[arg(long, value_enum)]
+    pub focus: Option<Focus>,
+    /// Read the authoritative agent AI state from this absolute path.
+    #[arg(long, value_name = "PATH")]
+    pub agent_state: Option<PathBuf>,
+    /// Focus AI diagnostics on a model identifier.
+    #[arg(long, value_name = "MODEL")]
+    pub model: Option<String>,
+    /// Focus AI diagnostics on an accelerator stable ID.
+    #[arg(long, value_name = "STABLE_ID")]
+    pub accelerator: Option<String>,
+    /// Focus AI diagnostics on an input source.
+    #[arg(long = "source", value_name = "SOURCE")]
+    pub ai_source: Option<String>,
     /// Case-insensitive filter applied to rows and findings.
     #[arg(long)]
     pub filter: Option<String>,
@@ -237,7 +259,7 @@ pub struct ViewArgs {
     /// Restrict services whose unit load state is loaded (true) or not (false).
     #[arg(long, value_name = "BOOL")]
     pub enabled: Option<bool>,
-    /// Container runtime filter: docker, podman, or nerdctl (lens-containers).
+    /// Container runtime filter, or AI runtime identifier with `lens --focus ai`.
     #[arg(long = "runtime", value_name = "RUNTIME")]
     pub container_runtime: Option<String>,
     /// Container image filter (lens-containers).
@@ -469,6 +491,7 @@ pub fn run_cockpit() -> Result<()> {
         || args.plain
         || args.once
         || args.demo
+        || args.focus.is_some()
         || args.quiet
         || args.fields.is_some()
         || assertion_policy_from_args(&args).is_active()
@@ -476,10 +499,18 @@ pub fn run_cockpit() -> Result<()> {
     if force_oneshot {
         let snapshot = if args.demo {
             demo_snapshot()
+        } else if args.focus == Some(Focus::Ai) {
+            collect_ai_snapshot(args.agent_state.as_deref())
         } else {
-            collect_with_options(args.since.as_deref(), &args.log_file)
+            let mut snapshot = collect_with_options(args.since.as_deref(), &args.log_file);
+            snapshot.ai = ai::collect(args.agent_state.as_deref());
+            snapshot
         };
-        let snapshot = apply_view_filters(View::Processes, snapshot, &args)?;
+        let snapshot = if args.focus == Some(Focus::Ai) {
+            apply_ai_focus(snapshot, &args)
+        } else {
+            apply_view_filters(View::Processes, snapshot, &args)?
+        };
         emit_snapshot_output(OutputView::Cockpit, &args, &snapshot)?;
         return evaluate_assertions(View::Processes, &args, &snapshot);
     }
@@ -565,6 +596,7 @@ fn emit_snapshot_output(
                     "log",
                     "mount",
                     "socket",
+                    "ai",
                     "finding",
                     "collection_warning",
                 ],
@@ -574,6 +606,9 @@ fn emit_snapshot_output(
             .context("write JSON Lines")
     } else {
         match view {
+            OutputView::Cockpit if args.focus == Some(Focus::Ai) => {
+                render_ai(snapshot, &mut io::stdout().lock())
+            }
             OutputView::Cockpit => render_overview(snapshot, &mut io::stdout().lock()),
             OutputView::Specialist(specialist) => {
                 render_plain(specialist, snapshot, &mut io::stdout().lock())
@@ -628,7 +663,13 @@ fn view_command(name: &'static str) -> clap::Command {
     let supports_hardware = name == "lens-hardware";
     let supports_system = name == "lens-system";
     let supports_health = matches!(name, "lens-health" | "lens");
+    let supports_ai = name == "lens";
     for (argument, visible) in [
+        ("focus", supports_ai),
+        ("agent_state", supports_ai),
+        ("model", supports_ai),
+        ("accelerator", supports_ai),
+        ("ai_source", supports_ai),
         ("service", supports_service),
         ("process", supports_log_filters),
         ("severity", supports_log_filters),
@@ -639,7 +680,7 @@ fn view_command(name: &'static str) -> clap::Command {
         ("name", supports_name),
         ("active", supports_service_state),
         ("enabled", supports_service_state),
-        ("container_runtime", supports_containers),
+        ("container_runtime", supports_containers || supports_ai),
         ("image", supports_containers),
         ("status", supports_containers),
         ("state", supports_containers),
@@ -677,6 +718,25 @@ fn validate_view_args_cockpit(args: &ViewArgs) -> Result<()> {
         .map_err(|error| usage_err(error.message))?;
     if args.fields.is_some() && !args.json && !args.jsonl {
         return Err(usage_err("--fields requires --json or --jsonl"));
+    }
+    if let Some(path) = args.agent_state.as_deref() {
+        ai::validate_override(path).map_err(usage_err)?;
+    }
+    let handoff = [
+        ("--model", args.model.as_deref()),
+        ("--runtime", args.container_runtime.as_deref()),
+        ("--accelerator", args.accelerator.as_deref()),
+        ("--source", args.ai_source.as_deref()),
+    ];
+    if handoff.iter().any(|(_, value)| value.is_some()) && args.focus != Some(Focus::Ai) {
+        return Err(usage_err(
+            "--model, --runtime, --accelerator and --source require --focus ai",
+        ));
+    }
+    for (name, value) in handoff {
+        if let Some(value) = value {
+            validate_handoff_value(name, value)?;
+        }
     }
     Ok(())
 }
@@ -6444,6 +6504,66 @@ fn collect_base_snapshot() -> SystemSnapshot {
     snapshot
 }
 
+fn collect_ai_snapshot(path: Option<&Path>) -> SystemSnapshot {
+    let mut snapshot = collect_base_snapshot();
+    snapshot.ai = ai::collect(path);
+    snapshot
+}
+
+fn validate_handoff_value(name: &str, value: &str) -> Result<()> {
+    if value.is_empty() || value.len() > 256 || value.chars().any(char::is_control) {
+        return Err(usage_err(format!(
+            "{name} must be 1-256 characters without control characters"
+        )));
+    }
+    Ok(())
+}
+
+fn apply_ai_focus(mut snapshot: SystemSnapshot, args: &ViewArgs) -> SystemSnapshot {
+    if let Some(stable_id) = args.accelerator.as_deref() {
+        snapshot
+            .ai
+            .accelerators
+            .retain(|item| item.stable_id.eq_ignore_ascii_case(stable_id));
+        if snapshot.ai.accelerators.is_empty() {
+            snapshot.ai.unavailable.push(AiUnavailableField {
+                field: "accelerator".into(),
+                reason: AiUnavailableReason::Absent,
+                detail: Some(format!("no accelerator with stable id {stable_id:?}")),
+            });
+        }
+    }
+    snapshot.ai.runtimes.retain(|item| {
+        args.container_runtime
+            .as_deref()
+            .is_none_or(|value| item.id.eq_ignore_ascii_case(value))
+            && args.ai_source.as_deref().is_none_or(|value| {
+                item.input_source
+                    .as_deref()
+                    .is_some_and(|source| source.eq_ignore_ascii_case(value))
+            })
+            && args.model.as_deref().is_none_or(|value| {
+                item.active_model
+                    .as_deref()
+                    .is_some_and(|model| model.eq_ignore_ascii_case(value))
+                    || item
+                        .loaded_model
+                        .as_deref()
+                        .is_some_and(|model| model.eq_ignore_ascii_case(value))
+            })
+    });
+    if snapshot.ai.runtimes.is_empty()
+        && (args.container_runtime.is_some() || args.ai_source.is_some() || args.model.is_some())
+    {
+        snapshot.ai.unavailable.push(AiUnavailableField {
+            field: "runtime".into(),
+            reason: AiUnavailableReason::Absent,
+            detail: Some("no runtime matched the handoff query".into()),
+        });
+    }
+    snapshot
+}
+
 fn domain_base_snapshot(view: View) -> SystemSnapshot {
     if matches!(view, View::Processes | View::Services) {
         collect_base_snapshot()
@@ -9211,6 +9331,168 @@ fn render_overview(snapshot: &SystemSnapshot, out: &mut dyn Write) -> Result<()>
     render_findings(snapshot, out)
 }
 
+fn render_ai(snapshot: &SystemSnapshot, out: &mut dyn Write) -> Result<()> {
+    let ai = &snapshot.ai;
+    writeln!(out, "Dataplicity Lens · AI / Accelerator diagnostics")?;
+    writeln!(out, "Host: {}", snapshot.host.hostname)?;
+    writeln!(out, "Authoritative source: {}", display_value(&ai.source))?;
+    writeln!(
+        out,
+        "Observed: {}",
+        ai.observed_at
+            .as_ref()
+            .map_or("unavailable", |value| value.0.as_str())
+    )?;
+
+    writeln!(out, "\nACCELERATORS")?;
+    if ai.accelerators.is_empty() {
+        writeln!(out, "  none reported")?;
+    }
+    for item in &ai.accelerators {
+        writeln!(
+            out,
+            "  {} ({})",
+            item.stable_id,
+            item.kind.as_deref().unwrap_or("kind unavailable")
+        )?;
+        writeln!(
+            out,
+            "    driver {} · runtime {}",
+            display_optional(&item.driver_version),
+            display_optional(&item.runtime_version)
+        )?;
+        let memory = match (item.memory_used_bytes, item.memory_total_bytes) {
+            (Some(used), Some(total)) => format!("{} / {}", human_bytes(used), human_bytes(total)),
+            _ => "unavailable".into(),
+        };
+        writeln!(
+            out,
+            "    memory {memory} · temp {} · utilisation {} · throttling {}",
+            item.temperature_c
+                .map_or_else(|| "unavailable".into(), |value| format!("{value:.1}°C")),
+            item.utilisation_percent
+                .map_or_else(|| "unavailable".into(), |value| format!("{value:.1}%")),
+            item.throttling
+                .map_or("unavailable", |value| if value { "active" } else { "no" })
+        )?;
+        render_ai_unavailable(&item.unavailable_fields, out, "    ")?;
+    }
+
+    let store = &ai.model_store;
+    writeln!(out, "\nMODEL STORE")?;
+    writeln!(
+        out,
+        "  desired {} · staged {} · current {} · previous {}",
+        display_optional(&store.desired),
+        display_optional(&store.staged),
+        display_optional(&store.current),
+        display_optional(&store.previous)
+    )?;
+    writeln!(out, "  digest {}", display_optional(&store.digest))?;
+    let pressure = match (store.cache_used_bytes, store.cache_limit_bytes) {
+        (Some(used), Some(limit)) if limit > 0 => format!(
+            "{} / {} ({:.1}%)",
+            human_bytes(used),
+            human_bytes(limit),
+            used as f64 * 100.0 / limit as f64
+        ),
+        _ => "unavailable".into(),
+    };
+    writeln!(out, "  cache pressure {pressure}")?;
+    render_ai_unavailable(&store.unavailable_fields, out, "  ")?;
+
+    writeln!(out, "\nRUNTIMES")?;
+    if ai.runtimes.is_empty() {
+        writeln!(out, "  none reported")?;
+    }
+    for item in &ai.runtimes {
+        writeln!(
+            out,
+            "  {} · pid {}",
+            item.id,
+            item.process_id
+                .map_or_else(|| "unavailable".into(), |value| value.to_string())
+        )?;
+        writeln!(
+            out,
+            "    active {} · loaded {}{}",
+            display_optional(&item.active_model),
+            display_optional(&item.loaded_model),
+            if item.active_loaded_diverge() {
+                " · DIVERGED"
+            } else {
+                ""
+            }
+        )?;
+        writeln!(
+            out,
+            "    input {} · freshness {} · queue {} · fallback {}",
+            display_optional(&item.input_source),
+            item.input_age_seconds
+                .map_or_else(|| "unavailable".into(), |value| format!("{value}s old")),
+            item.queue_depth
+                .map_or_else(|| "unavailable".into(), |value| value.to_string()),
+            display_optional(&item.fallback)
+        )?;
+        if item.errors.is_empty() {
+            writeln!(out, "    errors none")?;
+        } else {
+            for error in &item.errors {
+                writeln!(out, "    error: {error}")?;
+            }
+        }
+        render_ai_unavailable(&item.unavailable_fields, out, "    ")?;
+    }
+
+    if !ai.unavailable.is_empty() {
+        writeln!(out, "\nAVAILABILITY")?;
+        render_ai_unavailable(&ai.unavailable, out, "  ")?;
+    }
+    Ok(())
+}
+
+fn render_ai_unavailable(
+    values: &[AiUnavailableField],
+    out: &mut dyn Write,
+    indent: &str,
+) -> Result<()> {
+    for item in values {
+        writeln!(
+            out,
+            "{indent}{} unavailable: {}{}",
+            item.field,
+            ai_reason_label(item.reason),
+            item.detail
+                .as_deref()
+                .map_or_else(String::new, |detail| format!(" ({detail})"))
+        )?;
+    }
+    Ok(())
+}
+
+const fn ai_reason_label(reason: AiUnavailableReason) -> &'static str {
+    match reason {
+        AiUnavailableReason::MissingTool => "missing tool",
+        AiUnavailableReason::Absent => "absent",
+        AiUnavailableReason::PermissionDenied => "permission denied",
+        AiUnavailableReason::Stale => "stale",
+        AiUnavailableReason::NotReported => "not reported",
+        AiUnavailableReason::Malformed => "malformed",
+    }
+}
+
+fn display_value(value: &str) -> &str {
+    if value.is_empty() {
+        "unavailable"
+    } else {
+        value
+    }
+}
+
+fn display_optional(value: &Option<String>) -> &str {
+    value.as_deref().map_or("unavailable", display_value)
+}
+
 fn render_findings(snapshot: &SystemSnapshot, out: &mut dyn Write) -> Result<()> {
     if snapshot.findings.is_empty() {
         writeln!(
@@ -9541,6 +9823,53 @@ pub fn demo_snapshot() -> SystemSnapshot {
             serial_number: None,
         },
     ];
+    snapshot.ai = AiDiagnostics {
+        source: "dataplicity-agent demo provider".into(),
+        observed_at: Some(Timestamp("2026-08-03T00:00:00Z".into())),
+        accelerators: vec![Accelerator {
+            stable_id: "pci-0000:01:00.0".into(),
+            kind: Some("nvidia-gpu".into()),
+            driver_version: Some("550.54".into()),
+            runtime_version: Some("CUDA 12.4".into()),
+            memory_total_bytes: Some(8_589_934_592),
+            memory_used_bytes: Some(6_442_450_944),
+            temperature_c: Some(71.0),
+            utilisation_percent: Some(88.0),
+            throttling: None,
+            unavailable_fields: vec![AiUnavailableField {
+                field: "throttling".into(),
+                reason: AiUnavailableReason::PermissionDenied,
+                detail: Some("agent lacks access to the board power telemetry node".into()),
+            }],
+        }],
+        model_store: ModelStore {
+            desired: Some("vision-v4".into()),
+            staged: Some("vision-v4".into()),
+            current: Some("vision-v3".into()),
+            previous: Some("vision-v2".into()),
+            digest: Some("sha256:5b39d7d1".into()),
+            cache_used_bytes: Some(14_000_000_000),
+            cache_limit_bytes: Some(16_000_000_000),
+            unavailable_fields: Vec::new(),
+        },
+        runtimes: vec![AiRuntime {
+            id: "inference-main".into(),
+            process_id: Some(8192),
+            active_model: Some("vision-v4".into()),
+            loaded_model: Some("vision-v3".into()),
+            input_source: Some("camera/front".into()),
+            input_age_seconds: Some(42),
+            queue_depth: Some(7),
+            fallback: Some("cpu".into()),
+            errors: vec!["model activation waiting for current request drain".into()],
+            unavailable_fields: Vec::new(),
+        }],
+        unavailable: vec![AiUnavailableField {
+            field: "agent_state".into(),
+            reason: AiUnavailableReason::Stale,
+            detail: Some("demo fixture intentionally illustrates stale state".into()),
+        }],
+    };
     snapshot.findings = diagnose(&snapshot);
     snapshot.relationships = domain_relationships(&snapshot);
     snapshot

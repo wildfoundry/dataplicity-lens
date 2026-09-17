@@ -11,6 +11,8 @@
 Dataplicity Lens is a local CLI suite for understanding a host in focus: processes and resource use,
 systemd / launchd services, journal and file logs, disk and mounts, network interfaces and listeners,
 hardware inventory, system context, and health findings — in one consistent terminal experience.
+When the Dataplicity agent exposes its authoritative AI state, Lens can also present a focused,
+read-only accelerator, model-store and inference-runtime diagnostic view.
 
 Built for Raspberry Pi OS, Debian, Ubuntu, other Linux systems, and macOS. No daemon, no cloud account,
 no telemetry. Install a package, run `lens`, and work with the machine in front of you.
@@ -47,6 +49,7 @@ devices.
 | Hardware | `lens-hardware` | Identity, temperatures, firmware, USB / serial inventory |
 | System context | `lens-system` | Clock / NTP, resolver, login identities, local certificates |
 | Health checks | `lens-health` | Findings with evidence and suggested follow-ups |
+| AI / accelerator diagnostics | `lens --focus ai` | Agent-owned accelerator, model-store and runtime state |
 
 Every specialist supports interactive terminal use plus one-shot **plain text**, **JSON**, and **JSON
 Lines** for scripts and scheduled checks. Flags that do not apply are rejected instead of silently
@@ -101,6 +104,7 @@ lens-net
 lens-hardware
 lens-system --filter ntp
 lens-health --json
+lens --focus ai
 ```
 
 Full package matrix, checksum verification, upgrades, and removal:
@@ -190,6 +194,7 @@ processes, findings, relationships, and optional build metadata. Missing permiss
 
 - Schema and stability: [`docs/JSON_SCHEMA.md`](docs/JSON_SCHEMA.md)
 - CLI, streaming, exit status, and actions: [`docs/CLI_CONTRACT.md`](docs/CLI_CONTRACT.md)
+- AI Fleet handoff and agent-state contract: [`docs/AI_DIAGNOSTICS.md`](docs/AI_DIAGNOSTICS.md)
 
 ## Configuration
 
@@ -243,6 +248,7 @@ More: [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) · [`PHILOSOPHY.md`](PHILOS
 | Troubleshooting | [docs/TROUBLESHOOTING.md](docs/TROUBLESHOOTING.md) |
 | Support policy | [docs/SUPPORT_POLICY.md](docs/SUPPORT_POLICY.md) |
 | Threat model | [docs/THREAT_MODEL.md](docs/THREAT_MODEL.md) |
+| AI / accelerator diagnostics | [docs/AI_DIAGNOSTICS.md](docs/AI_DIAGNOSTICS.md) |
 | Releasing | [docs/RELEASING.md](docs/RELEASING.md) |
 
 ## Contribute

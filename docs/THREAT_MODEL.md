@@ -14,6 +14,7 @@ artifacts. The important boundaries are:
 - kernel and operating-system interfaces into the in-process model;
 - bounded native subprocesses such as `journalctl`, `systemctl`, `mmcli` and `openssl`;
 - untrusted system text rendered into a terminal or exported as plain text/JSON;
+- the bounded, read-only agent AI state document rendered by the focused diagnostic view;
 - the explicit boundary between inspection, typed actions and the unrestricted diagnostic shell;
 - GitHub Actions jobs that turn a protected source revision into release artifacts.
 
@@ -57,6 +58,14 @@ Collector subprocesses have individual deadlines, null stdin and captured output
 the child, records a collection warning and does not block unrelated domains. Missing commands,
 permission denial, malformed output and ordinary process races degrade locally rather than causing
 an implicit privileged retry.
+
+### AI state authority and command injection
+
+The AI diagnostic view opens one absolute state path, caps input at 2 MiB and deserializes it as
+data. Agent values are never converted into commands. Lens does not invoke accelerator utilities,
+scan model stores, write the agent document, reconcile desired/current slots, or retain a second
+copy after the process exits. Missing, permission-denied, malformed and stale state remains visible
+as unavailable data rather than triggering a privileged retry or alternate discovery path.
 
 ### Sensitive inventory disclosure
 

@@ -424,6 +424,119 @@ pub struct HardwareDevice {
     pub serial_number: Option<String>,
 }
 
+/// Why an AI diagnostic value is unavailable.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AiUnavailableReason {
+    MissingTool,
+    Absent,
+    PermissionDenied,
+    Stale,
+    NotReported,
+    Malformed,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AiUnavailableField {
+    pub field: String,
+    pub reason: AiUnavailableReason,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub detail: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct Accelerator {
+    /// Agent-owned stable identifier; never derived from a mutable device index.
+    pub stable_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub kind: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub driver_version: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub runtime_version: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub memory_total_bytes: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub memory_used_bytes: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub temperature_c: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub utilisation_percent: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub throttling: Option<bool>,
+    #[serde(default)]
+    pub unavailable_fields: Vec<AiUnavailableField>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ModelStore {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub desired: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub staged: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub current: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub previous: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub digest: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cache_used_bytes: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cache_limit_bytes: Option<u64>,
+    #[serde(default)]
+    pub unavailable_fields: Vec<AiUnavailableField>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AiRuntime {
+    pub id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub process_id: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub active_model: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub loaded_model: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub input_source: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub input_age_seconds: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub queue_depth: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fallback: Option<String>,
+    #[serde(default)]
+    pub errors: Vec<String>,
+    #[serde(default)]
+    pub unavailable_fields: Vec<AiUnavailableField>,
+}
+
+impl AiRuntime {
+    pub fn active_loaded_diverge(&self) -> bool {
+        matches!(
+            (&self.active_model, &self.loaded_model),
+            (Some(active), Some(loaded)) if active != loaded
+        )
+    }
+}
+
+/// Read-only copy of the authoritative Dataplicity agent AI state.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct AiDiagnostics {
+    #[serde(default)]
+    pub source: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub observed_at: Option<Timestamp>,
+    #[serde(default)]
+    pub accelerators: Vec<Accelerator>,
+    #[serde(default)]
+    pub model_store: ModelStore,
+    #[serde(default)]
+    pub runtimes: Vec<AiRuntime>,
+    #[serde(default)]
+    pub unavailable: Vec<AiUnavailableField>,
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Snapshot {
     pub schema_version: SchemaVersion,
@@ -465,6 +578,8 @@ pub struct Snapshot {
     pub temperatures: Vec<TemperatureSensor>,
     #[serde(default)]
     pub hardware_devices: Vec<HardwareDevice>,
+    #[serde(default)]
+    pub ai: AiDiagnostics,
     pub findings: Vec<Finding>,
     pub relationships: Vec<Relationship>,
     pub build: Option<BuildInfo>,
@@ -512,6 +627,7 @@ impl Snapshot {
             hardware: HardwareIdentity::default(),
             temperatures: Vec::new(),
             hardware_devices: Vec::new(),
+            ai: AiDiagnostics::default(),
             findings: Vec::new(),
             relationships: Vec::new(),
             build: None,
