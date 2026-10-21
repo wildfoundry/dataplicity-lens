@@ -217,9 +217,13 @@ pub struct Service {
     pub restart_count: Option<u64>,
 }
 
-/// Inventory row for a Docker or Podman container.
+/// Inventory row for an OCI container or a local LXD container/virtual machine.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Container {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub instance_type: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub project: Option<String>,
     pub runtime: String,
     pub id: String,
     pub name: String,

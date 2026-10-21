@@ -139,3 +139,15 @@ Contributors can test the source-build formula without publishing it by running
 
 See [`COMPATIBILITY.md`](COMPATIBILITY.md) for platform coverage and
 [`TROUBLESHOOTING.md`](TROUBLESHOOTING.md) when a native facility is unavailable.
+
+## Local LXD containers and virtual machines
+
+`lens-containers` detects LXD through its `lxc` client and reads accessible local projects. JSON includes `instance_type` (`container` or `virtual-machine`), `project`, and a project-qualified `id`. The plain view shows type/project; the interactive detail view includes both. No configured remote LXD servers are queried.
+
+```sh
+lens-containers --runtime lxd --once
+lens-containers --runtime lxd --action restart --target default/example --dry-run
+lens-containers --runtime lxd --action restart --target default/example --yes
+```
+
+Lifecycle commands preserve the project and target the local daemon. They do not force shutdown or delete instances. Existing LXD permissions apply; denied socket access is reported rather than presented as an empty inventory. Use an already authorized account (or sudo where appropriate); Lens does not grant LXD access. This supports LXD's `lxc` client, not classic `lxc-*` tools or Incus.

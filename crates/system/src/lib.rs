@@ -775,8 +775,10 @@ fn validate_view_args(view: View, args: &ViewArgs) -> Result<()> {
     }
     if let Some(runtime) = args.container_runtime.as_deref() {
         let runtime = runtime.to_ascii_lowercase();
-        if runtime != "docker" && runtime != "podman" && runtime != "nerdctl" {
-            return Err(usage_err("--runtime must be docker, podman, or nerdctl"));
+        if !matches!(runtime.as_str(), "docker" | "podman" | "nerdctl" | "lxd") {
+            return Err(usage_err(
+                "--runtime must be docker, podman, nerdctl, or lxd",
+            ));
         }
     }
     if args.expect_status.is_some() && view != View::Containers {
@@ -2888,11 +2890,22 @@ fn cockpit_view_summary(view: View, snapshot: &SystemSnapshot, loading: bool) ->
 
 fn cockpit_containers_summary(snapshot: &SystemSnapshot) -> String {
     if !snapshot.containers.is_empty() {
+        let vms = snapshot
+            .containers
+            .iter()
+            .filter(|item| item.instance_type.as_deref() == Some("virtual-machine"))
+            .count();
+        if vms > 0 {
+            return format!("{} containers / {vms} VMs", snapshot.containers.len() - vms);
+        }
         return format!("{} containers", snapshot.containers.len());
     }
     let access_limited = snapshot.collection_warnings.iter().any(|warning| {
         let lower = warning.to_ascii_lowercase();
-        (lower.contains("docker") || lower.contains("podman") || lower.contains("nerdctl"))
+        (lower.contains("docker")
+            || lower.contains("podman")
+            || lower.contains("nerdctl")
+            || lower.contains("lxd"))
             && (lower.contains("not usable")
                 || lower.contains("access denied")
                 || lower.contains("permission"))
@@ -3900,6 +3913,7 @@ fn render_container_specialist(
             if warning.contains("docker")
                 || warning.contains("podman")
                 || warning.contains("nerdctl")
+                || warning.contains("lxd")
             {
                 writeln!(out, "  {}", ink(warning, Ink::Attention, colour))?;
             }
@@ -3964,6 +3978,12 @@ fn render_container_specialist(
                     container.created.as_str()
                 }
             )?;
+        }
+        if let Some(kind) = &container.instance_type {
+            writeln!(out, "  {} {}", ink("TYPE", Ink::Label, colour), kind)?;
+        }
+        if let Some(project) = &container.project {
+            writeln!(out, "  {} {}", ink("PROJECT", Ink::Label, colour), project)?;
         }
         writeln!(out, "  {} {}", ink("ID", Ink::Label, colour), container.id)?;
         writeln!(
@@ -9016,15 +9036,17 @@ fn render_plain(view: View, snapshot: &SystemSnapshot, out: &mut dyn Write) -> R
         View::Containers => {
             writeln!(
                 out,
-                "RUNTIME  NAME                             STATE        IMAGE                            PORTS"
+                "RUNTIME  NAME                             STATE        TYPE             PROJECT          IMAGE                            PORTS"
             )?;
             for item in &snapshot.containers {
                 writeln!(
                     out,
-                    "{:<8} {:<32} {:<12} {:<32} {}",
+                    "{:<8} {:<32} {:<12} {:<16} {:<16} {:<32} {}",
                     item.runtime,
                     item.name,
                     item.state,
+                    item.instance_type.as_deref().unwrap_or("container"),
+                    item.project.as_deref().unwrap_or("-"),
                     item.image,
                     if item.ports.is_empty() {
                         "-"
@@ -9647,6 +9669,8 @@ pub fn demo_snapshot() -> SystemSnapshot {
     ];
     snapshot.containers = vec![
         Container {
+            instance_type: None,
+            project: None,
             runtime: "docker".into(),
             id: "a1b2c3d4e5f6789012345678abcdef01".into(),
             name: "edge-mqtt".into(),
@@ -9657,6 +9681,8 @@ pub fn demo_snapshot() -> SystemSnapshot {
             ports: "0.0.0.0:1883->1883/tcp".into(),
         },
         Container {
+            instance_type: None,
+            project: None,
             runtime: "podman".into(),
             id: "f0e1d2c3b4a5968778695a4b3c2d1e0f".into(),
             name: "metrics-agent".into(),
