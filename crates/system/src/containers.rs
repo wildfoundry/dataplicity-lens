@@ -258,6 +258,35 @@ fn lxd_resources(value: &Value) -> ContainerResources {
         memory_usage_bytes: value["state"]["memory"]["usage"].as_u64(),
         ..Default::default()
     };
+    r.process_count = value["state"]["processes"].as_u64();
+    // Count only attached guest NICs, excluding guest loopback, bridges and veths.
+    // VM guest interface names can differ from their configured device names.
+    if let Some(network) = value["state"]["network"].as_object() {
+        let nics: Vec<_> = network
+            .iter()
+            .filter(|(name, nic)| {
+                let attached = devices.as_object().is_some_and(|devices| {
+                    devices.iter().any(|(key, device)| {
+                        device["type"] == "nic"
+                            && device["name"].as_str().unwrap_or(key) == name.as_str()
+                    })
+                });
+                attached
+                    || nic["host_name"]
+                        .as_str()
+                        .is_some_and(|host| !host.is_empty())
+            })
+            .map(|(_, nic)| nic)
+            .collect();
+        if !nics.is_empty() {
+            r.network_rx_bytes = nics.iter().try_fold(0_u64, |sum, nic| {
+                sum.checked_add(nic["counters"]["bytes_received"].as_u64()?)
+            });
+            r.network_tx_bytes = nics.iter().try_fold(0_u64, |sum, nic| {
+                sum.checked_add(nic["counters"]["bytes_sent"].as_u64()?)
+            });
+        }
+    }
     if let Some((name, root)) = root {
         r.root_disk_limit = text(&root["size"]);
         r.storage_pool = text(&root["pool"]);
@@ -414,35 +443,62 @@ fn enrich_oci_resources(runtime: &str, rows: &mut [Container], warnings: &mut Ve
         if running.is_empty() {
             continue;
         }
-        let mut args = vec!["stats", "--no-stream", "--format", "{{json .}}", "--"];
+        let format = if runtime == "podman" {
+            "json"
+        } else {
+            "{{json .}}"
+        };
+        let mut args = vec!["stats", "--no-stream", "--format", format, "--"];
         args.extend(running);
         match run_text(runtime, &args, Duration::from_secs(8)).and_then(|text| json_rows(&text)) {
             Ok(values) => {
                 for row in batch.iter_mut() {
-                    let Some(value) = values.iter().find(|value| {
-                        ["ID", "Container", "ContainerID"].iter().any(|key| {
-                            value[key].as_str().is_some_and(|id| {
-                                !id.is_empty()
-                                    && (id == row.id
-                                        || id.starts_with(&row.id)
-                                        || row.id.starts_with(id))
-                            })
-                        })
-                    }) else {
+                    let Some(value) = values
+                        .iter()
+                        .find(|value| stats_row_matches(value, &row.id))
+                    else {
                         continue;
                     };
                     let r = row.resources.get_or_insert_default();
-                    r.cpu_usage_percent = text(&value["CPUPerc"])
-                        .or_else(|| text(&value["CPU"]))
-                        .or_else(|| text(&value["CPUPercent"]));
-                    r.memory_usage_bytes = value["MemUsage"]
-                        .as_str()
-                        .and_then(|s| parse_usage_bytes(s.split('/').next().unwrap_or("")));
+                    apply_oci_usage(r, value);
                 }
             }
             Err(error) => warnings.push(format!("{runtime} live usage unavailable: {error}")),
         }
     }
+}
+
+fn stats_row_matches(value: &Value, target: &str) -> bool {
+    ["ID", "Container", "ContainerID", "id"].iter().any(|key| {
+        value[key].as_str().is_some_and(|id| {
+            !id.is_empty() && (id == target || id.starts_with(target) || target.starts_with(id))
+        })
+    })
+}
+
+fn apply_oci_usage(r: &mut ContainerResources, value: &Value) {
+    let field = |keys: &[&str]| keys.iter().find_map(|key| value[*key].as_str());
+    r.cpu_usage_percent =
+        field(&["CPUPerc", "CPU", "CPUPercent", "cpu_percent"]).map(str::to_owned);
+    r.memory_usage_bytes = field(&["MemUsage", "mem_usage"])
+        .and_then(|s| parse_usage_bytes(s.split('/').next().unwrap_or("")));
+    if let Some((rx, tx)) = usage_pair(field(&["NetIO", "net_io", "netio"])) {
+        r.network_rx_bytes = Some(rx);
+        r.network_tx_bytes = Some(tx);
+    }
+    if let Some((read, write)) = usage_pair(field(&["BlockIO", "block_io", "blocki"])) {
+        r.disk_read_bytes = Some(read);
+        r.disk_write_bytes = Some(write);
+    }
+    r.process_count = value["PIDs"]
+        .as_u64()
+        .or_else(|| value["pids"].as_u64())
+        .or_else(|| field(&["PIDs", "PIDS", "pids"]).and_then(|s| s.parse().ok()));
+}
+
+fn usage_pair(value: Option<&str>) -> Option<(u64, u64)> {
+    let (left, right) = value?.split_once('/')?;
+    Some((parse_usage_bytes(left)?, parse_usage_bytes(right)?))
 }
 
 fn action_command(
@@ -782,6 +838,72 @@ mod resource_tests {
         let unknown = oci_resources(&serde_json::json!({}));
         assert_eq!(unknown.cpu_limit, None);
         assert_eq!(unknown.memory_limit, None);
+    }
+
+    #[test]
+    fn lxd_network_counts_attached_nics_without_guest_bridge_double_counting() {
+        let r = lxd_resources(&serde_json::json!({
+            "expanded_devices":{"eth0":{"type":"nic","name":"eth0"}},
+            "state":{"processes":25,"network":{
+                "enp5s0":{"host_name":"mac-test", "counters":{"bytes_received":1000,"bytes_sent":2000}},
+                "docker0":{"host_name":"", "counters":{"bytes_received":9000,"bytes_sent":9000}},
+                "lo":{"counters":{"bytes_received":8000,"bytes_sent":8000}}
+            }}
+        }));
+        assert_eq!(
+            (r.network_rx_bytes, r.network_tx_bytes),
+            (Some(1000), Some(2000))
+        );
+        assert_eq!(r.process_count, Some(25));
+        assert_eq!(r.disk_read_bytes, None);
+        let r = lxd_resources(&serde_json::json!({"state":{"network":{}}}));
+        assert_eq!(r.network_rx_bytes, None);
+    }
+
+    #[test]
+    fn oci_live_cpu_memory_network_and_io_preserve_unknown_values() {
+        for cpu_key in ["CPUPerc", "CPU", "CPUPercent"] {
+            let mut value = serde_json::json!({"MemUsage":"512MiB / 8GiB", "NetIO":"2MB / 3MB", "BlockIO":"4MiB / 0B", "PIDs":"12"});
+            value[cpu_key] = Value::String("201.5%".into());
+            let mut r = ContainerResources::default();
+            apply_oci_usage(&mut r, &value);
+            assert_eq!(r.cpu_usage_percent.as_deref(), Some("201.5%"));
+            assert_eq!(r.memory_usage_bytes, Some(536870912));
+            assert_eq!(
+                (r.network_rx_bytes, r.network_tx_bytes),
+                (Some(2000000), Some(3000000))
+            );
+            assert_eq!(
+                (r.disk_read_bytes, r.disk_write_bytes),
+                (Some(4194304), Some(0))
+            );
+            assert_eq!(r.memory_limit, None);
+            assert_eq!(r.process_count, Some(12));
+        }
+        let mut r = ContainerResources::default();
+        apply_oci_usage(&mut r, &serde_json::json!({"NetIO":"--", "BlockIO":"N/A"}));
+        assert_eq!(r.network_rx_bytes, None);
+        assert_eq!(r.disk_read_bytes, None);
+        let old: ContainerResources = serde_json::from_str("{}").unwrap();
+        assert_eq!(old.network_rx_bytes, None);
+    }
+
+    #[test]
+    fn podman_documented_json_formats_match_the_container_and_report_counters() {
+        for (net, block) in [("netio", "blocki"), ("net_io", "block_io")] {
+            let mut value = serde_json::json!({"id":"abc123", "cpu_percent":"150.00%", "mem_usage":"1GB / 8GB", "pids":"5"});
+            value[net] = Value::String("1MB / 2MB".into());
+            value[block] = Value::String("3MB / 4MB".into());
+            assert!(stats_row_matches(&value, "abc123abcdef"));
+            assert!(!stats_row_matches(&value, "different"));
+            let mut r = ContainerResources::default();
+            apply_oci_usage(&mut r, &value);
+            assert_eq!(r.cpu_usage_percent.as_deref(), Some("150.00%"));
+            assert_eq!(r.memory_usage_bytes, Some(1000000000));
+            assert_eq!(r.network_rx_bytes, Some(1000000));
+            assert_eq!(r.disk_write_bytes, Some(4000000));
+            assert_eq!(r.process_count, Some(5));
+        }
     }
 
     #[test]

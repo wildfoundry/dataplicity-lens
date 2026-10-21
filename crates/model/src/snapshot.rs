@@ -225,6 +225,12 @@ pub struct ContainerResources {
     pub cpu_usage_ns: Option<u64>,
     pub memory_limit: Option<String>,
     pub memory_usage_bytes: Option<u64>,
+    /// Cumulative counters, converted to rates by the interactive monitor.
+    pub network_rx_bytes: Option<u64>,
+    pub network_tx_bytes: Option<u64>,
+    pub disk_read_bytes: Option<u64>,
+    pub disk_write_bytes: Option<u64>,
+    pub process_count: Option<u64>,
     pub root_disk_limit: Option<String>,
     pub root_disk_capacity_bytes: Option<u64>,
     pub root_disk_usage_bytes: Option<u64>,

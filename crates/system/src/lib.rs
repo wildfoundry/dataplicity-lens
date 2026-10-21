@@ -1,7 +1,9 @@
 #![forbid(unsafe_code)]
 
 mod ai;
+mod container_monitor;
 mod containers;
+use container_monitor::ContainerMonitor;
 mod hardware;
 
 use std::{
@@ -3387,6 +3389,7 @@ fn render_specialist(
     view: View,
     snapshot: &SystemSnapshot,
     network_activity: &NetworkActivity,
+    container_monitor: Option<&ContainerMonitor>,
     selected: usize,
     inspecting: bool,
     loading: bool,
@@ -3399,6 +3402,7 @@ fn render_specialist(
         view,
         snapshot,
         network_activity,
+        container_monitor,
         selected,
         inspecting,
         loading,
@@ -3414,6 +3418,7 @@ fn render_specialist_content(
     view: View,
     snapshot: &SystemSnapshot,
     network_activity: &NetworkActivity,
+    container_monitor: Option<&ContainerMonitor>,
     selected: usize,
     inspecting: bool,
     loading: bool,
@@ -3505,7 +3510,14 @@ fn render_specialist_content(
             render_service_specialist(snapshot, selected, inspecting, rows, width, stdout)?
         }
         View::Containers => {
-            render_container_specialist(snapshot, selected, inspecting, rows, width, stdout)?
+            if let Some((monitor, container)) = container_monitor
+                .filter(|m| inspecting && !m.allocations)
+                .zip(snapshot.containers.get(selected))
+            {
+                monitor.render(container, rows, width, stdout)?;
+            } else {
+                render_container_specialist(snapshot, selected, inspecting, rows, width, stdout)?;
+            }
         }
         View::Logs => render_log_specialist(snapshot, selected, inspecting, rows, width, stdout)?,
         View::Disk => render_disk_specialist(snapshot, selected, inspecting, rows, width, stdout)?,
@@ -3553,7 +3565,9 @@ fn render_specialist_content(
         "{}",
         ink(&frame_divider(width), Ink::Border, colour)
     )?;
-    if width < 64 {
+    if view == View::Containers && inspecting {
+        writeln!(stdout, "  Tab: charts/allocations  Esc: back  q: quit")?;
+    } else if width < 64 {
         writeln!(
             stdout,
             "  {} {}   {} {}   {} {}",
@@ -5542,16 +5556,21 @@ fn specialist_loop(view: View, args: &ViewArgs, stdout: &mut impl Write) -> Resu
     let mut service_action: Option<ServiceActionDialog> = None;
     let mut container_action: Option<ContainerActionDialog> = None;
     let mut network_activity = NetworkActivity::default();
+    let mut container_monitor = ContainerMonitor::default();
+    let mut container_poll_pending = false;
+    let mut next_container_sample = Instant::now();
+    let mut last_container_sample: Option<Instant> = None;
     let mut activity_receiver: Option<Receiver<Vec<(String, u64, u64)>>> = None;
     let mut next_network_sample = Instant::now() + Duration::from_secs(1);
     // Kernel log output lands on top of a frame on a virtual or serial console, and only a new
     // frame removes it, so draw as often there as the network view already does.
-    let clock_interval =
-        if view == View::Net || TerminalEnvironment::detect().shares_screen_with_kernel_log() {
-            1
-        } else {
-            60
-        };
+    let clock_interval = if matches!(view, View::Net | View::Containers)
+        || TerminalEnvironment::detect().shares_screen_with_kernel_log()
+    {
+        1
+    } else {
+        60
+    };
     let mut next_clock = Instant::now() + Duration::from_secs(clock_interval);
     let mut redraw = true;
     loop {
@@ -5600,8 +5619,36 @@ fn specialist_loop(view: View, args: &ViewArgs, stdout: &mut impl Write) -> Resu
         {
             activity_receiver = Some(spawn_interface_counter_collection());
         }
+        if view == View::Containers
+            && !loading
+            && !container_poll_pending
+            && container_action.is_none()
+            && Instant::now() >= next_container_sample
+        {
+            receiver = spawn_specialist_collection(view, active_args.clone());
+            container_poll_pending = true;
+        }
         match receiver.try_recv() {
-            Ok(update) => {
+            Ok(mut update) => {
+                if view == View::Containers {
+                    container_poll_pending = false;
+                    next_container_sample = Instant::now() + Duration::from_secs(2);
+                    if update.snapshot.containers.is_empty()
+                        && !update.snapshot.collection_warnings.is_empty()
+                        && !snapshot.containers.is_empty()
+                    {
+                        container_monitor.gap();
+                        status =
+                            format!("STALE: {}", update.snapshot.collection_warnings.join("; "));
+                        snapshot.collection_warnings =
+                            std::mem::take(&mut update.snapshot.collection_warnings);
+                        loading = false;
+                        redraw = true;
+                        continue;
+                    }
+                    container_monitor.observe(&update.snapshot.containers, Instant::now());
+                    last_container_sample = Some(Instant::now());
+                }
                 selected =
                     preserve_specialist_selection(view, &snapshot, &update.snapshot, selected);
                 snapshot = update.snapshot;
@@ -5609,10 +5656,22 @@ fn specialist_loop(view: View, args: &ViewArgs, stdout: &mut impl Write) -> Resu
                     network_activity.observe(&snapshot.interfaces, Instant::now());
                 }
                 loading = update.loading_more;
-                status = update.status.to_owned();
+                status = if view == View::Containers {
+                    if snapshot.collection_warnings.is_empty() {
+                        "Live metrics | ~2s sampling".into()
+                    } else {
+                        format!("Live metrics | {}", snapshot.collection_warnings.join("; "))
+                    }
+                } else {
+                    update.status.to_owned()
+                };
                 redraw = true;
             }
-            Err(TryRecvError::Disconnected) if loading => {
+            Err(TryRecvError::Disconnected) if loading || container_poll_pending => {
+                container_poll_pending = false;
+                container_monitor.gap();
+                next_container_sample = Instant::now() + Duration::from_secs(2);
+                status = "STALE: collection stopped unexpectedly".into();
                 snapshot
                     .collection_warnings
                     .push(format!("{} collection stopped unexpectedly", view.title()));
@@ -5628,10 +5687,20 @@ fn specialist_loop(view: View, args: &ViewArgs, stdout: &mut impl Write) -> Resu
                 view,
                 &snapshot,
                 &network_activity,
+                Some(&container_monitor),
                 selected,
                 inspecting,
                 loading,
-                &status,
+                &if view == View::Containers {
+                    format!(
+                        "{status} | sample age {}",
+                        last_container_sample
+                            .map(|at| format!("{}s", at.elapsed().as_secs()))
+                            .unwrap_or_else(|| "unknown".into())
+                    )
+                } else {
+                    status.clone()
+                },
                 rows,
                 stdout,
             )?;
@@ -5740,6 +5809,10 @@ fn specialist_loop(view: View, args: &ViewArgs, stdout: &mut impl Write) -> Resu
                 KeyCode::Char('l') if key.modifiers.contains(KeyModifiers::CONTROL) => {
                     redraw = true;
                 }
+                KeyCode::Tab if view == View::Containers && inspecting => {
+                    container_monitor.allocations = !container_monitor.allocations;
+                    redraw = true;
+                }
                 KeyCode::Tab if view == View::System && !inspecting => {
                     selected = move_system_section(&snapshot, selected, 1);
                     redraw = true;
@@ -5778,6 +5851,7 @@ fn specialist_loop(view: View, args: &ViewArgs, stdout: &mut impl Write) -> Resu
                 }
                 KeyCode::Enter if !inspecting && specialist_item_count(view, &snapshot) > 0 => {
                     inspecting = true;
+                    container_monitor.allocations = false;
                     redraw = true;
                 }
                 KeyCode::Char('/') if !inspecting && view != View::Processes => {
@@ -10626,7 +10700,7 @@ mod tests {
         for renderer in [View::Services, View::Disk, View::Net, View::Hardware] {
             let mut list = Vec::new();
             render_specialist(
-                renderer, &snapshot, &activity, 0, false, false, "Ready", 30, &mut list,
+                renderer, &snapshot, &activity, None, 0, false, false, "Ready", 30, &mut list,
             )
             .expect("list");
             let mut detail = Vec::new();
@@ -10634,6 +10708,7 @@ mod tests {
                 renderer,
                 &snapshot,
                 &activity,
+                None,
                 0,
                 true,
                 false,
@@ -10655,6 +10730,7 @@ mod tests {
             View::Hardware,
             &snapshot,
             &NetworkActivity::default(),
+            None,
             0,
             false,
             false,
@@ -10677,6 +10753,7 @@ mod tests {
             View::Disk,
             &snapshot,
             &NetworkActivity::default(),
+            None,
             0,
             true,
             false,
@@ -10998,7 +11075,7 @@ mod tests {
 
     /// Pin the glyph mode for the current test. Renderers read process-wide state, so each test
     /// sets its own thread-local rather than racing the others through the atomic.
-    fn with_glyphs<T>(ascii: bool, body: impl FnOnce() -> T) -> T {
+    pub(super) fn with_glyphs<T>(ascii: bool, body: impl FnOnce() -> T) -> T {
         TEST_ASCII.with(|value| value.set(Some(ascii)));
         let result = body();
         TEST_ASCII.with(|value| value.set(None));
@@ -11045,6 +11122,7 @@ mod tests {
                     view,
                     &snapshot,
                     &NetworkActivity::default(),
+                    None,
                     0,
                     false,
                     false,
