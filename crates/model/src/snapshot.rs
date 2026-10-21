@@ -217,9 +217,27 @@ pub struct Service {
     pub restart_count: Option<u64>,
 }
 
+/// Configured allocations and runtime-reported usage. Missing values are unknown.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ContainerResources {
+    pub cpu_limit: Option<String>,
+    pub cpu_usage_percent: Option<String>,
+    pub cpu_usage_ns: Option<u64>,
+    pub memory_limit: Option<String>,
+    pub memory_usage_bytes: Option<u64>,
+    pub root_disk_limit: Option<String>,
+    pub root_disk_capacity_bytes: Option<u64>,
+    pub root_disk_usage_bytes: Option<u64>,
+    pub storage_pool: Option<String>,
+    #[serde(default)]
+    pub mounts: Vec<String>,
+}
+
 /// Inventory row for an OCI container or a local LXD container/virtual machine.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Container {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub resources: Option<ContainerResources>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub instance_type: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]

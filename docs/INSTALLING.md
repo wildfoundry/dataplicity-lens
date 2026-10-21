@@ -151,3 +151,11 @@ lens-containers --runtime lxd --action restart --target default/example --yes
 ```
 
 Lifecycle commands preserve the project and target the local daemon. They do not force shutdown or delete instances. Existing LXD permissions apply; denied socket access is reported rather than presented as an empty inventory. Use an already authorized account (or sudo where appropriate); Lens does not grant LXD access. This supports LXD's `lxc` client, not classic `lxc-*` tools or Incus.
+
+### Container and VM resources
+
+Every supported runtime (LXD, Docker, Podman and nerdctl) has a resource summary beneath each instance in the interactive list. Press Enter to inspect allocations, runtime-reported usage and mounts; press `r` to refresh. Plain and JSON output include the same data.
+
+LXD allocations come from expanded configuration and devices so inherited profile settings are included. Details show CPU allocation/affinity, RAM limit and usage, root-disk limit and reported capacity, storage pool and extra disk mounts. LXD CPU usage is cumulative CPU time, not an instantaneous percentage. Zero disk-usage placeholders for VMs are treated as unavailable.
+
+OCI allocations come from container inspection: CPU quota and affinity, memory limit, root-filesystem storage options and mounts. A bounded, one-shot stats query adds CPU percentage and memory usage for running containers. A stats memory denominator can be host RAM and is never treated as a configured memory allocation. Where no CPU/RAM limit is configured, the view says shared; unavailable data says not reported. Writable-layer usage, when supplied by inspection, excludes image layers and mounted volumes. Lens does not scan container filesystems to invent a disk-usage value. Runtime permissions and unsupported stats commands can limit coverage without hiding the instances themselves.

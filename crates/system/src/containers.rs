@@ -6,7 +6,7 @@ use std::{
     time::{Duration, Instant},
 };
 
-use lens_model::Container;
+use lens_model::{Container, ContainerResources};
 use serde_json::Value;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -31,7 +31,12 @@ pub(crate) fn collect_containers(warnings: &mut Vec<String>) -> (Vec<Container>,
             ProbeClass::Ok => {
                 runtime_live = true;
                 match list_containers(runtime) {
-                    Ok(mut rows) => containers.append(&mut rows),
+                    Ok(mut rows) => {
+                        if runtime != "lxd" {
+                            enrich_oci_resources(runtime, &mut rows, warnings);
+                        }
+                        containers.append(&mut rows);
+                    }
                     Err(message) => match classify_runtime_error(&message) {
                         ProbeClass::Permission => {
                             warnings.push(permission_warning(runtime));
@@ -163,6 +168,7 @@ fn parse_ps_json_line(runtime: &str, line: &str) -> Option<Container> {
     let created = first_string(&value, &["CreatedAt", "Created", "created"]).unwrap_or_default();
     let ports = ports_from_value(&value);
     Some(Container {
+        resources: None,
         instance_type: None,
         project: None,
         runtime: runtime.to_owned(),
@@ -206,6 +212,7 @@ fn parse_lxd_list(text: &str) -> Result<Vec<Container>, String> {
                 .unwrap_or("Unknown");
             let config = &value["config"];
             Ok(Container {
+                resources: Some(lxd_resources(value)),
                 runtime: "lxd".into(),
                 id: format!("{project}/{name}"),
                 name: name.into(),
@@ -223,6 +230,219 @@ fn parse_lxd_list(text: &str) -> Result<Vec<Container>, String> {
             })
         })
         .collect()
+}
+
+fn text(value: &Value) -> Option<String> {
+    value.as_str().filter(|s| !s.is_empty()).map(str::to_owned)
+}
+
+fn lxd_resources(value: &Value) -> ContainerResources {
+    // Expanded values include inherited profile allocations, not just local overrides.
+    let config = value
+        .get("expanded_config")
+        .filter(|v| v.is_object())
+        .unwrap_or(&value["config"]);
+    let devices = value
+        .get("expanded_devices")
+        .filter(|v| v.is_object())
+        .unwrap_or(&value["devices"]);
+    let root = devices.as_object().and_then(|devices| {
+        devices
+            .iter()
+            .find(|(_, device)| device["type"] == "disk" && device["path"] == "/")
+    });
+    let mut r = ContainerResources {
+        cpu_limit: text(&config["limits.cpu"]),
+        memory_limit: text(&config["limits.memory"]),
+        cpu_usage_ns: value["state"]["cpu"]["usage"].as_u64(),
+        memory_usage_bytes: value["state"]["memory"]["usage"].as_u64(),
+        ..Default::default()
+    };
+    if let Some((name, root)) = root {
+        r.root_disk_limit = text(&root["size"]);
+        r.storage_pool = text(&root["pool"]);
+        r.root_disk_capacity_bytes = value["state"]["disk"][name]["total"]
+            .as_u64()
+            .filter(|n| *n > 0);
+        // LXD dir-backed VMs may report a zero placeholder without guest disk usage.
+        r.root_disk_usage_bytes = value["state"]["disk"][name]["usage"]
+            .as_u64()
+            .filter(|n| *n > 0 || value["type"] != "virtual-machine");
+    }
+    if let Some(devices) = devices.as_object() {
+        r.mounts = devices
+            .values()
+            .filter(|device| device["type"] == "disk" && device["path"] != "/")
+            .filter_map(|device| {
+                text(&device["path"]).map(|path| {
+                    format!(
+                        "{} -> {}{}",
+                        device["source"].as_str().unwrap_or("volume"),
+                        path,
+                        if device["readonly"] == "true" {
+                            " (read-only)"
+                        } else {
+                            ""
+                        }
+                    )
+                })
+            })
+            .collect();
+    }
+    r
+}
+
+fn json_rows(text: &str) -> Result<Vec<Value>, String> {
+    if let Ok(value) = serde_json::from_str::<Value>(text) {
+        return match value {
+            Value::Array(rows) => Ok(rows),
+            Value::Object(_) => Ok(vec![value]),
+            _ => Err("expected JSON object or array".into()),
+        };
+    }
+    text.lines()
+        .filter(|line| !line.trim().is_empty())
+        .map(|line| serde_json::from_str(line).map_err(|e| e.to_string()))
+        .collect()
+}
+
+fn oci_resources(value: &Value) -> ContainerResources {
+    let mut r = ContainerResources::default();
+    let host = &value["HostConfig"];
+    if host.is_object() {
+        let cpus = host["NanoCpus"]
+            .as_f64()
+            .filter(|n| *n > 0.0)
+            .map(|n| n / 1e9)
+            .or_else(|| {
+                let quota = host["CpuQuota"].as_f64()?;
+                let period = host["CpuPeriod"]
+                    .as_f64()
+                    .filter(|n| *n > 0.0)
+                    .unwrap_or(100000.0);
+                (quota > 0.0).then_some(quota / period)
+            });
+        let affinity = host["CpusetCpus"].as_str().filter(|s| !s.is_empty());
+        r.cpu_limit = Some(match (cpus, affinity) {
+            (Some(cpus), Some(set)) => format!("{cpus:.2} CPUs; set {set}"),
+            (Some(cpus), None) => format!("{cpus:.2} CPUs"),
+            (None, Some(set)) => format!("CPU set {set}"),
+            _ => "Shared (no configured limit)".into(),
+        });
+        r.memory_limit = Some(
+            host["Memory"]
+                .as_u64()
+                .filter(|n| *n > 0)
+                .map_or_else(|| "Shared (no configured limit)".into(), super::human_bytes),
+        );
+        r.root_disk_limit = text(&host["StorageOpt"]["size"]);
+    }
+    // SizeRw is writable-layer usage only, not image layers or mounted volumes.
+    r.root_disk_usage_bytes = value["SizeRw"].as_u64();
+    if let Some(mounts) = value["Mounts"].as_array() {
+        r.mounts = mounts
+            .iter()
+            .filter_map(|mount| {
+                text(&mount["Destination"]).map(|destination| {
+                    format!(
+                        "{} -> {}{}",
+                        mount["Name"]
+                            .as_str()
+                            .or_else(|| mount["Source"].as_str())
+                            .unwrap_or("volume"),
+                        destination,
+                        if mount["RW"] == false {
+                            " (read-only)"
+                        } else {
+                            ""
+                        }
+                    )
+                })
+            })
+            .collect();
+    }
+    r
+}
+
+fn parse_usage_bytes(raw: &str) -> Option<u64> {
+    let raw = raw.trim();
+    let end = raw
+        .find(|c: char| !c.is_ascii_digit() && c != '.')
+        .unwrap_or(raw.len());
+    let number: f64 = raw[..end].parse().ok()?;
+    let multiplier = match raw[end..].trim().to_ascii_lowercase().as_str() {
+        "b" | "" => 1.0,
+        "kb" => 1e3,
+        "mb" => 1e6,
+        "gb" => 1e9,
+        "tb" => 1e12,
+        "kib" => 1024.0,
+        "mib" => 1048576.0,
+        "gib" => 1073741824.0,
+        "tib" => 1099511627776.0,
+        _ => return None,
+    };
+    (number.is_finite() && number >= 0.0 && number * multiplier <= u64::MAX as f64)
+        .then_some((number * multiplier) as u64)
+}
+
+fn enrich_oci_resources(runtime: &str, rows: &mut [Container], warnings: &mut Vec<String>) {
+    // Batches avoid a subprocess per instance, keep argv bounded and preserve inventory on failures.
+    for batch in rows.chunks_mut(32) {
+        let mut args = vec!["inspect", "--type", "container", "--"];
+        args.extend(batch.iter().map(|row| row.id.as_str()));
+        match run_text(runtime, &args, Duration::from_secs(8)).and_then(|text| json_rows(&text)) {
+            Ok(values) => {
+                for row in batch.iter_mut() {
+                    if let Some(value) = values.iter().find(|value| {
+                        value["Id"]
+                            .as_str()
+                            .or_else(|| value["ID"].as_str())
+                            .is_some_and(|id| id == row.id || id.starts_with(&row.id))
+                    }) {
+                        row.resources = Some(oci_resources(value));
+                    }
+                }
+            }
+            Err(error) => warnings.push(format!("{runtime} allocations unavailable: {error}")),
+        }
+        let running: Vec<_> = batch
+            .iter()
+            .filter(|row| row.state == "running")
+            .map(|row| row.id.as_str())
+            .collect();
+        if running.is_empty() {
+            continue;
+        }
+        let mut args = vec!["stats", "--no-stream", "--format", "{{json .}}", "--"];
+        args.extend(running);
+        match run_text(runtime, &args, Duration::from_secs(8)).and_then(|text| json_rows(&text)) {
+            Ok(values) => {
+                for row in batch.iter_mut() {
+                    let Some(value) = values.iter().find(|value| {
+                        ["ID", "Container", "ContainerID"].iter().any(|key| {
+                            value[key].as_str().is_some_and(|id| {
+                                !id.is_empty()
+                                    && (id == row.id
+                                        || id.starts_with(&row.id)
+                                        || row.id.starts_with(id))
+                            })
+                        })
+                    }) else {
+                        continue;
+                    };
+                    let r = row.resources.get_or_insert_default();
+                    r.cpu_usage_percent = text(&value["CPUPerc"])
+                        .or_else(|| text(&value["CPU"]))
+                        .or_else(|| text(&value["CPUPercent"]));
+                    r.memory_usage_bytes = value["MemUsage"]
+                        .as_str()
+                        .and_then(|s| parse_usage_bytes(s.split('/').next().unwrap_or("")));
+                }
+            }
+            Err(error) => warnings.push(format!("{runtime} live usage unavailable: {error}")),
+        }
+    }
 }
 
 fn action_command(
@@ -518,5 +738,63 @@ mod lxd_tests {
         )
         .unwrap();
         assert_eq!(output.len(), 200000);
+    }
+}
+
+#[cfg(test)]
+mod resource_tests {
+    use super::*;
+
+    #[test]
+    fn lxd_inherited_limits_and_zero_vm_disk_placeholder() {
+        let value = serde_json::json!({"type":"virtual-machine", "config":{}, "expanded_config":{"limits.cpu":"4", "limits.memory":"12GiB"}, "expanded_devices":{"root":{"type":"disk", "path":"/", "size":"40GiB", "pool":"runner-pool"}}, "state":{"memory":{"usage":12345}, "cpu":{"usage":5000000000_u64}, "disk":{"root":{"usage":0, "total":42949672960_u64}}}});
+        let r = lxd_resources(&value);
+        assert_eq!(r.cpu_limit.as_deref(), Some("4"));
+        assert_eq!(r.memory_limit.as_deref(), Some("12GiB"));
+        assert_eq!(r.root_disk_limit.as_deref(), Some("40GiB"));
+        assert_eq!(r.storage_pool.as_deref(), Some("runner-pool"));
+        assert_eq!(r.memory_usage_bytes, Some(12345));
+        assert_eq!(r.cpu_usage_ns, Some(5000000000));
+        assert_eq!(r.root_disk_capacity_bytes, Some(42949672960));
+        assert_eq!(r.root_disk_usage_bytes, None);
+        let stopped =
+            lxd_resources(&serde_json::json!({"type":"container", "config":{}, "state":null}));
+        assert_eq!(stopped.memory_usage_bytes, None);
+    }
+
+    #[test]
+    fn docker_podman_and_nerdctl_compatible_allocations() {
+        let docker = oci_resources(
+            &serde_json::json!({"HostConfig":{"NanoCpus":2000000000_u64,"CpusetCpus":"0-3","Memory":1073741824_u64,"StorageOpt":{"size":"10G"}},"SizeRw":1234,"Mounts":[{"Name":"data","Destination":"/data","RW":false}]}),
+        );
+        assert_eq!(docker.cpu_limit.as_deref(), Some("2.00 CPUs; set 0-3"));
+        assert_eq!(docker.memory_limit.as_deref(), Some("1.0GiB"));
+        assert_eq!(docker.root_disk_limit.as_deref(), Some("10G"));
+        assert_eq!(docker.root_disk_usage_bytes, Some(1234));
+        assert_eq!(docker.mounts, ["data -> /data (read-only)"]);
+        let quota = oci_resources(
+            &serde_json::json!({"HostConfig":{"CpuQuota":150000,"CpuPeriod":100000,"Memory":0}}),
+        );
+        assert_eq!(quota.cpu_limit.as_deref(), Some("1.50 CPUs"));
+        assert!(quota.memory_limit.unwrap().contains("no configured limit"));
+        let shared = oci_resources(&serde_json::json!({"HostConfig":{"CpuQuota":-1,"Memory":0}}));
+        assert!(shared.cpu_limit.unwrap().contains("no configured limit"));
+        let unknown = oci_resources(&serde_json::json!({}));
+        assert_eq!(unknown.cpu_limit, None);
+        assert_eq!(unknown.memory_limit, None);
+    }
+
+    #[test]
+    fn runtime_usage_units_and_json_formats() {
+        assert_eq!(parse_usage_bytes("1.5GiB"), Some(1610612736));
+        assert_eq!(parse_usage_bytes("12.5 MB"), Some(12500000));
+        assert_eq!(parse_usage_bytes("0B"), Some(0));
+        assert_eq!(parse_usage_bytes("--"), None);
+        assert_eq!(json_rows("[{\"ID\":\"a\"}]").unwrap().len(), 1);
+        assert_eq!(
+            json_rows("{\"ID\":\"a\"}\n{\"ID\":\"b\"}").unwrap().len(),
+            2
+        );
+        assert!(json_rows("not json").is_err());
     }
 }

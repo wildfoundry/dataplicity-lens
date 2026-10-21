@@ -42,8 +42,9 @@ use lens_model::{
     SchemaVersion, ServiceReference, TemperatureSensor, Timestamp, User,
 };
 pub use lens_model::{
-    BlockDevice, Container, DeletedOpenFile, EntityId, Filesystem, Interface, LogEntry, LogSource,
-    Mount, Relationship, RelationshipKind, Route, Service, Snapshot as SystemSnapshot, Socket,
+    BlockDevice, Container, ContainerResources, DeletedOpenFile, EntityId, Filesystem, Interface,
+    LogEntry, LogSource, Mount, Relationship, RelationshipKind, Route, Service,
+    Snapshot as SystemSnapshot, Socket,
 };
 use lens_output::{jsonl_record_types_for_fields, write_json_lines_filtered, write_json_value};
 #[cfg(target_os = "linux")]
@@ -3889,6 +3890,111 @@ fn render_service_specialist(
     Ok(())
 }
 
+fn container_resource_summary(resources: &ContainerResources) -> String {
+    format!(
+        "CPU {} | RAM {} | Disk {}",
+        resources.cpu_limit.as_deref().unwrap_or("not reported"),
+        resources.memory_limit.as_deref().unwrap_or("not reported"),
+        resources
+            .root_disk_limit
+            .as_deref()
+            .map(str::to_owned)
+            .or_else(|| resources.root_disk_capacity_bytes.map(human_bytes))
+            .unwrap_or_else(|| "not reported".into())
+    )
+}
+
+fn render_container_resources(
+    container: &Container,
+    width: usize,
+    out: &mut dyn Write,
+) -> Result<()> {
+    let Some(r) = &container.resources else {
+        writeln!(out, "  Resources: not reported by runtime")?;
+        return Ok(());
+    };
+    let cpu_used = r
+        .cpu_usage_percent
+        .clone()
+        .or_else(|| {
+            r.cpu_usage_ns
+                .map(|n| format!("{:.1}s cumulative CPU time", n as f64 / 1e9))
+        })
+        .unwrap_or_else(|| "not reported".into());
+    let memory_used = r
+        .memory_usage_bytes
+        .map(human_bytes)
+        .unwrap_or_else(|| "not reported".into());
+    let disk_used = r
+        .root_disk_usage_bytes
+        .map(human_bytes)
+        .unwrap_or_else(|| "not reported".into());
+    for (label, value) in [
+        (
+            "CPU LIMIT",
+            r.cpu_limit.as_deref().unwrap_or("not reported").to_owned(),
+        ),
+        ("CPU USAGE", cpu_used),
+        (
+            "RAM LIMIT",
+            r.memory_limit
+                .as_deref()
+                .unwrap_or("not reported")
+                .to_owned(),
+        ),
+        ("RAM USAGE", memory_used),
+        (
+            "ROOT DISK LIMIT",
+            r.root_disk_limit
+                .as_deref()
+                .unwrap_or("not reported")
+                .to_owned(),
+        ),
+        (
+            "ROOT DISK CAPACITY",
+            r.root_disk_capacity_bytes
+                .map(human_bytes)
+                .unwrap_or_else(|| "not reported".into()),
+        ),
+        (
+            if container.runtime == "lxd" {
+                "ROOT DISK USAGE"
+            } else {
+                "WRITABLE LAYER"
+            },
+            disk_used,
+        ),
+    ] {
+        writeln!(
+            out,
+            "  {label}: {}",
+            truncate_text(&value, width.saturating_sub(label.len() + 4))
+        )?;
+    }
+    if let Some(pool) = &r.storage_pool {
+        writeln!(
+            out,
+            "  STORAGE POOL: {}",
+            truncate_text(pool, width.saturating_sub(16))
+        )?;
+    }
+    for mount in r.mounts.iter().take(4) {
+        writeln!(
+            out,
+            "  MOUNT: {}",
+            truncate_text(mount, width.saturating_sub(10))
+        )?;
+    }
+    if r.mounts.len() > 4 {
+        writeln!(
+            out,
+            "  {} additional mounts in JSON output",
+            r.mounts.len() - 4
+        )?;
+    }
+    Ok(())
+}
+
 fn render_container_specialist(
     snapshot: &SystemSnapshot,
     selected: usize,
@@ -4002,6 +4108,7 @@ fn render_container_specialist(
                 container.ports.as_str()
             }
         )?;
+        render_container_resources(container, width, out)?;
         return Ok(());
     }
     let layout = container_list_layout(width);
@@ -4060,7 +4167,12 @@ fn render_container_specialist(
             )?;
         }
     }
-    let capacity = usize::from(rows.saturating_sub(9)).max(1);
+    let show_resources = snapshot
+        .containers
+        .iter()
+        .any(|row| row.resources.is_some());
+    let lines_per_item = if show_resources { 2 } else { 1 };
+    let capacity = (usize::from(rows.saturating_sub(9)) / lines_per_item).max(1);
     let start = viewport_start(selected, snapshot.containers.len(), capacity);
     for (index, container) in snapshot
         .containers
@@ -4150,6 +4262,18 @@ fn render_container_specialist(
                     },
                     colour
                 )
+            )?;
+        }
+        if show_resources {
+            let summary = container
+                .resources
+                .as_ref()
+                .map(container_resource_summary)
+                .unwrap_or_else(|| "Resources not reported".into());
+            writeln!(
+                out,
+                "    {}",
+                truncate_text(&summary, width.saturating_sub(4))
             )?;
         }
     }
@@ -9054,6 +9178,10 @@ fn render_plain(view: View, snapshot: &SystemSnapshot, out: &mut dyn Write) -> R
                         item.ports.as_str()
                     }
                 )?;
+                if let Some(resources) = &item.resources {
+                    writeln!(out, "         {}", container_resource_summary(resources))?;
+                    render_container_resources(item, 120, out)?;
+                }
             }
             if !snapshot.collection_warnings.is_empty() {
                 writeln!(out)?;
@@ -9669,6 +9797,7 @@ pub fn demo_snapshot() -> SystemSnapshot {
     ];
     snapshot.containers = vec![
         Container {
+            resources: None,
             instance_type: None,
             project: None,
             runtime: "docker".into(),
@@ -9681,6 +9810,7 @@ pub fn demo_snapshot() -> SystemSnapshot {
             ports: "0.0.0.0:1883->1883/tcp".into(),
         },
         Container {
+            resources: None,
             instance_type: None,
             project: None,
             runtime: "podman".into(),
@@ -10638,6 +10768,30 @@ mod tests {
                 seen.iter().all(|present| *present),
                 "columns={columns} missed a specialist tile"
             );
+        }
+    }
+
+    #[test]
+    fn container_allocations_appear_in_list_and_detail() {
+        let mut snapshot = demo_snapshot();
+        snapshot.containers[0].resources = Some(ContainerResources {
+            cpu_limit: Some("4".into()),
+            memory_limit: Some("12GiB".into()),
+            root_disk_limit: Some("40GiB".into()),
+            storage_pool: Some("runner-pool".into()),
+            memory_usage_bytes: Some(1073741824),
+            ..Default::default()
+        });
+        for inspecting in [false, true] {
+            let mut out = Vec::new();
+            render_container_specialist(&snapshot, 0, inspecting, 40, 100, &mut out).unwrap();
+            let out = String::from_utf8(out).unwrap();
+            assert!(out.contains("12GiB"));
+            assert!(out.contains("40GiB"));
+            if inspecting {
+                assert!(out.contains("RAM USAGE"));
+                assert!(out.contains("runner-pool"));
+            }
         }
     }
 
