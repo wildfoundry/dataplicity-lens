@@ -139,3 +139,31 @@ Contributors can test the source-build formula without publishing it by running
 
 See [`COMPATIBILITY.md`](COMPATIBILITY.md) for platform coverage and
 [`TROUBLESHOOTING.md`](TROUBLESHOOTING.md) when a native facility is unavailable.
+
+## Local LXD containers and virtual machines
+
+`lens-containers` detects LXD through its `lxc` client and reads accessible local projects. JSON includes `instance_type` (`container` or `virtual-machine`), `project`, and a project-qualified `id`. The plain view shows type/project; the interactive detail view includes both. No configured remote LXD servers are queried.
+
+```sh
+lens-containers --runtime lxd --once
+lens-containers --runtime lxd --action restart --target default/example --dry-run
+lens-containers --runtime lxd --action restart --target default/example --yes
+```
+
+Lifecycle commands preserve the project and target the local daemon. They do not force shutdown or delete instances. Existing LXD permissions apply; denied socket access is reported rather than presented as an empty inventory. Use an already authorized account (or sudo where appropriate); Lens does not grant LXD access. This supports LXD's `lxc` client, not classic `lxc-*` tools or Incus.
+
+### Container and VM resources
+
+Every supported runtime (LXD, Docker, Podman and nerdctl) has a resource summary beneath each instance in the interactive list. Press Enter for live performance charts and Tab to switch to allocations, runtime-reported usage and mounts. The interactive view samples automatically; `r` reloads the inventory. Plain and JSON output include the latest runtime counters.
+
+LXD allocations come from expanded configuration and devices so inherited profile settings are included. Details show CPU allocation/affinity, RAM limit and usage, root-disk limit and reported capacity, storage pool and extra disk mounts. JSON exposes cumulative LXD CPU time; the interactive monitor converts counter deltas into CPU percentage. Zero disk-usage placeholders for VMs are treated as unavailable.
+
+OCI allocations come from container inspection: CPU quota and affinity, memory limit, root-filesystem storage options and mounts. A bounded, one-shot stats query adds CPU percentage and memory usage for running containers. A stats memory denominator can be host RAM and is never treated as a configured memory allocation. Where no CPU/RAM limit is configured, the view says shared; unavailable data says not reported. Writable-layer usage, when supplied by inspection, excludes image layers and mounted volumes. Lens does not scan container filesystems to invent a disk-usage value. Runtime permissions and unsupported stats commands can limit coverage without hiding the instances themselves.
+
+### Live container performance
+
+The interactive container detail page shows CPU, memory, network receive/transmit and disk read/write charts. Collection runs in the background with a two-second pause between samples; slower runtime queries increase that interval. Only one automatic collection runs at a time. Each instance has up to 300 samples of session-local history, retained while browsing between instances. No monitoring daemon, guest command execution or extra permissions are required.
+
+CPU 100% means one logical CPU, so a busy four-vCPU instance can reach 400%. Each chart scales independently to its visible peak, rather than implying a common percentage scale. Missing counters, restarts and collection gaps are shown as unavailable, not zero. The header shows sample age and collection errors. Short terminals use compact charts; Tab switches between charts and the existing allocation details.
+
+Docker, Podman and nerdctl use their compatible one-shot stats counters where supported. Network and block-I/O counters are converted to bytes per second; these are container counters, not physical drive throughput. LXD uses guest CPU/memory and attached NIC counters, excluding internal guest bridges and loopback to avoid double-counting. The current LXD instance-state API does not report VM disk I/O, so those charts show unavailable. Root-disk allocation/usage is separate from I/O throughput. History is not persisted when Lens exits.

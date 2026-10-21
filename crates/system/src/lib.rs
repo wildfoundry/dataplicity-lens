@@ -1,7 +1,9 @@
 #![forbid(unsafe_code)]
 
 mod ai;
+mod container_monitor;
 mod containers;
+use container_monitor::ContainerMonitor;
 mod hardware;
 
 use std::{
@@ -42,8 +44,9 @@ use lens_model::{
     SchemaVersion, ServiceReference, TemperatureSensor, Timestamp, User,
 };
 pub use lens_model::{
-    BlockDevice, Container, DeletedOpenFile, EntityId, Filesystem, Interface, LogEntry, LogSource,
-    Mount, Relationship, RelationshipKind, Route, Service, Snapshot as SystemSnapshot, Socket,
+    BlockDevice, Container, ContainerResources, DeletedOpenFile, EntityId, Filesystem, Interface,
+    LogEntry, LogSource, Mount, Relationship, RelationshipKind, Route, Service,
+    Snapshot as SystemSnapshot, Socket,
 };
 use lens_output::{jsonl_record_types_for_fields, write_json_lines_filtered, write_json_value};
 #[cfg(target_os = "linux")]
@@ -775,8 +778,10 @@ fn validate_view_args(view: View, args: &ViewArgs) -> Result<()> {
     }
     if let Some(runtime) = args.container_runtime.as_deref() {
         let runtime = runtime.to_ascii_lowercase();
-        if runtime != "docker" && runtime != "podman" && runtime != "nerdctl" {
-            return Err(usage_err("--runtime must be docker, podman, or nerdctl"));
+        if !matches!(runtime.as_str(), "docker" | "podman" | "nerdctl" | "lxd") {
+            return Err(usage_err(
+                "--runtime must be docker, podman, nerdctl, or lxd",
+            ));
         }
     }
     if args.expect_status.is_some() && view != View::Containers {
@@ -2888,11 +2893,22 @@ fn cockpit_view_summary(view: View, snapshot: &SystemSnapshot, loading: bool) ->
 
 fn cockpit_containers_summary(snapshot: &SystemSnapshot) -> String {
     if !snapshot.containers.is_empty() {
+        let vms = snapshot
+            .containers
+            .iter()
+            .filter(|item| item.instance_type.as_deref() == Some("virtual-machine"))
+            .count();
+        if vms > 0 {
+            return format!("{} containers / {vms} VMs", snapshot.containers.len() - vms);
+        }
         return format!("{} containers", snapshot.containers.len());
     }
     let access_limited = snapshot.collection_warnings.iter().any(|warning| {
         let lower = warning.to_ascii_lowercase();
-        (lower.contains("docker") || lower.contains("podman") || lower.contains("nerdctl"))
+        (lower.contains("docker")
+            || lower.contains("podman")
+            || lower.contains("nerdctl")
+            || lower.contains("lxd"))
             && (lower.contains("not usable")
                 || lower.contains("access denied")
                 || lower.contains("permission"))
@@ -3373,6 +3389,7 @@ fn render_specialist(
     view: View,
     snapshot: &SystemSnapshot,
     network_activity: &NetworkActivity,
+    container_monitor: Option<&ContainerMonitor>,
     selected: usize,
     inspecting: bool,
     loading: bool,
@@ -3385,6 +3402,7 @@ fn render_specialist(
         view,
         snapshot,
         network_activity,
+        container_monitor,
         selected,
         inspecting,
         loading,
@@ -3400,6 +3418,7 @@ fn render_specialist_content(
     view: View,
     snapshot: &SystemSnapshot,
     network_activity: &NetworkActivity,
+    container_monitor: Option<&ContainerMonitor>,
     selected: usize,
     inspecting: bool,
     loading: bool,
@@ -3491,7 +3510,14 @@ fn render_specialist_content(
             render_service_specialist(snapshot, selected, inspecting, rows, width, stdout)?
         }
         View::Containers => {
-            render_container_specialist(snapshot, selected, inspecting, rows, width, stdout)?
+            if let Some((monitor, container)) = container_monitor
+                .filter(|m| inspecting && !m.allocations)
+                .zip(snapshot.containers.get(selected))
+            {
+                monitor.render(container, rows, width, stdout)?;
+            } else {
+                render_container_specialist(snapshot, selected, inspecting, rows, width, stdout)?;
+            }
         }
         View::Logs => render_log_specialist(snapshot, selected, inspecting, rows, width, stdout)?,
         View::Disk => render_disk_specialist(snapshot, selected, inspecting, rows, width, stdout)?,
@@ -3539,7 +3565,9 @@ fn render_specialist_content(
         "{}",
         ink(&frame_divider(width), Ink::Border, colour)
     )?;
-    if width < 64 {
+    if view == View::Containers && inspecting {
+        writeln!(stdout, "  Tab: charts/allocations  Esc: back  q: quit")?;
+    } else if width < 64 {
         writeln!(
             stdout,
             "  {} {}   {} {}   {} {}",
@@ -3876,6 +3904,111 @@ fn render_service_specialist(
     Ok(())
 }
 
+fn container_resource_summary(resources: &ContainerResources) -> String {
+    format!(
+        "CPU {} | RAM {} | Disk {}",
+        resources.cpu_limit.as_deref().unwrap_or("not reported"),
+        resources.memory_limit.as_deref().unwrap_or("not reported"),
+        resources
+            .root_disk_limit
+            .as_deref()
+            .map(str::to_owned)
+            .or_else(|| resources.root_disk_capacity_bytes.map(human_bytes))
+            .unwrap_or_else(|| "not reported".into())
+    )
+}
+
+fn render_container_resources(
+    container: &Container,
+    width: usize,
+    out: &mut dyn Write,
+) -> Result<()> {
+    let Some(r) = &container.resources else {
+        writeln!(out, "  Resources: not reported by runtime")?;
+        return Ok(());
+    };
+    let cpu_used = r
+        .cpu_usage_percent
+        .clone()
+        .or_else(|| {
+            r.cpu_usage_ns
+                .map(|n| format!("{:.1}s cumulative CPU time", n as f64 / 1e9))
+        })
+        .unwrap_or_else(|| "not reported".into());
+    let memory_used = r
+        .memory_usage_bytes
+        .map(human_bytes)
+        .unwrap_or_else(|| "not reported".into());
+    let disk_used = r
+        .root_disk_usage_bytes
+        .map(human_bytes)
+        .unwrap_or_else(|| "not reported".into());
+    for (label, value) in [
+        (
+            "CPU LIMIT",
+            r.cpu_limit.as_deref().unwrap_or("not reported").to_owned(),
+        ),
+        ("CPU USAGE", cpu_used),
+        (
+            "RAM LIMIT",
+            r.memory_limit
+                .as_deref()
+                .unwrap_or("not reported")
+                .to_owned(),
+        ),
+        ("RAM USAGE", memory_used),
+        (
+            "ROOT DISK LIMIT",
+            r.root_disk_limit
+                .as_deref()
+                .unwrap_or("not reported")
+                .to_owned(),
+        ),
+        (
+            "ROOT DISK CAPACITY",
+            r.root_disk_capacity_bytes
+                .map(human_bytes)
+                .unwrap_or_else(|| "not reported".into()),
+        ),
+        (
+            if container.runtime == "lxd" {
+                "ROOT DISK USAGE"
+            } else {
+                "WRITABLE LAYER"
+            },
+            disk_used,
+        ),
+    ] {
+        writeln!(
+            out,
+            "  {label}: {}",
+            truncate_text(&value, width.saturating_sub(label.len() + 4))
+        )?;
+    }
+    if let Some(pool) = &r.storage_pool {
+        writeln!(
+            out,
+            "  STORAGE POOL: {}",
+            truncate_text(pool, width.saturating_sub(16))
+        )?;
+    }
+    for mount in r.mounts.iter().take(4) {
+        writeln!(
+            out,
+            "  MOUNT: {}",
+            truncate_text(mount, width.saturating_sub(10))
+        )?;
+    }
+    if r.mounts.len() > 4 {
+        writeln!(
+            out,
+            "  {} additional mounts in JSON output",
+            r.mounts.len() - 4
+        )?;
+    }
+    Ok(())
+}
+
 fn render_container_specialist(
     snapshot: &SystemSnapshot,
     selected: usize,
@@ -3900,6 +4033,7 @@ fn render_container_specialist(
             if warning.contains("docker")
                 || warning.contains("podman")
                 || warning.contains("nerdctl")
+                || warning.contains("lxd")
             {
                 writeln!(out, "  {}", ink(warning, Ink::Attention, colour))?;
             }
@@ -3965,6 +4099,12 @@ fn render_container_specialist(
                 }
             )?;
         }
+        if let Some(kind) = &container.instance_type {
+            writeln!(out, "  {} {}", ink("TYPE", Ink::Label, colour), kind)?;
+        }
+        if let Some(project) = &container.project {
+            writeln!(out, "  {} {}", ink("PROJECT", Ink::Label, colour), project)?;
+        }
         writeln!(out, "  {} {}", ink("ID", Ink::Label, colour), container.id)?;
         writeln!(
             out,
@@ -3982,6 +4122,7 @@ fn render_container_specialist(
                 container.ports.as_str()
             }
         )?;
+        render_container_resources(container, width, out)?;
         return Ok(());
     }
     let layout = container_list_layout(width);
@@ -4040,7 +4181,12 @@ fn render_container_specialist(
             )?;
         }
     }
-    let capacity = usize::from(rows.saturating_sub(9)).max(1);
+    let show_resources = snapshot
+        .containers
+        .iter()
+        .any(|row| row.resources.is_some());
+    let lines_per_item = if show_resources { 2 } else { 1 };
+    let capacity = (usize::from(rows.saturating_sub(9)) / lines_per_item).max(1);
     let start = viewport_start(selected, snapshot.containers.len(), capacity);
     for (index, container) in snapshot
         .containers
@@ -4130,6 +4276,18 @@ fn render_container_specialist(
                     },
                     colour
                 )
+            )?;
+        }
+        if show_resources {
+            let summary = container
+                .resources
+                .as_ref()
+                .map(container_resource_summary)
+                .unwrap_or_else(|| "Resources not reported".into());
+            writeln!(
+                out,
+                "    {}",
+                truncate_text(&summary, width.saturating_sub(4))
             )?;
         }
     }
@@ -5398,16 +5556,21 @@ fn specialist_loop(view: View, args: &ViewArgs, stdout: &mut impl Write) -> Resu
     let mut service_action: Option<ServiceActionDialog> = None;
     let mut container_action: Option<ContainerActionDialog> = None;
     let mut network_activity = NetworkActivity::default();
+    let mut container_monitor = ContainerMonitor::default();
+    let mut container_poll_pending = false;
+    let mut next_container_sample = Instant::now();
+    let mut last_container_sample: Option<Instant> = None;
     let mut activity_receiver: Option<Receiver<Vec<(String, u64, u64)>>> = None;
     let mut next_network_sample = Instant::now() + Duration::from_secs(1);
     // Kernel log output lands on top of a frame on a virtual or serial console, and only a new
     // frame removes it, so draw as often there as the network view already does.
-    let clock_interval =
-        if view == View::Net || TerminalEnvironment::detect().shares_screen_with_kernel_log() {
-            1
-        } else {
-            60
-        };
+    let clock_interval = if matches!(view, View::Net | View::Containers)
+        || TerminalEnvironment::detect().shares_screen_with_kernel_log()
+    {
+        1
+    } else {
+        60
+    };
     let mut next_clock = Instant::now() + Duration::from_secs(clock_interval);
     let mut redraw = true;
     loop {
@@ -5456,8 +5619,36 @@ fn specialist_loop(view: View, args: &ViewArgs, stdout: &mut impl Write) -> Resu
         {
             activity_receiver = Some(spawn_interface_counter_collection());
         }
+        if view == View::Containers
+            && !loading
+            && !container_poll_pending
+            && container_action.is_none()
+            && Instant::now() >= next_container_sample
+        {
+            receiver = spawn_specialist_collection(view, active_args.clone());
+            container_poll_pending = true;
+        }
         match receiver.try_recv() {
-            Ok(update) => {
+            Ok(mut update) => {
+                if view == View::Containers {
+                    container_poll_pending = false;
+                    next_container_sample = Instant::now() + Duration::from_secs(2);
+                    if update.snapshot.containers.is_empty()
+                        && !update.snapshot.collection_warnings.is_empty()
+                        && !snapshot.containers.is_empty()
+                    {
+                        container_monitor.gap();
+                        status =
+                            format!("STALE: {}", update.snapshot.collection_warnings.join("; "));
+                        snapshot.collection_warnings =
+                            std::mem::take(&mut update.snapshot.collection_warnings);
+                        loading = false;
+                        redraw = true;
+                        continue;
+                    }
+                    container_monitor.observe(&update.snapshot.containers, Instant::now());
+                    last_container_sample = Some(Instant::now());
+                }
                 selected =
                     preserve_specialist_selection(view, &snapshot, &update.snapshot, selected);
                 snapshot = update.snapshot;
@@ -5465,10 +5656,22 @@ fn specialist_loop(view: View, args: &ViewArgs, stdout: &mut impl Write) -> Resu
                     network_activity.observe(&snapshot.interfaces, Instant::now());
                 }
                 loading = update.loading_more;
-                status = update.status.to_owned();
+                status = if view == View::Containers {
+                    if snapshot.collection_warnings.is_empty() {
+                        "Live metrics | ~2s sampling".into()
+                    } else {
+                        format!("Live metrics | {}", snapshot.collection_warnings.join("; "))
+                    }
+                } else {
+                    update.status.to_owned()
+                };
                 redraw = true;
             }
-            Err(TryRecvError::Disconnected) if loading => {
+            Err(TryRecvError::Disconnected) if loading || container_poll_pending => {
+                container_poll_pending = false;
+                container_monitor.gap();
+                next_container_sample = Instant::now() + Duration::from_secs(2);
+                status = "STALE: collection stopped unexpectedly".into();
                 snapshot
                     .collection_warnings
                     .push(format!("{} collection stopped unexpectedly", view.title()));
@@ -5484,10 +5687,20 @@ fn specialist_loop(view: View, args: &ViewArgs, stdout: &mut impl Write) -> Resu
                 view,
                 &snapshot,
                 &network_activity,
+                Some(&container_monitor),
                 selected,
                 inspecting,
                 loading,
-                &status,
+                &if view == View::Containers {
+                    format!(
+                        "{status} | sample age {}",
+                        last_container_sample
+                            .map(|at| format!("{}s", at.elapsed().as_secs()))
+                            .unwrap_or_else(|| "unknown".into())
+                    )
+                } else {
+                    status.clone()
+                },
                 rows,
                 stdout,
             )?;
@@ -5596,6 +5809,10 @@ fn specialist_loop(view: View, args: &ViewArgs, stdout: &mut impl Write) -> Resu
                 KeyCode::Char('l') if key.modifiers.contains(KeyModifiers::CONTROL) => {
                     redraw = true;
                 }
+                KeyCode::Tab if view == View::Containers && inspecting => {
+                    container_monitor.allocations = !container_monitor.allocations;
+                    redraw = true;
+                }
                 KeyCode::Tab if view == View::System && !inspecting => {
                     selected = move_system_section(&snapshot, selected, 1);
                     redraw = true;
@@ -5634,6 +5851,7 @@ fn specialist_loop(view: View, args: &ViewArgs, stdout: &mut impl Write) -> Resu
                 }
                 KeyCode::Enter if !inspecting && specialist_item_count(view, &snapshot) > 0 => {
                     inspecting = true;
+                    container_monitor.allocations = false;
                     redraw = true;
                 }
                 KeyCode::Char('/') if !inspecting && view != View::Processes => {
@@ -9016,15 +9234,17 @@ fn render_plain(view: View, snapshot: &SystemSnapshot, out: &mut dyn Write) -> R
         View::Containers => {
             writeln!(
                 out,
-                "RUNTIME  NAME                             STATE        IMAGE                            PORTS"
+                "RUNTIME  NAME                             STATE        TYPE             PROJECT          IMAGE                            PORTS"
             )?;
             for item in &snapshot.containers {
                 writeln!(
                     out,
-                    "{:<8} {:<32} {:<12} {:<32} {}",
+                    "{:<8} {:<32} {:<12} {:<16} {:<16} {:<32} {}",
                     item.runtime,
                     item.name,
                     item.state,
+                    item.instance_type.as_deref().unwrap_or("container"),
+                    item.project.as_deref().unwrap_or("-"),
                     item.image,
                     if item.ports.is_empty() {
                         "-"
@@ -9032,6 +9252,10 @@ fn render_plain(view: View, snapshot: &SystemSnapshot, out: &mut dyn Write) -> R
                         item.ports.as_str()
                     }
                 )?;
+                if let Some(resources) = &item.resources {
+                    writeln!(out, "         {}", container_resource_summary(resources))?;
+                    render_container_resources(item, 120, out)?;
+                }
             }
             if !snapshot.collection_warnings.is_empty() {
                 writeln!(out)?;
@@ -9647,6 +9871,9 @@ pub fn demo_snapshot() -> SystemSnapshot {
     ];
     snapshot.containers = vec![
         Container {
+            resources: None,
+            instance_type: None,
+            project: None,
             runtime: "docker".into(),
             id: "a1b2c3d4e5f6789012345678abcdef01".into(),
             name: "edge-mqtt".into(),
@@ -9657,6 +9884,9 @@ pub fn demo_snapshot() -> SystemSnapshot {
             ports: "0.0.0.0:1883->1883/tcp".into(),
         },
         Container {
+            resources: None,
+            instance_type: None,
+            project: None,
             runtime: "podman".into(),
             id: "f0e1d2c3b4a5968778695a4b3c2d1e0f".into(),
             name: "metrics-agent".into(),
@@ -10470,7 +10700,7 @@ mod tests {
         for renderer in [View::Services, View::Disk, View::Net, View::Hardware] {
             let mut list = Vec::new();
             render_specialist(
-                renderer, &snapshot, &activity, 0, false, false, "Ready", 30, &mut list,
+                renderer, &snapshot, &activity, None, 0, false, false, "Ready", 30, &mut list,
             )
             .expect("list");
             let mut detail = Vec::new();
@@ -10478,6 +10708,7 @@ mod tests {
                 renderer,
                 &snapshot,
                 &activity,
+                None,
                 0,
                 true,
                 false,
@@ -10499,6 +10730,7 @@ mod tests {
             View::Hardware,
             &snapshot,
             &NetworkActivity::default(),
+            None,
             0,
             false,
             false,
@@ -10521,6 +10753,7 @@ mod tests {
             View::Disk,
             &snapshot,
             &NetworkActivity::default(),
+            None,
             0,
             true,
             false,
@@ -10612,6 +10845,30 @@ mod tests {
                 seen.iter().all(|present| *present),
                 "columns={columns} missed a specialist tile"
             );
+        }
+    }
+
+    #[test]
+    fn container_allocations_appear_in_list_and_detail() {
+        let mut snapshot = demo_snapshot();
+        snapshot.containers[0].resources = Some(ContainerResources {
+            cpu_limit: Some("4".into()),
+            memory_limit: Some("12GiB".into()),
+            root_disk_limit: Some("40GiB".into()),
+            storage_pool: Some("runner-pool".into()),
+            memory_usage_bytes: Some(1073741824),
+            ..Default::default()
+        });
+        for inspecting in [false, true] {
+            let mut out = Vec::new();
+            render_container_specialist(&snapshot, 0, inspecting, 40, 100, &mut out).unwrap();
+            let out = String::from_utf8(out).unwrap();
+            assert!(out.contains("12GiB"));
+            assert!(out.contains("40GiB"));
+            if inspecting {
+                assert!(out.contains("RAM USAGE"));
+                assert!(out.contains("runner-pool"));
+            }
         }
     }
 
@@ -10818,7 +11075,7 @@ mod tests {
 
     /// Pin the glyph mode for the current test. Renderers read process-wide state, so each test
     /// sets its own thread-local rather than racing the others through the atomic.
-    fn with_glyphs<T>(ascii: bool, body: impl FnOnce() -> T) -> T {
+    pub(super) fn with_glyphs<T>(ascii: bool, body: impl FnOnce() -> T) -> T {
         TEST_ASCII.with(|value| value.set(Some(ascii)));
         let result = body();
         TEST_ASCII.with(|value| value.set(None));
@@ -10865,6 +11122,7 @@ mod tests {
                     view,
                     &snapshot,
                     &NetworkActivity::default(),
+                    None,
                     0,
                     false,
                     false,

@@ -6,7 +6,7 @@ use std::{
     time::{Duration, Instant},
 };
 
-use lens_model::Container;
+use lens_model::{Container, ContainerResources};
 use serde_json::Value;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -19,8 +19,8 @@ pub(crate) enum ProbeClass {
 pub(crate) fn collect_containers(warnings: &mut Vec<String>) -> (Vec<Container>, bool) {
     let mut containers = Vec::new();
     let mut runtime_live = false;
-    for runtime in ["docker", "podman", "nerdctl"] {
-        if !binary_on_path(runtime) {
+    for runtime in ["docker", "podman", "nerdctl", "lxd"] {
+        if !binary_on_path(runtime_program(runtime)) {
             continue;
         }
         match probe_runtime(runtime) {
@@ -31,14 +31,18 @@ pub(crate) fn collect_containers(warnings: &mut Vec<String>) -> (Vec<Container>,
             ProbeClass::Ok => {
                 runtime_live = true;
                 match list_containers(runtime) {
-                    Ok(mut rows) => containers.append(&mut rows),
+                    Ok(mut rows) => {
+                        if runtime != "lxd" {
+                            enrich_oci_resources(runtime, &mut rows, warnings);
+                        }
+                        containers.append(&mut rows);
+                    }
                     Err(message) => match classify_runtime_error(&message) {
                         ProbeClass::Permission => {
-                            runtime_live = false;
                             warnings.push(permission_warning(runtime));
                         }
                         ProbeClass::NotLive => {
-                            runtime_live = false;
+                            warnings.push(format!("{runtime} inventory unavailable: {message}"))
                         }
                         ProbeClass::Ok => {
                             warnings.push(format!("{runtime} unavailable: {message}"))
@@ -59,7 +63,11 @@ pub(crate) fn collect_containers(warnings: &mut Vec<String>) -> (Vec<Container>,
 }
 
 pub(crate) fn runtime_is_usable(runtime: &str) -> bool {
-    binary_on_path(runtime) && probe_runtime(runtime) == ProbeClass::Ok
+    binary_on_path(runtime_program(runtime)) && probe_runtime(runtime) == ProbeClass::Ok
+}
+
+fn runtime_program(runtime: &str) -> &str {
+    if runtime == "lxd" { "lxc" } else { runtime }
 }
 
 fn binary_on_path(program: &str) -> bool {
@@ -72,13 +80,26 @@ fn binary_on_path(program: &str) -> bool {
 }
 
 fn probe_runtime(runtime: &str) -> ProbeClass {
-    match run_text(runtime, &["info"], Duration::from_secs(5)) {
+    let args: &[&str] = if runtime == "lxd" {
+        &["info", "local:"]
+    } else {
+        &["info"]
+    };
+    match run_text(runtime_program(runtime), args, Duration::from_secs(5)) {
         Ok(_) => ProbeClass::Ok,
         Err(message) => classify_runtime_error(&message),
     }
 }
 
 fn list_containers(runtime: &str) -> Result<Vec<Container>, String> {
+    if runtime == "lxd" {
+        let text = run_text(
+            "lxc",
+            &["list", "local:", "--all-projects", "--format=json"],
+            Duration::from_secs(8),
+        )?;
+        return parse_lxd_list(&text);
+    }
     let text = run_text(
         runtime,
         &["ps", "-a", "--format", "{{json .}}"],
@@ -129,7 +150,7 @@ pub(crate) fn classify_runtime_error(message: &str) -> ProbeClass {
 
 fn permission_warning(runtime: &str) -> String {
     format!(
-        "{runtime} is installed but not usable by the current user (socket or {runtime} group access denied)"
+        "{runtime} is installed but not usable by the current user (socket or group access denied)"
     )
 }
 
@@ -147,6 +168,9 @@ fn parse_ps_json_line(runtime: &str, line: &str) -> Option<Container> {
     let created = first_string(&value, &["CreatedAt", "Created", "created"]).unwrap_or_default();
     let ports = ports_from_value(&value);
     Some(Container {
+        resources: None,
+        instance_type: None,
+        project: None,
         runtime: runtime.to_owned(),
         id,
         name,
@@ -156,6 +180,366 @@ fn parse_ps_json_line(runtime: &str, line: &str) -> Option<Container> {
         created,
         ports,
     })
+}
+
+// Pin every operation to the local daemon, irrespective of the user's default remote.
+// Project-qualified identities prevent acting on a same-named instance in another project.
+fn parse_lxd_list(text: &str) -> Result<Vec<Container>, String> {
+    let values: Vec<Value> =
+        serde_json::from_str(text).map_err(|error| format!("invalid LXD inventory: {error}"))?;
+    values
+        .iter()
+        .map(|value| {
+            let name = value
+                .get("name")
+                .and_then(Value::as_str)
+                .filter(|s| !s.is_empty())
+                .ok_or("LXD instance missing name")?;
+            let project = value
+                .get("project")
+                .and_then(Value::as_str)
+                .unwrap_or("default");
+            let kind = value
+                .get("type")
+                .and_then(Value::as_str)
+                .unwrap_or("container");
+            if !matches!(kind, "container" | "virtual-machine") {
+                return Err(format!("unknown LXD instance type: {kind}"));
+            }
+            let status = value
+                .get("status")
+                .and_then(Value::as_str)
+                .unwrap_or("Unknown");
+            let config = &value["config"];
+            Ok(Container {
+                resources: Some(lxd_resources(value)),
+                runtime: "lxd".into(),
+                id: format!("{project}/{name}"),
+                name: name.into(),
+                instance_type: Some(kind.into()),
+                project: Some(project.into()),
+                image: config["image.description"]
+                    .as_str()
+                    .or_else(|| config["volatile.base_image"].as_str())
+                    .unwrap_or("")
+                    .into(),
+                status: status.into(),
+                state: normalize_state(status),
+                created: value["created_at"].as_str().unwrap_or("").into(),
+                ports: String::new(),
+            })
+        })
+        .collect()
+}
+
+fn text(value: &Value) -> Option<String> {
+    value.as_str().filter(|s| !s.is_empty()).map(str::to_owned)
+}
+
+fn lxd_resources(value: &Value) -> ContainerResources {
+    // Expanded values include inherited profile allocations, not just local overrides.
+    let config = value
+        .get("expanded_config")
+        .filter(|v| v.is_object())
+        .unwrap_or(&value["config"]);
+    let devices = value
+        .get("expanded_devices")
+        .filter(|v| v.is_object())
+        .unwrap_or(&value["devices"]);
+    let root = devices.as_object().and_then(|devices| {
+        devices
+            .iter()
+            .find(|(_, device)| device["type"] == "disk" && device["path"] == "/")
+    });
+    let mut r = ContainerResources {
+        cpu_limit: text(&config["limits.cpu"]),
+        memory_limit: text(&config["limits.memory"]),
+        cpu_usage_ns: value["state"]["cpu"]["usage"].as_u64(),
+        memory_usage_bytes: value["state"]["memory"]["usage"].as_u64(),
+        ..Default::default()
+    };
+    r.process_count = value["state"]["processes"].as_u64();
+    // Count only attached guest NICs, excluding guest loopback, bridges and veths.
+    // VM guest interface names can differ from their configured device names.
+    if let Some(network) = value["state"]["network"].as_object() {
+        let nics: Vec<_> = network
+            .iter()
+            .filter(|(name, nic)| {
+                let attached = devices.as_object().is_some_and(|devices| {
+                    devices.iter().any(|(key, device)| {
+                        device["type"] == "nic"
+                            && device["name"].as_str().unwrap_or(key) == name.as_str()
+                    })
+                });
+                attached
+                    || nic["host_name"]
+                        .as_str()
+                        .is_some_and(|host| !host.is_empty())
+            })
+            .map(|(_, nic)| nic)
+            .collect();
+        if !nics.is_empty() {
+            r.network_rx_bytes = nics.iter().try_fold(0_u64, |sum, nic| {
+                sum.checked_add(nic["counters"]["bytes_received"].as_u64()?)
+            });
+            r.network_tx_bytes = nics.iter().try_fold(0_u64, |sum, nic| {
+                sum.checked_add(nic["counters"]["bytes_sent"].as_u64()?)
+            });
+        }
+    }
+    if let Some((name, root)) = root {
+        r.root_disk_limit = text(&root["size"]);
+        r.storage_pool = text(&root["pool"]);
+        r.root_disk_capacity_bytes = value["state"]["disk"][name]["total"]
+            .as_u64()
+            .filter(|n| *n > 0);
+        // LXD dir-backed VMs may report a zero placeholder without guest disk usage.
+        r.root_disk_usage_bytes = value["state"]["disk"][name]["usage"]
+            .as_u64()
+            .filter(|n| *n > 0 || value["type"] != "virtual-machine");
+    }
+    if let Some(devices) = devices.as_object() {
+        r.mounts = devices
+            .values()
+            .filter(|device| device["type"] == "disk" && device["path"] != "/")
+            .filter_map(|device| {
+                text(&device["path"]).map(|path| {
+                    format!(
+                        "{} -> {}{}",
+                        device["source"].as_str().unwrap_or("volume"),
+                        path,
+                        if device["readonly"] == "true" {
+                            " (read-only)"
+                        } else {
+                            ""
+                        }
+                    )
+                })
+            })
+            .collect();
+    }
+    r
+}
+
+fn json_rows(text: &str) -> Result<Vec<Value>, String> {
+    if let Ok(value) = serde_json::from_str::<Value>(text) {
+        return match value {
+            Value::Array(rows) => Ok(rows),
+            Value::Object(_) => Ok(vec![value]),
+            _ => Err("expected JSON object or array".into()),
+        };
+    }
+    text.lines()
+        .filter(|line| !line.trim().is_empty())
+        .map(|line| serde_json::from_str(line).map_err(|e| e.to_string()))
+        .collect()
+}
+
+fn oci_resources(value: &Value) -> ContainerResources {
+    let mut r = ContainerResources::default();
+    let host = &value["HostConfig"];
+    if host.is_object() {
+        let cpus = host["NanoCpus"]
+            .as_f64()
+            .filter(|n| *n > 0.0)
+            .map(|n| n / 1e9)
+            .or_else(|| {
+                let quota = host["CpuQuota"].as_f64()?;
+                let period = host["CpuPeriod"]
+                    .as_f64()
+                    .filter(|n| *n > 0.0)
+                    .unwrap_or(100000.0);
+                (quota > 0.0).then_some(quota / period)
+            });
+        let affinity = host["CpusetCpus"].as_str().filter(|s| !s.is_empty());
+        r.cpu_limit = Some(match (cpus, affinity) {
+            (Some(cpus), Some(set)) => format!("{cpus:.2} CPUs; set {set}"),
+            (Some(cpus), None) => format!("{cpus:.2} CPUs"),
+            (None, Some(set)) => format!("CPU set {set}"),
+            _ => "Shared (no configured limit)".into(),
+        });
+        r.memory_limit = Some(
+            host["Memory"]
+                .as_u64()
+                .filter(|n| *n > 0)
+                .map_or_else(|| "Shared (no configured limit)".into(), super::human_bytes),
+        );
+        r.root_disk_limit = text(&host["StorageOpt"]["size"]);
+    }
+    // SizeRw is writable-layer usage only, not image layers or mounted volumes.
+    r.root_disk_usage_bytes = value["SizeRw"].as_u64();
+    if let Some(mounts) = value["Mounts"].as_array() {
+        r.mounts = mounts
+            .iter()
+            .filter_map(|mount| {
+                text(&mount["Destination"]).map(|destination| {
+                    format!(
+                        "{} -> {}{}",
+                        mount["Name"]
+                            .as_str()
+                            .or_else(|| mount["Source"].as_str())
+                            .unwrap_or("volume"),
+                        destination,
+                        if mount["RW"] == false {
+                            " (read-only)"
+                        } else {
+                            ""
+                        }
+                    )
+                })
+            })
+            .collect();
+    }
+    r
+}
+
+fn parse_usage_bytes(raw: &str) -> Option<u64> {
+    let raw = raw.trim();
+    let end = raw
+        .find(|c: char| !c.is_ascii_digit() && c != '.')
+        .unwrap_or(raw.len());
+    let number: f64 = raw[..end].parse().ok()?;
+    let multiplier = match raw[end..].trim().to_ascii_lowercase().as_str() {
+        "b" | "" => 1.0,
+        "kb" => 1e3,
+        "mb" => 1e6,
+        "gb" => 1e9,
+        "tb" => 1e12,
+        "kib" => 1024.0,
+        "mib" => 1048576.0,
+        "gib" => 1073741824.0,
+        "tib" => 1099511627776.0,
+        _ => return None,
+    };
+    (number.is_finite() && number >= 0.0 && number * multiplier <= u64::MAX as f64)
+        .then_some((number * multiplier) as u64)
+}
+
+fn enrich_oci_resources(runtime: &str, rows: &mut [Container], warnings: &mut Vec<String>) {
+    // Batches avoid a subprocess per instance, keep argv bounded and preserve inventory on failures.
+    for batch in rows.chunks_mut(32) {
+        let mut args = vec!["inspect", "--type", "container", "--"];
+        args.extend(batch.iter().map(|row| row.id.as_str()));
+        match run_text(runtime, &args, Duration::from_secs(8)).and_then(|text| json_rows(&text)) {
+            Ok(values) => {
+                for row in batch.iter_mut() {
+                    if let Some(value) = values.iter().find(|value| {
+                        value["Id"]
+                            .as_str()
+                            .or_else(|| value["ID"].as_str())
+                            .is_some_and(|id| id == row.id || id.starts_with(&row.id))
+                    }) {
+                        row.resources = Some(oci_resources(value));
+                    }
+                }
+            }
+            Err(error) => warnings.push(format!("{runtime} allocations unavailable: {error}")),
+        }
+        let running: Vec<_> = batch
+            .iter()
+            .filter(|row| row.state == "running")
+            .map(|row| row.id.as_str())
+            .collect();
+        if running.is_empty() {
+            continue;
+        }
+        let format = if runtime == "podman" {
+            "json"
+        } else {
+            "{{json .}}"
+        };
+        let mut args = vec!["stats", "--no-stream", "--format", format, "--"];
+        args.extend(running);
+        match run_text(runtime, &args, Duration::from_secs(8)).and_then(|text| json_rows(&text)) {
+            Ok(values) => {
+                for row in batch.iter_mut() {
+                    let Some(value) = values
+                        .iter()
+                        .find(|value| stats_row_matches(value, &row.id))
+                    else {
+                        continue;
+                    };
+                    let r = row.resources.get_or_insert_default();
+                    apply_oci_usage(r, value);
+                }
+            }
+            Err(error) => warnings.push(format!("{runtime} live usage unavailable: {error}")),
+        }
+    }
+}
+
+fn stats_row_matches(value: &Value, target: &str) -> bool {
+    ["ID", "Container", "ContainerID", "id"].iter().any(|key| {
+        value[key].as_str().is_some_and(|id| {
+            !id.is_empty() && (id == target || id.starts_with(target) || target.starts_with(id))
+        })
+    })
+}
+
+fn apply_oci_usage(r: &mut ContainerResources, value: &Value) {
+    let field = |keys: &[&str]| keys.iter().find_map(|key| value[*key].as_str());
+    r.cpu_usage_percent =
+        field(&["CPUPerc", "CPU", "CPUPercent", "cpu_percent"]).map(str::to_owned);
+    r.memory_usage_bytes = field(&["MemUsage", "mem_usage"])
+        .and_then(|s| parse_usage_bytes(s.split('/').next().unwrap_or("")));
+    if let Some((rx, tx)) = usage_pair(field(&["NetIO", "net_io", "netio"])) {
+        r.network_rx_bytes = Some(rx);
+        r.network_tx_bytes = Some(tx);
+    }
+    if let Some((read, write)) = usage_pair(field(&["BlockIO", "block_io", "blocki"])) {
+        r.disk_read_bytes = Some(read);
+        r.disk_write_bytes = Some(write);
+    }
+    r.process_count = value["PIDs"]
+        .as_u64()
+        .or_else(|| value["pids"].as_u64())
+        .or_else(|| field(&["PIDs", "PIDS", "pids"]).and_then(|s| s.parse().ok()));
+}
+
+fn usage_pair(value: Option<&str>) -> Option<(u64, u64)> {
+    let (left, right) = value?.split_once('/')?;
+    Some((parse_usage_bytes(left)?, parse_usage_bytes(right)?))
+}
+
+fn action_command(
+    runtime: &str,
+    action: &str,
+    target: &str,
+) -> Result<(String, Vec<String>), String> {
+    if !matches!(action, "start" | "stop" | "restart") {
+        return Err("unsupported instance action".into());
+    }
+    if runtime == "lxd" {
+        let (project, name) = target
+            .split_once('/')
+            .ok_or("LXD target must be project/name")?;
+        if [project, name].iter().any(|part| {
+            part.is_empty()
+                || part.starts_with('-')
+                || !part
+                    .chars()
+                    .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_' || c == '.')
+        }) {
+            return Err("invalid local LXD project/name".into());
+        }
+        Ok((
+            "lxc".into(),
+            vec![
+                action.into(),
+                "--project".into(),
+                project.into(),
+                "--".into(),
+                format!("local:{name}"),
+            ],
+        ))
+    } else if matches!(runtime, "docker" | "podman" | "nerdctl") {
+        Ok((
+            runtime.into(),
+            vec![action.into(), "--".into(), target.into()],
+        ))
+    } else {
+        Err("unsupported runtime".into())
+    }
 }
 
 fn first_string(value: &Value, keys: &[&str]) -> Option<String> {
@@ -200,7 +584,7 @@ pub(crate) fn normalize_state(raw: &str) -> String {
     if lower.starts_with("up") || lower == "running" {
         return "running".into();
     }
-    if lower.contains("paused") {
+    if lower.contains("paused") || lower == "frozen" {
         return "paused".into();
     }
     if lower.contains("restarting") {
@@ -228,6 +612,18 @@ pub(crate) fn normalize_state(raw: &str) -> String {
         .to_owned()
 }
 
+fn read_bounded(pipe: impl Read) -> Result<String, String> {
+    const MAX: u64 = 8 * 1024 * 1024;
+    let mut data = Vec::new();
+    pipe.take(MAX + 1)
+        .read_to_end(&mut data)
+        .map_err(|error| error.to_string())?;
+    if data.len() as u64 > MAX {
+        return Err("runtime output exceeded 8 MiB".into());
+    }
+    String::from_utf8(data).map_err(|error| error.to_string())
+}
+
 fn run_text(program: &str, args: &[&str], timeout: Duration) -> Result<String, String> {
     let mut child = Command::new(program)
         .args(args)
@@ -236,26 +632,25 @@ fn run_text(program: &str, args: &[&str], timeout: Duration) -> Result<String, S
         .stderr(Stdio::piped())
         .spawn()
         .map_err(|error| error.to_string())?;
+    // Drain both pipes while the child runs: LXD JSON can exceed a pipe buffer.
+    let stdout = child.stdout.take().ok_or("missing stdout pipe")?;
+    let stderr = child.stderr.take().ok_or("missing stderr pipe")?;
+    let out_reader = thread::spawn(move || read_bounded(stdout));
+    let err_reader = thread::spawn(move || read_bounded(stderr));
     let started = Instant::now();
     loop {
         match child.try_wait() {
             Ok(Some(status)) => {
-                let mut stdout = String::new();
-                let mut stderr = String::new();
-                if let Some(mut pipe) = child.stdout.take() {
-                    let _ = pipe.read_to_string(&mut stdout);
-                }
-                if let Some(mut pipe) = child.stderr.take() {
-                    let _ = pipe.read_to_string(&mut stderr);
-                }
+                let stdout = out_reader.join().map_err(|_| "stdout reader failed")??;
+                let stderr = err_reader.join().map_err(|_| "stderr reader failed")??;
                 if status.success() {
                     return Ok(stdout);
                 }
-                let detail = stderr.trim();
-                if detail.is_empty() {
-                    return Err(format!("exit {status}"));
-                }
-                return Err(detail.to_owned());
+                return Err(if stderr.trim().is_empty() {
+                    format!("exit {status}")
+                } else {
+                    stderr.trim().to_owned()
+                });
             }
             Ok(None) if started.elapsed() >= timeout => {
                 let _ = child.kill();
@@ -263,7 +658,11 @@ fn run_text(program: &str, args: &[&str], timeout: Duration) -> Result<String, S
                 return Err(format!("timed out after {timeout:?}"));
             }
             Ok(None) => thread::sleep(Duration::from_millis(20)),
-            Err(error) => return Err(error.to_string()),
+            Err(error) => {
+                let _ = child.kill();
+                let _ = child.wait();
+                return Err(error.to_string());
+            }
         }
     }
 }
@@ -274,39 +673,9 @@ pub(crate) fn run_container_cli(
     target: &str,
     timeout: Duration,
 ) -> Result<(), String> {
-    let mut child = Command::new(runtime)
-        .args([action, "--", target])
-        .stdin(Stdio::null())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .map_err(|error| error.to_string())?;
-    let started = Instant::now();
-    loop {
-        match child.try_wait() {
-            Ok(Some(status)) => {
-                if status.success() {
-                    return Ok(());
-                }
-                let mut stderr = String::new();
-                if let Some(mut pipe) = child.stderr.take() {
-                    let _ = pipe.read_to_string(&mut stderr);
-                }
-                let detail = stderr.trim();
-                if detail.is_empty() {
-                    return Err(format!("{runtime} {action} failed: {status}"));
-                }
-                return Err(format!("{runtime} {action} failed: {detail}"));
-            }
-            Ok(None) if started.elapsed() >= timeout => {
-                let _ = child.kill();
-                let _ = child.wait();
-                return Err(format!("{runtime} {action} timed out after {timeout:?}"));
-            }
-            Ok(None) => thread::sleep(Duration::from_millis(20)),
-            Err(error) => return Err(error.to_string()),
-        }
-    }
+    let (program, args) = action_command(runtime, action, target)?;
+    let args: Vec<_> = args.iter().map(String::as_str).collect();
+    run_text(&program, &args, timeout).map(|_| ())
 }
 
 #[cfg(test)]
@@ -378,5 +747,176 @@ mod tests {
             normalize_state("Restarting (1) 5 seconds ago"),
             "restarting"
         );
+    }
+}
+
+#[cfg(test)]
+mod lxd_tests {
+    use super::*;
+
+    #[test]
+    fn inventory_preserves_kind_project_and_duplicate_names() {
+        let rows = parse_lxd_list(r#"[
+            {"name":"runner","project":"default","type":"virtual-machine","status":"Running","config":{"image.description":"Ubuntu"}},
+            {"name":"runner","project":"test","type":"container","status":"Frozen","config":{}}
+        ]"#).unwrap();
+        assert_eq!(rows[0].id, "default/runner");
+        assert_eq!(rows[0].instance_type.as_deref(), Some("virtual-machine"));
+        assert_eq!(rows[1].id, "test/runner");
+        assert_eq!(rows[1].state, "paused");
+        assert!(parse_lxd_list("{}").is_err());
+        assert!(parse_lxd_list("[{\"status\":\"Running\"}]").is_err());
+    }
+
+    #[test]
+    fn actions_are_local_project_scoped_and_never_forced() {
+        let (program, args) = action_command("lxd", "stop", "build/runner").unwrap();
+        assert_eq!(program, "lxc");
+        assert_eq!(args, ["stop", "--project", "build", "--", "local:runner"]);
+        for target in [
+            "runner",
+            "default/remote:runner",
+            "default/-all",
+            "default/a/b",
+            "/runner",
+        ] {
+            assert!(action_command("lxd", "restart", target).is_err());
+        }
+        assert!(action_command("lxd", "delete", "default/runner").is_err());
+    }
+
+    #[test]
+    fn large_cli_output_is_drained_without_deadlock() {
+        let output = run_text(
+            "sh",
+            &["-c", "head -c 200000 /dev/zero | tr '\\000' x"],
+            Duration::from_secs(2),
+        )
+        .unwrap();
+        assert_eq!(output.len(), 200000);
+    }
+}
+
+#[cfg(test)]
+mod resource_tests {
+    use super::*;
+
+    #[test]
+    fn lxd_inherited_limits_and_zero_vm_disk_placeholder() {
+        let value = serde_json::json!({"type":"virtual-machine", "config":{}, "expanded_config":{"limits.cpu":"4", "limits.memory":"12GiB"}, "expanded_devices":{"root":{"type":"disk", "path":"/", "size":"40GiB", "pool":"runner-pool"}}, "state":{"memory":{"usage":12345}, "cpu":{"usage":5000000000_u64}, "disk":{"root":{"usage":0, "total":42949672960_u64}}}});
+        let r = lxd_resources(&value);
+        assert_eq!(r.cpu_limit.as_deref(), Some("4"));
+        assert_eq!(r.memory_limit.as_deref(), Some("12GiB"));
+        assert_eq!(r.root_disk_limit.as_deref(), Some("40GiB"));
+        assert_eq!(r.storage_pool.as_deref(), Some("runner-pool"));
+        assert_eq!(r.memory_usage_bytes, Some(12345));
+        assert_eq!(r.cpu_usage_ns, Some(5000000000));
+        assert_eq!(r.root_disk_capacity_bytes, Some(42949672960));
+        assert_eq!(r.root_disk_usage_bytes, None);
+        let stopped =
+            lxd_resources(&serde_json::json!({"type":"container", "config":{}, "state":null}));
+        assert_eq!(stopped.memory_usage_bytes, None);
+    }
+
+    #[test]
+    fn docker_podman_and_nerdctl_compatible_allocations() {
+        let docker = oci_resources(
+            &serde_json::json!({"HostConfig":{"NanoCpus":2000000000_u64,"CpusetCpus":"0-3","Memory":1073741824_u64,"StorageOpt":{"size":"10G"}},"SizeRw":1234,"Mounts":[{"Name":"data","Destination":"/data","RW":false}]}),
+        );
+        assert_eq!(docker.cpu_limit.as_deref(), Some("2.00 CPUs; set 0-3"));
+        assert_eq!(docker.memory_limit.as_deref(), Some("1.0GiB"));
+        assert_eq!(docker.root_disk_limit.as_deref(), Some("10G"));
+        assert_eq!(docker.root_disk_usage_bytes, Some(1234));
+        assert_eq!(docker.mounts, ["data -> /data (read-only)"]);
+        let quota = oci_resources(
+            &serde_json::json!({"HostConfig":{"CpuQuota":150000,"CpuPeriod":100000,"Memory":0}}),
+        );
+        assert_eq!(quota.cpu_limit.as_deref(), Some("1.50 CPUs"));
+        assert!(quota.memory_limit.unwrap().contains("no configured limit"));
+        let shared = oci_resources(&serde_json::json!({"HostConfig":{"CpuQuota":-1,"Memory":0}}));
+        assert!(shared.cpu_limit.unwrap().contains("no configured limit"));
+        let unknown = oci_resources(&serde_json::json!({}));
+        assert_eq!(unknown.cpu_limit, None);
+        assert_eq!(unknown.memory_limit, None);
+    }
+
+    #[test]
+    fn lxd_network_counts_attached_nics_without_guest_bridge_double_counting() {
+        let r = lxd_resources(&serde_json::json!({
+            "expanded_devices":{"eth0":{"type":"nic","name":"eth0"}},
+            "state":{"processes":25,"network":{
+                "enp5s0":{"host_name":"mac-test", "counters":{"bytes_received":1000,"bytes_sent":2000}},
+                "docker0":{"host_name":"", "counters":{"bytes_received":9000,"bytes_sent":9000}},
+                "lo":{"counters":{"bytes_received":8000,"bytes_sent":8000}}
+            }}
+        }));
+        assert_eq!(
+            (r.network_rx_bytes, r.network_tx_bytes),
+            (Some(1000), Some(2000))
+        );
+        assert_eq!(r.process_count, Some(25));
+        assert_eq!(r.disk_read_bytes, None);
+        let r = lxd_resources(&serde_json::json!({"state":{"network":{}}}));
+        assert_eq!(r.network_rx_bytes, None);
+    }
+
+    #[test]
+    fn oci_live_cpu_memory_network_and_io_preserve_unknown_values() {
+        for cpu_key in ["CPUPerc", "CPU", "CPUPercent"] {
+            let mut value = serde_json::json!({"MemUsage":"512MiB / 8GiB", "NetIO":"2MB / 3MB", "BlockIO":"4MiB / 0B", "PIDs":"12"});
+            value[cpu_key] = Value::String("201.5%".into());
+            let mut r = ContainerResources::default();
+            apply_oci_usage(&mut r, &value);
+            assert_eq!(r.cpu_usage_percent.as_deref(), Some("201.5%"));
+            assert_eq!(r.memory_usage_bytes, Some(536870912));
+            assert_eq!(
+                (r.network_rx_bytes, r.network_tx_bytes),
+                (Some(2000000), Some(3000000))
+            );
+            assert_eq!(
+                (r.disk_read_bytes, r.disk_write_bytes),
+                (Some(4194304), Some(0))
+            );
+            assert_eq!(r.memory_limit, None);
+            assert_eq!(r.process_count, Some(12));
+        }
+        let mut r = ContainerResources::default();
+        apply_oci_usage(&mut r, &serde_json::json!({"NetIO":"--", "BlockIO":"N/A"}));
+        assert_eq!(r.network_rx_bytes, None);
+        assert_eq!(r.disk_read_bytes, None);
+        let old: ContainerResources = serde_json::from_str("{}").unwrap();
+        assert_eq!(old.network_rx_bytes, None);
+    }
+
+    #[test]
+    fn podman_documented_json_formats_match_the_container_and_report_counters() {
+        for (net, block) in [("netio", "blocki"), ("net_io", "block_io")] {
+            let mut value = serde_json::json!({"id":"abc123", "cpu_percent":"150.00%", "mem_usage":"1GB / 8GB", "pids":"5"});
+            value[net] = Value::String("1MB / 2MB".into());
+            value[block] = Value::String("3MB / 4MB".into());
+            assert!(stats_row_matches(&value, "abc123abcdef"));
+            assert!(!stats_row_matches(&value, "different"));
+            let mut r = ContainerResources::default();
+            apply_oci_usage(&mut r, &value);
+            assert_eq!(r.cpu_usage_percent.as_deref(), Some("150.00%"));
+            assert_eq!(r.memory_usage_bytes, Some(1000000000));
+            assert_eq!(r.network_rx_bytes, Some(1000000));
+            assert_eq!(r.disk_write_bytes, Some(4000000));
+            assert_eq!(r.process_count, Some(5));
+        }
+    }
+
+    #[test]
+    fn runtime_usage_units_and_json_formats() {
+        assert_eq!(parse_usage_bytes("1.5GiB"), Some(1610612736));
+        assert_eq!(parse_usage_bytes("12.5 MB"), Some(12500000));
+        assert_eq!(parse_usage_bytes("0B"), Some(0));
+        assert_eq!(parse_usage_bytes("--"), None);
+        assert_eq!(json_rows("[{\"ID\":\"a\"}]").unwrap().len(), 1);
+        assert_eq!(
+            json_rows("{\"ID\":\"a\"}\n{\"ID\":\"b\"}").unwrap().len(),
+            2
+        );
+        assert!(json_rows("not json").is_err());
     }
 }

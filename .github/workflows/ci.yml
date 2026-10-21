@@ -27,7 +27,7 @@ jobs:
         run: rustup show active-toolchain
       - name: Verify committed lockfile
         run: |
-          cargo generate-lockfile
+          cargo metadata --locked --format-version 1 > /dev/null
           git diff --exit-code -- Cargo.lock
 
   quality:

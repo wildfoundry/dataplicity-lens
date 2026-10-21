@@ -12,8 +12,9 @@ pub use finding::{Evidence, Finding, Severity};
 pub use snapshot::{
     Accelerator, AccountInfo, AiDiagnostics, AiRuntime, AiUnavailableField, AiUnavailableReason,
     BlockDevice, BuildInfo, CellularModem, CellularSim, CertificateInfo, ClockContext, Container,
-    DeletedOpenFile, DnsContext, Filesystem, GroupInfo, HardwareDevice, HardwareIdentity, Host,
-    Interface, IoCounters, LoadAverage, LogEntry, LogSource, Memory, Metric, MetricPoint,
-    MetricSeries, ModelStore, Mount, Process, ProcessCounts, ProcessState, RaspberryPiStatus,
-    Route, SchemaVersion, Service, Snapshot, Socket, TemperatureSensor, Timestamp,
+    ContainerResources, DeletedOpenFile, DnsContext, Filesystem, GroupInfo, HardwareDevice,
+    HardwareIdentity, Host, Interface, IoCounters, LoadAverage, LogEntry, LogSource, Memory,
+    Metric, MetricPoint, MetricSeries, ModelStore, Mount, Process, ProcessCounts, ProcessState,
+    RaspberryPiStatus, Route, SchemaVersion, Service, Snapshot, Socket, TemperatureSensor,
+    Timestamp,
 };
