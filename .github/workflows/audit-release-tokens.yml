@@ -9,7 +9,7 @@ permissions:
 jobs:
   audit:
     name: Verify release-bot token owners
-    runs-on: ${{ github.event.pull_request.head.repo.fork && 'ubuntu-latest' || vars.GENERAL_RUNNER || 'wf-general' }}
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:

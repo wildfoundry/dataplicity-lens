@@ -24,7 +24,7 @@ concurrency:
 jobs:
   build:
     name: Validate and package site
-    runs-on: ${{ github.event.pull_request.head.repo.fork && 'ubuntu-latest' || vars.GENERAL_RUNNER || 'wf-general' }}
+    runs-on: ubuntu-24.04
     permissions:
       contents: read
       pages: write
@@ -49,7 +49,7 @@ jobs:
     name: Deploy site
     if: github.event_name != 'pull_request'
     needs: build
-    runs-on: ${{ github.event.pull_request.head.repo.fork && 'ubuntu-latest' || vars.GENERAL_RUNNER || 'wf-general' }}
+    runs-on: ubuntu-24.04
     permissions:
       pages: write
       id-token: write
