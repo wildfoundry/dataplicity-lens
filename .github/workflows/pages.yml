@@ -35,7 +35,8 @@ jobs:
       - name: Validate HTML and local links
         run: python3 scripts/check-pages.py site
       - name: Validate JavaScript syntax
-        run: node --check site/app.js
+        run: |
+          for script in site/*.js; do node --check "$script"; done
       - name: Configure GitHub Pages
         if: github.event_name != 'pull_request'
         uses: actions/configure-pages@45bfe0192ca1faeb007ade9deae92b16b8254a0d
