@@ -1357,3 +1357,12 @@ figcaption {
     font-size: 22px;
   }
 }
+
+.brand-wordmark>sup {
+  display: inline-block;
+  font-size: .33em;
+  vertical-align: super;
+  line-height: 0;
+  letter-spacing: 0;
+  margin-left: .12em;
+}
