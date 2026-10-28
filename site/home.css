@@ -1335,29 +1335,25 @@ figcaption {
     font-size: 12px;
   }
 }
-/* One endorsed wordmark, aligned on a shared left edge. */
-.brand .brand-lockup {
-  display: flex;
-  flex-direction: column;
-  align-items: flex-start;
-  gap: 1px;
-  min-width: 100px;
-  padding-block: 9px;
-}
-.brand .brand-lockup img {
-  width: 100px;
-  height: 19px;
-  object-fit: cover;
-  object-position: left center;
-  margin-left: -7px;
-}
-.brand .brand-product {
+/* A single wordmark: one typeface, one weight, one baseline. */
+.brand-wordmark {
   font-family: var(--sans);
-  font-size: 32px;
-  font-weight: 600;
-  line-height: .95;
-  letter-spacing: -.035em;
+  font-size: 27px;
+  font-weight: 650;
+  line-height: 1;
+  letter-spacing: -.04em;
+  white-space: nowrap;
 }
-.brand-product>span {
+.brand-wordmark>span {
   color: var(--purple);
+}
+@media(max-width:500px) {
+  .brand-wordmark {
+    font-size: 23px;
+  }
+}
+@media(max-width:360px) {
+  .brand-wordmark {
+    font-size: 22px;
+  }
 }
