@@ -1379,6 +1379,7 @@ fn cockpit_loop(
     let mut snapshot = SystemSnapshot::empty(hostname());
     let mut receiver = spawn_cockpit_collection(since.clone(), log_files.clone());
     let mut loading = true;
+    let mut inventory_ready = false;
     let mut cpu_activity = CpuActivity::default();
     let mut network_activity = NetworkActivity::default();
     let (live_request, live_receiver) = spawn_cockpit_live_sampler();
@@ -1389,6 +1390,7 @@ fn cockpit_loop(
     let mut search_query: Option<String> = None;
     let mut diagnostic = DiagnosticShell::new();
     let mut next_clock = Instant::now() + Duration::from_secs(60);
+    let mut next_inventory = Instant::now() + Duration::from_secs(10);
     let mut redraw = true;
     loop {
         if Instant::now() >= next_clock {
@@ -1442,7 +1444,13 @@ fn cockpit_loop(
         if !live_sample_in_flight && Instant::now() >= next_live_sample {
             live_sample_in_flight = live_request.send(()).is_ok();
         }
+        if !loading && Instant::now() >= next_inventory {
+            receiver = spawn_cockpit_collection(since.clone(), log_files.clone());
+            loading = true;
+        }
         match receiver.try_recv() {
+            // Keep the last complete inventory while periodic enrichment runs.
+            Ok(update) if update.loading && inventory_ready => {}
             Ok(update) => {
                 snapshot = update.snapshot;
                 if let Some(live) = &latest_live_snapshot {
@@ -1450,6 +1458,10 @@ fn cockpit_loop(
                     snapshot.processes.clone_from(&live.processes);
                 }
                 loading = update.loading;
+                if !loading {
+                    inventory_ready = true;
+                    next_inventory = Instant::now() + Duration::from_secs(10);
+                }
                 redraw = true;
             }
             Err(TryRecvError::Disconnected) if loading => {
@@ -1457,6 +1469,7 @@ fn cockpit_loop(
                     .collection_warnings
                     .push("background collection stopped unexpectedly".into());
                 loading = false;
+                next_inventory = Instant::now() + Duration::from_secs(10);
                 redraw = true;
             }
             Err(TryRecvError::Empty | TryRecvError::Disconnected) => {}
@@ -1469,7 +1482,7 @@ fn cockpit_loop(
                 &cpu_activity,
                 &network_activity,
                 selected,
-                loading,
+                loading && !inventory_ready,
                 rows,
                 stdout,
             )?;
@@ -1552,6 +1565,7 @@ fn cockpit_loop(
                 KeyCode::Char('r') if !loading => {
                     snapshot = SystemSnapshot::empty(hostname());
                     receiver = spawn_cockpit_collection(since.clone(), log_files.clone());
+                    inventory_ready = false;
                     loading = true;
                     redraw = true;
                 }
@@ -1629,6 +1643,9 @@ fn spawn_cockpit_live_sampler() -> (
     (request_sender, sample_receiver)
 }
 
+// A terminal dimension is u16. Keep enough samples for any viewport, including a later resize.
+const ACTIVITY_HISTORY_CAPACITY: usize = u16::MAX as usize;
+
 #[derive(Debug, Default)]
 struct CpuActivity {
     previous_total_ticks: Option<u64>,
@@ -1652,7 +1669,7 @@ impl CpuActivity {
             push_bounded(
                 &mut self.history,
                 snapshot.host.cpu_percent.clamp(0.0, 100.0).round() as u64,
-                60,
+                ACTIVITY_HISTORY_CAPACITY,
             );
 
             #[cfg(target_os = "linux")]
@@ -1737,8 +1754,8 @@ impl NetworkActivity {
                 total_tx = total_tx.saturating_add(tx_rate);
             }
         }
-        push_bounded(&mut self.rx_history, total_rx, 60);
-        push_bounded(&mut self.tx_history, total_tx, 60);
+        push_bounded(&mut self.rx_history, total_rx, ACTIVITY_HISTORY_CAPACITY);
+        push_bounded(&mut self.tx_history, total_tx, ACTIVITY_HISTORY_CAPACITY);
         self.previous = current;
         self.last_sample = Some(now);
     }
@@ -2481,7 +2498,7 @@ fn render_cockpit_activity(
     }
     let colour = terminal_colour_enabled();
     let glyphs = glyphs();
-    let chart_width = width.saturating_sub(44).div_ceil(2).clamp(8, 32);
+    let chart_width = width.saturating_sub(44).div_ceil(2).max(8);
     let cpu_chart = percentage_sparkline(&cpu_activity.history, chart_width);
     let cpu_chart = if cpu_chart.is_empty() {
         "waiting".to_owned()
@@ -2589,16 +2606,26 @@ fn render_wide_cockpit_activity(
     let available = width.saturating_sub(4 + gap);
     let cpu_width = available / 2;
     let network_width = available.saturating_sub(cpu_width);
-    let cpu_graph_width = cpu_width.saturating_sub(11);
-    let network_graph_width = network_width.saturating_sub(12);
+    let cpu_graph_width = cpu_width.saturating_sub(9);
+    let network_graph_width = network_width.saturating_sub(11);
 
     let glyphs = glyphs();
     let separator = glyphs.separator;
     let axis = glyphs.chart_axis;
-    let cpu_peak = cpu_activity.history.iter().copied().max().unwrap_or(0);
+    let cpu_peak = cpu_activity
+        .history
+        .iter()
+        .rev()
+        .take(cpu_graph_width)
+        .copied()
+        .max()
+        .unwrap_or(0);
     let cpu_graph = block_chart_rows(&cpu_activity.history, cpu_graph_width, 100, 4);
     let cpu_lines = panel_lines(
-        &format!("CPU PULSE {separator} {} LIVE {separator} 60s", glyphs.live),
+        &format!(
+            "CPU PULSE {separator} {} LIVE {separator} {cpu_graph_width} samples",
+            glyphs.live
+        ),
         &[
             format!(
                 "{:>5.1}% current  {separator}  {:>3}% peak  {separator}  {} logical CPU{}",
@@ -2623,12 +2650,16 @@ fn render_wide_cockpit_activity(
     let rx_peak = network_activity
         .rx_history
         .iter()
+        .rev()
+        .take(network_graph_width)
         .copied()
         .max()
         .unwrap_or(0);
     let tx_peak = network_activity
         .tx_history
         .iter()
+        .rev()
+        .take(network_graph_width)
         .copied()
         .max()
         .unwrap_or(0);
@@ -2646,7 +2677,7 @@ fn render_wide_cockpit_activity(
     );
     let network_lines = panel_lines(
         &format!(
-            "NETWORK FLOW {separator} {} LIVE {separator} 60s",
+            "NETWORK FLOW {separator} {} LIVE {separator} {network_graph_width} samples",
             glyphs.live
         ),
         &[
@@ -5558,6 +5589,7 @@ fn specialist_loop(view: View, args: &ViewArgs, stdout: &mut impl Write) -> Resu
     let mut network_activity = NetworkActivity::default();
     let mut container_monitor = ContainerMonitor::default();
     let mut container_poll_pending = false;
+    let mut next_inventory = Instant::now() + Duration::from_secs(10);
     let mut next_container_sample = Instant::now();
     let mut last_container_sample: Option<Instant> = None;
     let mut activity_receiver: Option<Receiver<Vec<(String, u64, u64)>>> = None;
@@ -5628,6 +5660,15 @@ fn specialist_loop(view: View, args: &ViewArgs, stdout: &mut impl Write) -> Resu
             receiver = spawn_specialist_collection(view, active_args.clone());
             container_poll_pending = true;
         }
+        if view != View::Containers
+            && !loading
+            && service_action.is_none()
+            && container_action.is_none()
+            && Instant::now() >= next_inventory
+        {
+            receiver = spawn_specialist_collection(view, active_args.clone());
+            loading = true;
+        }
         match receiver.try_recv() {
             Ok(mut update) => {
                 if view == View::Containers {
@@ -5656,6 +5697,9 @@ fn specialist_loop(view: View, args: &ViewArgs, stdout: &mut impl Write) -> Resu
                     network_activity.observe(&snapshot.interfaces, Instant::now());
                 }
                 loading = update.loading_more;
+                if !loading {
+                    next_inventory = Instant::now() + Duration::from_secs(10);
+                }
                 status = if view == View::Containers {
                     if snapshot.collection_warnings.is_empty() {
                         "Live metrics | ~2s sampling".into()
@@ -5669,6 +5713,7 @@ fn specialist_loop(view: View, args: &ViewArgs, stdout: &mut impl Write) -> Resu
             }
             Err(TryRecvError::Disconnected) if loading || container_poll_pending => {
                 container_poll_pending = false;
+                next_inventory = Instant::now() + Duration::from_secs(10);
                 container_monitor.gap();
                 next_container_sample = Instant::now() + Duration::from_secs(2);
                 status = "STALE: collection stopped unexpectedly".into();
@@ -7807,14 +7852,24 @@ fn parse_block_device(line: &str) -> Option<BlockDevice> {
 
 #[cfg(target_os = "linux")]
 fn collect_interfaces(warnings: &mut Vec<String>) -> Vec<Interface> {
-    let mut interfaces = if let Some(text) = command("ip", &["-brief", "address", "show"], warnings)
-    {
-        text.lines().filter_map(parse_interface).collect()
-    } else {
-        collect_linux_sysfs_interfaces(warnings)
-    };
+    let mut interfaces: Vec<Interface> =
+        if let Some(text) = command("ip", &["-brief", "address", "show"], warnings) {
+            text.lines().filter_map(parse_interface).collect()
+        } else {
+            collect_linux_sysfs_interfaces(warnings)
+        };
+    for interface in &mut interfaces {
+        interface.idle_bridge =
+            linux_idle_bridge(&PathBuf::from("/sys/class/net").join(&interface.name));
+    }
     apply_interface_counters(&mut interfaces, collect_interface_counters(warnings));
     interfaces
+}
+
+#[cfg(any(target_os = "linux", test))]
+fn linux_idle_bridge(path: &Path) -> bool {
+    path.join("bridge").is_dir()
+        && std::fs::read_dir(path.join("brif")).is_ok_and(|mut ports| ports.next().is_none())
 }
 
 #[cfg(target_os = "linux")]
@@ -7841,6 +7896,7 @@ fn collect_linux_sysfs_interfaces(warnings: &mut Vec<String>) -> Vec<Interface> 
             Some(Interface {
                 name,
                 state,
+                idle_bridge: false,
                 addresses: Vec::new(),
                 rx_bytes: None,
                 tx_bytes: None,
@@ -7874,6 +7930,7 @@ fn parse_ifconfig(text: &str) -> Vec<Interface> {
                         "DOWN"
                     }
                     .into(),
+                    idle_bridge: false,
                     addresses: Vec::new(),
                     rx_bytes: None,
                     tx_bytes: None,
@@ -7897,6 +7954,7 @@ fn parse_interface(line: &str) -> Option<Interface> {
     Some(Interface {
         name: fields.next()?.to_owned(),
         state: fields.next()?.to_owned(),
+        idle_bridge: false,
         addresses: fields.map(str::to_owned).collect(),
         rx_bytes: None,
         tx_bytes: None,
@@ -8531,7 +8589,13 @@ fn diagnose(snapshot: &SystemSnapshot) -> Vec<SystemFinding> {
         });
     }
     for interface in snapshot.interfaces.iter().filter(|interface| {
-        actionable_down_interface(interface) && interface.state.eq_ignore_ascii_case("down")
+        actionable_down_interface(interface)
+            && interface.state.eq_ignore_ascii_case("down")
+            && (!interface.idle_bridge
+                || snapshot.routes.iter().any(|route| {
+                    route.destination == "default"
+                        && route.interface.as_deref() == Some(interface.name.as_str())
+                }))
     }) {
         findings.push(SystemFinding {
             id: format!("net.interface-down.{}", interface.name),
@@ -9946,6 +10010,7 @@ pub fn demo_snapshot() -> SystemSnapshot {
         mountpoints: vec!["/".into()],
     }];
     snapshot.interfaces = vec![Interface {
+        idle_bridge: false,
         name: "eth0".into(),
         state: "UP".into(),
         addresses: vec!["192.0.2.40/24".into()],
@@ -10649,6 +10714,7 @@ mod tests {
             inode_used: None,
         });
         snapshot.interfaces.push(Interface {
+            idle_bridge: false,
             name: "gif0".into(),
             state: "DOWN".into(),
             addresses: Vec::new(),
@@ -10975,6 +11041,86 @@ mod tests {
     }
 
     #[test]
+    fn activity_history_fills_wide_viewports_and_scrolls_at_the_edge() {
+        let mut snapshot = demo_snapshot();
+        let mut cpu = CpuActivity::default();
+        let mut network = NetworkActivity::default();
+        let start = Instant::now();
+        for sample in 0..=180 {
+            snapshot.host.total_cpu_ticks = 1_000 + sample * 100;
+            snapshot.host.idle_cpu_ticks = 500 + sample * 50;
+            snapshot.interfaces[0].rx_bytes = Some(sample * 1024);
+            snapshot.interfaces[0].tx_bytes = Some(sample * 512);
+            cpu.observe(&mut snapshot);
+            network.observe(&snapshot.interfaces, start + Duration::from_secs(sample));
+        }
+        assert_eq!(cpu.history.len(), 180);
+        assert_eq!(network.rx_history.len(), 180);
+        for width in [71, 138, 180] {
+            let rows = block_chart_rows(&cpu.history, width, 100, 4);
+            assert_eq!(rows[3].chars().count(), width);
+            assert!(!rows[3].contains(' '), "history should fill width {width}");
+        }
+        let values = VecDeque::from([100, 0, 0, 100, 0]);
+        let rows = block_chart_rows(&values, 3, 100, 1);
+        assert_eq!(rows[0], "▁█▁"); // Only the three newest samples remain visible.
+    }
+
+    #[test]
+    fn health_ignores_idle_bridges_but_reports_down_uplinks() {
+        let mut snapshot = SystemSnapshot::empty("runner");
+        snapshot.interfaces.push(Interface {
+            name: "virbr0".into(),
+            state: "DOWN".into(),
+            addresses: vec!["192.168.122.1/24".into()],
+            idle_bridge: true,
+            rx_bytes: Some(0),
+            tx_bytes: Some(0),
+        });
+        let has_down = |snapshot: &SystemSnapshot| {
+            diagnose(snapshot)
+                .iter()
+                .any(|finding| finding.id.starts_with("net.interface-down"))
+        };
+        assert!(!has_down(&snapshot));
+        snapshot.routes.push(Route {
+            id: "default".into(),
+            destination: "default".into(),
+            gateway: None,
+            interface: Some("virbr0".into()),
+            raw: String::new(),
+        });
+        assert!(
+            has_down(&snapshot),
+            "a default-route bridge must still alert"
+        );
+        snapshot.routes.clear();
+        snapshot.interfaces[0].idle_bridge = false;
+        assert!(
+            has_down(&snapshot),
+            "an addressed down physical link must still alert"
+        );
+        snapshot.interfaces[0].addresses.clear();
+        assert!(
+            !has_down(&snapshot),
+            "unused unplugged ports must not alert"
+        );
+    }
+
+    #[test]
+    fn detects_idle_bridges_from_membership_not_interface_names() {
+        let root = env::temp_dir().join(format!("lens-bridge-test-{}", std::process::id()));
+        std::fs::create_dir_all(root.join("bridge")).unwrap();
+        std::fs::create_dir_all(root.join("brif")).unwrap();
+        assert!(linux_idle_bridge(&root));
+        std::fs::write(root.join("brif/vnet0"), "").unwrap();
+        assert!(!linux_idle_bridge(&root));
+        std::fs::remove_dir_all(root.join("bridge")).unwrap();
+        assert!(!linux_idle_bridge(&root));
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
     fn cockpit_activity_renders_cpu_and_network_histories() {
         let snapshot = demo_snapshot();
         let cpu_activity = CpuActivity {
@@ -11000,8 +11146,8 @@ mod tests {
         )
         .expect("cockpit activity");
         let output = String::from_utf8(output).expect("UTF-8");
-        assert!(output.contains("CPU PULSE · ● LIVE · 60s"));
-        assert!(output.contains("NETWORK FLOW · ● LIVE · 60s"));
+        assert!(output.contains("CPU PULSE · ● LIVE · 71 samples"));
+        assert!(output.contains("NETWORK FLOW · ● LIVE · 69 samples"));
         assert!(output.contains("logical CPU"));
         assert!(output.contains("2.0KiB/s"));
         assert!(output.contains("1.0KiB/s"));

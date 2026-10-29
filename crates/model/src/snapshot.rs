@@ -312,6 +312,9 @@ pub struct BlockDevice {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Interface {
+    /// A bridge with no attached ports is expected to have no carrier.
+    #[serde(default)]
+    pub idle_bridge: bool,
     pub name: String,
     pub state: String,
     pub addresses: Vec<String>,

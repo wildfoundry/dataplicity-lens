@@ -29,6 +29,17 @@ Interactive views share the main controls: arrows or `j`/`k` move, `Enter` opens
 back, `/` searches, `r` refreshes, `!` opens a local diagnostic shell, `?` shows contextual help and
 `q` quits. The layout adds useful columns and rows as the terminal grows.
 
+Cockpit CPU and network charts collect roughly once a second, with one sample per column.
+History fills the chart as samples arrive, then scrolls at its left edge; widening the terminal
+reveals retained older samples. Chart peaks describe the visible window. Cockpit summaries and
+specialist inventories refresh in the background ten seconds after each completed collection.
+Container details retain their two-second sampling interval. Slow collectors extend these intervals;
+automatic inventory collections never overlap.
+
+A virtual bridge with no attached ports normally has no carrier. Lens keeps it in the network
+inventory but does not warn that it is down unless it carries the default route. Unaddressed,
+unused physical ports also do not generate interface-down warnings.
+
 Lens follows the terminal's own background and automatically selects a contrasting palette when the
 terminal publishes `COLORFGBG`. If a browser, serial console or terminal multiplexer does not report
 its background, start any command with `--theme light` or `--theme dark`. Set `LENS_THEME=light` or

@@ -87,7 +87,9 @@ degrees Celsius with optional driver-provided maximum and critical limits. `hard
 USB and serial inventory with stable paths and identifiers where the operating system exposes them.
 Each interface can include cumulative `rx_bytes` and `tx_bytes` counters. The interactive network
 view derives current rates and history charts from successive samples; one-shot JSON keeps the source
-counters so consumers can calculate deltas over their own sampling interval.
+counters so consumers can calculate deltas over their own sampling interval. The additive
+`idle_bridge` boolean defaults to false when absent. On Linux it indicates a kernel bridge with
+no attached ports, allowing health checks to distinguish expected lack of carrier from a failed link.
 `certificates` contains locally managed public certificates visible to the current user. Subject,
 issuer and expiry are populated when OpenSSL can inspect the file; Lens does not open private keys or
 enumerate the distribution's complete root CA catalogue.
