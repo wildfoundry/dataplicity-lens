@@ -8291,7 +8291,7 @@ fn collect_cellular_modem(path: &str, warnings: &mut Vec<String>) -> Option<Cell
 }
 
 #[cfg(target_os = "macos")]
-fn collect_cellular(_warnings: &mut Vec<String>) -> Vec<CellularModem> {
+fn collect_cellular(_warnings: &mut [String]) -> Vec<CellularModem> {
     Vec::new()
 }
 
