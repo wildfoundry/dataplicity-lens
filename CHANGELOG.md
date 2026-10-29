@@ -5,6 +5,22 @@ versioning once the first public release is tagged.
 
 ## [Unreleased]
 
+## [0.3.6] - 2026-10-29
+
+### Added
+
+- Support local LXD containers and virtual machines, including resource allocations and lifecycle
+  actions, alongside Docker, Podman and nerdctl.
+- Show live per-instance CPU, memory, network and disk activity with automatic container sampling.
+
+### Fixed
+
+- Let cockpit CPU and network histories fill the available chart width and scroll only at
+  the viewport edge; calculate peaks from visible samples.
+- Refresh cockpit summaries and specialist inventories automatically in the background,
+  retaining the last complete cockpit inventory while collecting its replacement.
+- Ignore carrier-down bridges with no attached ports unless they carry the default route.
+
 ## [0.3.5] - 2026-09-17
 
 ### Added

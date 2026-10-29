@@ -198,28 +198,28 @@ impl ContainerMonitor {
                 },
             )?;
         }
-        if rows >= 26 {
-            if let Some(r) = &container.resources {
-                let processes = r
-                    .process_count
-                    .map(|n| n.to_string())
-                    .unwrap_or_else(|| "not reported".into());
-                let used = r
-                    .root_disk_usage_bytes
-                    .map(human_bytes)
-                    .unwrap_or_else(|| "not reported".into());
-                line(
-                    out,
-                    &format!(
-                        "Processes: {processes} | {}: {used}",
-                        if container.runtime == "lxd" {
-                            "Root disk used"
-                        } else {
-                            "Writable layer"
-                        }
-                    ),
-                )?;
-            }
+        if rows >= 26
+            && let Some(r) = &container.resources
+        {
+            let processes = r
+                .process_count
+                .map(|n| n.to_string())
+                .unwrap_or_else(|| "not reported".into());
+            let used = r
+                .root_disk_usage_bytes
+                .map(human_bytes)
+                .unwrap_or_else(|| "not reported".into());
+            line(
+                out,
+                &format!(
+                    "Processes: {processes} | {}: {used}",
+                    if container.runtime == "lxd" {
+                        "Root disk used"
+                    } else {
+                        "Writable layer"
+                    }
+                ),
+            )?;
         }
         Ok(())
     }
