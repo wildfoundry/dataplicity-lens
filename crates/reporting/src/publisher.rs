@@ -1,5 +1,5 @@
 use crate::{
-    backoff::{Gate, Outcome, startup_delay},
+    backoff::{Gate, INTERVAL_HEADER, Outcome, startup_delay},
     buffer::{Ring, encode_batch},
     ipc, wait, wall_ms,
 };
@@ -247,6 +247,12 @@ fn send_upload(
     match response {
         Ok(response) => {
             let status = response.status().as_u16();
+            gate.observe_interval(
+                response
+                    .headers()
+                    .get(INTERVAL_HEADER)
+                    .and_then(|v| v.to_str().ok()),
+            );
             let outcome = gate.status(
                 status,
                 response
@@ -320,10 +326,17 @@ pub fn run(dir: PathBuf, pipe: PathBuf) -> Result<()> {
                 wait(&stop, Duration::from_millis(200));
                 continue;
             }
-            let batch = queue
-                .lock()
-                .map_err(|_| anyhow::anyhow!("report queue poisoned"))?
-                .batch(wall_ms(), Instant::now());
+            let batch = {
+                let mut queue = queue
+                    .lock()
+                    .map_err(|_| anyhow::anyhow!("report queue poisoned"))?;
+                if state.gate.interval_ms() > 60_000 {
+                    // A server slowdown reduces both request count and sample volume.
+                    queue.latest(wall_ms(), Instant::now())
+                } else {
+                    queue.batch(wall_ms(), Instant::now())
+                }
+            };
             if batch.is_empty() {
                 wait(&stop, Duration::from_millis(200));
                 continue;
@@ -366,7 +379,8 @@ pub fn status(dir: &Path) -> Result<()> {
         bail!("publisher halted; explicit credential/backend repair required");
     }
     println!(
-        "Registered. Next network attempt no earlier than {}.",
+        "Registered. Minimum upload interval {} seconds. Next network attempt no earlier than {}.",
+        state.gate.interval_ms() / 1000,
         state.gate.not_before_ms
     );
     Ok(())
@@ -493,9 +507,32 @@ mod tests {
         (format!("http://{address}/reports"), thread)
     }
     #[test]
+    fn actual_success_announces_four_hour_interval_without_reading_a_control_body() {
+        let (url, server) = mock_server(
+            "HTTP/1.1 201 Created\r\nLens-Report-Interval-Seconds: 14400\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
+        );
+        let local: ureq::Agent = ureq::Agent::config_builder()
+            .http_status_as_error(false)
+            .max_redirects(0)
+            .proxy(None)
+            .timeout_global(Some(Duration::from_secs(3)))
+            .build()
+            .into();
+        let mut gate = Gate::default();
+        let before = wall_ms();
+        gate.reserve_attempt(before);
+        assert_eq!(
+            send_upload(&local, &url, "fixture", b"{}", &mut gate),
+            Outcome::Accepted
+        );
+        assert_eq!(gate.interval_seconds, 14400);
+        assert!(!gate.ready(before + 14_400_000 - 1));
+        assert_eq!(server.join().expect("server"), 1);
+    }
+    #[test]
     fn actual_429_is_one_request_and_long_retry_after_is_not_capped() {
         let (url, server) = mock_server(
-            "HTTP/1.1 429 Too Many Requests\r\nRetry-After: 7200\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
+            "HTTP/1.1 429 Too Many Requests\r\nLens-Report-Interval-Seconds: 120\r\nRetry-After: 7200\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
         );
         // Cleartext is confined to this local transport test. Production always uses agent().
         let local: ureq::Agent = ureq::Agent::config_builder()
@@ -513,6 +550,7 @@ mod tests {
             Outcome::Retry
         );
         assert!(gate.not_before_ms >= before + 7_200_000);
+        assert_eq!(gate.interval_seconds, 120);
         for tick in 0..7200 {
             assert!(!gate.ready(before + tick * 1000));
         }

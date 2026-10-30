@@ -33,7 +33,21 @@ impl Ring {
         if self.entries.iter().any(|e| e.id == id) {
             return Ok(());
         }
-        while self.bytes + bytes.len() > BUFFER_BYTES || self.entries.len() >= BUFFER_RECORDS {
+        self.bytes += bytes.len();
+        // FIFO reconnection replays newest first: arrival order is not observation order.
+        let position = self
+            .entries
+            .partition_point(|entry| entry.expires_at_ms <= report.expires_at_ms);
+        self.entries.insert(
+            position,
+            Entry {
+                id,
+                expires_at_ms: report.expires_at_ms,
+                bytes: Arc::new(bytes),
+                deadline: mono + Duration::from_millis((report.expires_at_ms - now).min(TTL_MS)),
+            },
+        );
+        while self.bytes > BUFFER_BYTES || self.entries.len() > BUFFER_RECORDS {
             if let Some(old) = self.entries.pop_front() {
                 self.bytes -= old.bytes.len();
                 self.dropped = self.dropped.saturating_add(1);
@@ -41,13 +55,6 @@ impl Ring {
                 break;
             }
         }
-        self.bytes += bytes.len();
-        self.entries.push_back(Entry {
-            id,
-            expires_at_ms: report.expires_at_ms,
-            bytes: Arc::new(bytes),
-            deadline: mono + Duration::from_millis((report.expires_at_ms - now).min(TTL_MS)),
-        });
         Ok(())
     }
     pub fn prune(&mut self, now: u64, mono: Instant) {
@@ -57,6 +64,10 @@ impl Ring {
     }
     pub fn entries(&self) -> impl DoubleEndedIterator<Item = &Entry> {
         self.entries.iter()
+    }
+    pub fn latest(&mut self, now: u64, mono: Instant) -> Vec<Entry> {
+        self.prune(now, mono);
+        self.entries.back().cloned().into_iter().collect()
     }
     pub fn batch(&mut self, now: u64, mono: Instant) -> Vec<Entry> {
         self.prune(now, mono);
@@ -97,6 +108,40 @@ pub fn encode_batch(entries: &[Entry]) -> Vec<u8> {
 mod tests {
     use super::*;
     use crate::protocol::fixture;
+    #[test]
+    fn newest_first_replay_never_replaces_current_state_with_older_arrivals() {
+        let mono = Instant::now();
+        let mut ring = Ring::default();
+        for seq in (1..=32).rev() {
+            ring.push(fixture(seq, 1000 + seq), 1000, mono)
+                .expect("replay");
+        }
+        ring.push(fixture(100, 999), 1000, mono)
+            .expect("older replay under pressure");
+        assert_eq!(ring.entries().count(), 32);
+        assert!(ring.latest(1000, mono)[0].id.ends_with(":32"));
+        let batch = ring.batch(1000, mono);
+        assert!(batch[0].id.ends_with(":32"));
+        assert!(batch[1].id.ends_with(":1"));
+    }
+    #[test]
+    fn slowed_publishing_sends_only_current_state_without_extending_expiry() {
+        let mut ring = Ring::default();
+        let mono = Instant::now();
+        for seq in 1..=30 {
+            ring.push(fixture(seq, 1000), 1000, mono).expect("sample");
+        }
+        let batch = ring.latest(1000, mono);
+        assert_eq!(batch.len(), 1);
+        assert!(batch[0].id.ends_with(":30"));
+        assert!(
+            ring.latest(
+                1000 + 4 * 60 * 60 * 1000,
+                mono + Duration::from_secs(4 * 60 * 60)
+            )
+            .is_empty()
+        );
+    }
     #[test]
     fn ring_wraps_and_never_keeps_expired_history_after_clock_rollback() {
         let mut ring = Ring::default();

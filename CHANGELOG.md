@@ -6,6 +6,8 @@ versioning once the first public release is tagged.
 ## [Unreleased]
 
 ### Added
+- Honour server-directed upload intervals from one minute to four hours, persisted across restarts.
+  Longer intervals publish only the newest sample and preserve stricter retry holds.
 - Add opt-in, separate non-root Linux collector/publisher services with one-way FIFO framing,
   bounded RAM-only 30-minute buffers, timed workers, minute cadence, restart-safe scheduling,
   uncapped Retry-After floors, jittered exponential backoff and paced recovery batches.

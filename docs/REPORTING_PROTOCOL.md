@@ -79,3 +79,24 @@ Atomic admission gates default to one request/device/minute, 2000 requests and 8
 and 10000 requests and 256 MiB/global/minute. These are explicit deployment budgets, not guarantees
 that every fleet size/payload fits: size cache capacity and budgets together, monitor rejection and
 coverage, and keep hard limits. Shared Redis scripts enforce the gates across workers.
+
+## Additive upload policy header
+
+On every identity-bound upload response the gateway may send `Lens-Report-Interval-Seconds: 120`.
+This is a minimum upload interval in integer seconds, **60 through 14400** (one minute–four hours).
+It is independent of observation schema v2 and is an additive part of protocol v1. Missing,
+malformed or out-of-range values preserve the last valid policy; old publisher state defaults to
+60 seconds. The publisher persists policy in its scheduling state and continues it after restart.
+It honours valid policy on success and error responses; response bodies remain non-executable data.
+
+Effective server policy is the slower of the global floor and org setting. Policy changes arrive
+on the next scheduled response, with no extra polling or collector return channel. A shorter policy
+does not shorten an existing hold. `Retry-After`, transport failure backoff and the crash uncertainty
+hold can all require a longer delay; their maximum still wins. Server Retry-After is never capped
+to four hours. Normal cadence adds positive jitter (at most one minute) to the advertised minimum.
+
+At intervals above 60 seconds the publisher uploads only the newest unexpired report, without
+backfilling intervening samples. Local collection remains minute-based behind the one-way pipe.
+The original 30-minute expiry and RAM/byte bounds still apply: slow policy must not cause storage
+of stale observations or a catch-up burst. At intervals above 30 minutes central observations expire
+between uploads. Existing presence/history rules remain unchanged.

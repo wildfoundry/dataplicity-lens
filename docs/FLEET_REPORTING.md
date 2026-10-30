@@ -79,17 +79,17 @@ coverage. Process restart loses its buffer. Service memory/CPU/task limits add a
 swap and core dumps are disabled in the reference units (requires the corresponding cgroup support).
 
 The publisher always sends current state first, with at most three retained older reports in the
-same request. It never sends a rapid backlog sweep: at most one request is in flight, with at least
-60 seconds plus jitter after success. It uploads no expired report. Server expiry uses original
+same request at default cadence. Under a longer server interval it sends only the newest report. It never sends a rapid backlog sweep: at most one request is in flight, with at least
+the server-directed interval (default 60 seconds) plus jitter after success. It uploads no expired report. Server expiry uses original
 collection time, never arrival/retry time. Clocks must be reasonably synchronised; reports more
 than 60 seconds in the future are rejected.
 
 ## Storm protection
 
 - Random initial phases and ongoing jitter avoid synchronized fleet startup/recovery.
-- Before each network request, persist a five-minute jittered uncertainty hold. A crash during an
+- Before each network request, persist a jittered uncertainty hold of at least five minutes or the current server interval, whichever is longer. A crash during an
   ambiguous request cannot turn service restarts into immediate requests. A clean success replaces
-  that hold with the normal one-minute jittered cadence.
+  that hold with the normal server-directed jittered cadence.
 - 429, 408, all 5xx and transport errors use exponential randomized backoff, with a locally capped
   exponential component (up to one hour) and the persisted uncertainty floor.
 - `Retry-After` accepts seconds or HTTP dates, including server clock-offset protection. Its delay
@@ -110,3 +110,16 @@ there. Failure to read/persist valid scheduling state stops network publishing r
 back to an aggressive schedule. `status` exposes registration/scheduling metadata, never secrets.
 
 See [the wire protocol](REPORTING_PROTOCOL.md) and [design constraints](FLEET_REPORTING_DESIGN.md).
+
+## Server-directed upload cadence
+
+The server can announce `Lens-Report-Interval-Seconds` from 60 to 14400 seconds. Global and org
+policy resolve on the gateway; an org can slow reporting further but cannot shorten the global
+minimum. The publisher remembers the last valid setting across restarts and missing/invalid
+headers, and `status` shows it. Decreases take effect after the current hold, when the next response
+is received. No extra policy polling or control path into the collector is created.
+
+An interval change reduces upload frequency and, above one minute, sends just the newest observation.
+Collector cadence remains independent. Buffers/expiry remain at 30 minutes, so intervals above
+30 minutes leave periods with no current central observations. Existing connectivity classification
+is unchanged. Retry-After/backoff can require a delay beyond the four-hour normal-policy maximum.
