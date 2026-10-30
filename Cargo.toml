@@ -19,6 +19,9 @@ members = [
     "crates/output",
     "crates/ui",
     "crates/system",
+    "crates/reporting",
+    "apps/lens-daemon",
+    "apps/lens-publisher",
 ]
 resolver = "2"
 

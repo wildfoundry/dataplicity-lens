@@ -1,7 +1,7 @@
 # Fleet reporting preparation
 
-Status: design requirements, not an implemented daemon, command, service unit or wire protocol.
-This change only extends local Hardware identity and its existing outputs.
+Status: implemented by the optional Linux collector and publisher. See [operation and activation](FLEET_REPORTING.md) and the [v1 wire protocol](REPORTING_PROTOCOL.md).
+These constraints remain the boundary for future changes.
 
 ## Explicit activation and privileges
 
@@ -61,7 +61,7 @@ Use a simple organisation enrolment code and the existing agent code rotation co
 issues individual host credentials. Do not build a second account, connectivity or rotation system.
 Registration/credential handling belongs to the publisher, not the hardware collector.
 
-Before implementing transport, establish a documented versioned protocol with fixtures and
+The [v1 reporting protocol](REPORTING_PROTOCOL.md) defines transport with bounded framing and
 compatibility tests. Reports need host/session/boot identity as applicable, sequence number,
 collection time, expiry, domain/capability identity, collection completeness and coverage limits.
 Define framing/size limits, units, snapshot boundaries and resynchronisation after loss. A partial
@@ -69,5 +69,4 @@ sample or dropped frame must not imply entity disappearance. Periodic self-conta
 allows recovery without requests back into Lens. Capabilities allow future read-only Lens domains
 to appear centrally. Additive fields must be tolerated; breaking meanings/units require a new
 version. Carry the shared Lens model and schema version explicitly; terminal text is not the wire
-contract. The current schema-version-2 hardware additions prepare that model but do not establish
-a complete fleet wire protocol.
+contract. Schema-version-2 observations are carried inside the separately versioned v1 envelope.

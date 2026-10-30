@@ -1,8 +1,8 @@
 # Installing Dataplicity Lens
 
 Installation does not start or enable a reporting daemon, register a host, or transmit observations.
-Any future reporting service must remain off until explicitly enabled; see the
-[fleet reporting design](FLEET_REPORTING_DESIGN.md). Hardware identity reads use your existing
+The optional Linux reporting services remain off until explicitly enabled; see
+[fleet reporting setup](FLEET_REPORTING.md). Hardware identity reads use your existing
 permissions. A restricted serial is shown as unavailable, without requiring Lens to run as root.
 
 Lens is built first for Linux systems in the field, including Raspberry Pi OS, Debian and Ubuntu.

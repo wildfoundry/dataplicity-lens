@@ -1,0 +1,33 @@
+#!/usr/bin/env bash
+# Explicit administrative setup only. Package installation never calls this script.
+set -euo pipefail
+if [[ $(id -u) != 0 ]]; then
+  echo 'Run this setup command as administrator; the reporting services themselves run without root.' >&2
+  exit 1
+fi
+lens_name=$(hostname -s)
+lens_server_url=https://app-api.dataplicity.com
+lens_refresh=()
+while (($#)); do
+  case "$1" in
+    --name) lens_name=${2:?Missing name}; shift 2;;
+    --server-url) lens_server_url=${2:?Missing server URL}; shift 2;;
+    --refresh) lens_refresh=(--refresh); shift;;
+    *) echo 'Usage: lens-reporting-enable [--name HOSTNAME] [--server-url HTTPS_ORIGIN] [--refresh]' >&2; exit 2;;
+  esac
+done
+systemd-sysusers /usr/lib/sysusers.d/lens-reporting.conf
+systemd-tmpfiles --create /usr/lib/tmpfiles.d/lens-reporting.conf
+if ((${#lens_refresh[@]})) || ! runuser -u lens-publisher -- /usr/bin/lens-publisher status >/dev/null 2>&1; then
+  if [[ -t 0 ]]; then
+    IFS= read -r -s -p 'Dataplicity organisation code: ' lens_org_code
+    printf '\n' >&2
+  else
+    IFS= read -r lens_org_code || [[ -n ${lens_org_code:-} ]]
+  fi
+  if ((${#lens_refresh[@]})); then systemctl stop lens-publisher.service; fi
+  printf '%s' "$lens_org_code" | runuser -u lens-publisher -- /usr/bin/lens-publisher register --server-url "$lens_server_url" --name "$lens_name" "${lens_refresh[@]}"
+  unset lens_org_code
+fi
+systemctl daemon-reload
+systemctl enable --now lens-daemon.service lens-publisher.service

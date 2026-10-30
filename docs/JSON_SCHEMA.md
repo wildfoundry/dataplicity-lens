@@ -174,3 +174,9 @@ Virtual machines may expose guest firmware identifiers; these are not proof of p
 Serials are not registration credentials or guaranteed unique keys. Containers must not be assigned
 the host serial as their own identity. These fields are observations, not a persistent inventory
 database or a reporting service. See the [future fleet reporting design](FLEET_REPORTING_DESIGN.md).
+
+`processes[].start_time_ticks` is an additive integer field: Linux kernel process start ticks since
+boot. Join it with PID and the reporting envelope boot/host identity to distinguish PID reuse.
+Older documents default this field to zero; absence in an old document does not establish a
+trustworthy cross-sample process identity. Raw CPU tick counters remain internal. Optional reporting
+uses the [separately versioned envelope](REPORTING_PROTOCOL.md), not terminal display text.

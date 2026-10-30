@@ -165,7 +165,8 @@ pub struct Process {
     pub unavailable_fields: Vec<String>,
     #[serde(skip)]
     pub cpu_time_ticks: u64,
-    #[serde(skip)]
+    /// Kernel start ticks distinguish reused PIDs within one boot.
+    #[serde(default)]
     pub start_time_ticks: u64,
 }
 

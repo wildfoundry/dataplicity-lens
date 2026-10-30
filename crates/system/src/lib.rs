@@ -7163,6 +7163,43 @@ pub fn collect_with_options(since: Option<&str>, log_files: &[PathBuf]) -> Syste
     enrich_snapshot(collect_base_snapshot(), since, log_files)
 }
 
+/// A bounded reporting sample: two cheap process scans, then one domain inventory pass.
+/// CPU/I/O rates describe the short measurement window, not an invented minute average.
+pub fn collect_reporting_snapshot() -> SystemSnapshot {
+    let before = collect_base_snapshot();
+    let start = Instant::now();
+    thread::sleep(Duration::from_millis(250));
+    let mut after = collect_base_snapshot();
+    apply_reporting_rates(before, &mut after, start.elapsed().as_secs_f64());
+    enrich_snapshot(after, Some("2 minutes ago"), &[])
+}
+
+fn apply_reporting_rates(mut before: SystemSnapshot, after: &mut SystemSnapshot, elapsed: f64) {
+    let mut cpu = CpuActivity::default();
+    cpu.observe(&mut before);
+    cpu.observe(after);
+    let previous: BTreeMap<_, _> = before
+        .processes
+        .iter()
+        .map(|p| (p.identity(), p.io))
+        .collect();
+    for process in &mut after.processes {
+        if let Some(old) = previous.get(&process.identity()) {
+            process.io.read_bytes_per_second =
+                process.io.read_bytes.saturating_sub(old.read_bytes) as f64 / elapsed.max(0.001);
+            process.io.write_bytes_per_second =
+                process.io.write_bytes.saturating_sub(old.write_bytes) as f64 / elapsed.max(0.001);
+        } else {
+            process.unavailable_fields.extend([
+                "cpu_percent".into(),
+                "io.read_bytes_per_second".into(),
+                "io.write_bytes_per_second".into(),
+            ]);
+        }
+    }
+    after.host.refresh_interval_ms = (elapsed * 1000.0).clamp(1.0, u64::MAX as f64) as u64;
+}
+
 fn collect_base_snapshot() -> SystemSnapshot {
     #[cfg(target_os = "linux")]
     let collected = LinuxCollector::default().collect();
@@ -10722,6 +10759,34 @@ pub fn demo_snapshot() -> SystemSnapshot {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn reporting_rates_keep_process_lifetimes_separate() {
+        let mut before = SystemSnapshot::empty("fixture");
+        let mut process = demo_snapshot().processes.remove(0);
+        process.pid = ProcessId(42);
+        process.start_time_ticks = 100;
+        process.io.read_bytes = 100;
+        process.io.write_bytes = 200;
+        before.processes.push(process.clone());
+        let mut after = before.clone();
+        after.processes[0].io.read_bytes = 150;
+        after.processes[0].io.write_bytes = 300;
+        let mut reused = process;
+        reused.start_time_ticks = 200;
+        after.processes.push(reused);
+        apply_reporting_rates(before, &mut after, 0.5);
+        assert_eq!(after.processes[0].io.read_bytes_per_second, 100.0);
+        assert_eq!(after.processes[0].io.write_bytes_per_second, 200.0);
+        assert!(
+            after.processes[1]
+                .unavailable_fields
+                .contains(&"cpu_percent".into())
+        );
+        assert_eq!(after.host.refresh_interval_ms, 500);
+        let json = serde_json::to_value(&after.processes[0]).expect("process JSON");
+        assert_eq!(json["start_time_ticks"], 100);
+    }
 
     #[test]
     fn parses_systemd_units() {
