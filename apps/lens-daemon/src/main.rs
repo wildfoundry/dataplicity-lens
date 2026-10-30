@@ -68,6 +68,9 @@ fn main() -> Result<()> {
     let mut sequence = 0u64;
     while !stop.load(Ordering::Relaxed) {
         if Instant::now() >= next {
+            // Anchor to the start of the sample: collection time must not accumulate cadence drift.
+            // Workers have a shorter deadline, so neither failures nor slow inventories add retries.
+            next = Instant::now() + Duration::from_secs(60);
             sequence = sequence.saturating_add(1);
             match snapshot_worker(&session, &boot, sequence, &stop) {
                 Ok(report) => ring.push(report, wall_ms(), Instant::now())?,
@@ -75,7 +78,6 @@ fn main() -> Result<()> {
                     "Lens collection unavailable or exceeded its budget; waiting for next interval"
                 ),
             }
-            next = Instant::now() + Duration::from_secs(60);
         }
         ring.prune(wall_ms(), Instant::now());
         writer.flush(&args.pipe, &ring)?;
