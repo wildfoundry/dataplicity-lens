@@ -61,8 +61,9 @@ def main():
     assert sys.platform == 'linux' and os.geteuid() == 0, 'run only as root in disposable Linux CI'
     binary_dir = pathlib.Path(sys.argv[1]).resolve()
     for binary in ('lens-daemon', 'lens-publisher'):
-        result = subprocess.run([binary_dir / binary], capture_output=True)
-        assert result.returncode != 0, 'reporting executable accepted root'
+        args = [binary_dir / binary] + (['run'] if binary == 'lens-publisher' else [])
+        result = subprocess.run(args, capture_output=True)
+        assert result.returncode != 0 and b'non-root' in result.stderr, 'reporting executable accepted root'
     collector = pwd.getpwnam('lens-collector')
     import grp
     group = grp.getgrnam('lens-report')
@@ -75,8 +76,8 @@ def main():
         os.mkfifo(pipe, 0o240)
         os.chmod(pipe, 0o240)
         os.chown(pipe, collector.pw_uid, group.gr_gid)
-        process = subprocess.Popen(['runuser', '-u', 'lens-collector', '--',
-                                    str(binary_dir / 'lens-daemon'), '--pipe', str(pipe)],
+        process = subprocess.Popen([str(binary_dir / 'lens-daemon'), '--pipe', str(pipe)],
+                                   user=collector.pw_uid, group=collector.pw_gid, extra_groups=[],
                                    stdout=subprocess.DEVNULL, stderr=subprocess.PIPE,
                                    start_new_session=True)
         subprocess.run(['runuser', '-u', 'lens-publisher', '--', sys.executable,
