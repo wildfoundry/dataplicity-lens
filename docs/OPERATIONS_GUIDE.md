@@ -7,7 +7,7 @@ Raspberry Pi OS, Debian, Ubuntu, other Linux systems and macOS.
 ## Start with the device overview
 
 Run `lens` as your normal user. Confirm the host name and clock first, then read the host pulse,
-busiest processes and health summary. Data that is still being collected is labelled as loading.
+busiest workloads and health summary. Data that is still being collected is labelled as loading.
 Unavailable data is labelled separately; Lens does not turn a failed collection into a zero.
 
 Open a selected domain with the arrow keys and `Enter`, or start its command directly:
@@ -35,6 +35,24 @@ reveals retained older samples. Chart peaks describe the visible window. Cockpit
 specialist inventories refresh in the background ten seconds after each completed collection.
 Container details retain their two-second sampling interval. Slow collectors extend these intervals;
 automatic inventory collections never overlap.
+
+The overview groups processes belonging to the same service and identifies local QEMU VMs by
+UUID. It hides idle Linux kernel workers and shows at most ten workloads; `lens-top` retains the
+complete process list. CPU and RSS are summed within a workload (shared resident pages can be
+counted more than once). Larger terminals add RAM, swap, real storage mounts and temperature. Spare height adds CPU history
+charts for the busiest workloads, followed by VM allocations, temperature readings, service failures
+and restart counts, network addresses, storage, flagged log entries and collection limits. Charts
+use one sample per column, scale to their visible peak and identify 100% as one logical CPU.
+Workload histories are local to this session and follow stable workload identities.
+
+The overview uses subdued frames and bright readings, cyan CPU charts, green network activity and violet VM identities.
+Amber marks collection limits or attention; red marks observed failures or exceeded critical
+thresholds. State words, headings and units remain visible with `NO_COLOR` or ASCII output.
+The overview omits sensor source paths; Hardware retains those details.
+
+Inventory age and collection limits appear below health. A limited snapshot says LIMITED COVERAGE
+when no actionable findings are visible. Open Health for the actual collection reasons and next
+checks; NO ACTIONABLE ISSUES only describes checks with available source data.
 
 A virtual bridge with no attached ports normally has no carrier. Lens keeps it in the network
 inventory but does not warn that it is down unless it carries the default route. Unaddressed,
@@ -143,8 +161,8 @@ lens-logs --since "30 minutes ago" --limit 0 --json
 ```
 
 On Linux, `--since` accepts `journalctl` time expressions. On macOS, use durations accepted by
-`log show --last`, such as `30m` or `1h`. Severity is currently inferred from message text, so it is
-a useful narrowing tool rather than a complete replacement for native journal priority.
+`log show --last`, such as `30m` or `1h`. Linux journal priority and service attribution come from structured journal fields. File logs and
+macOS logs may infer severity from message text. Missing priorities remain unknown.
 
 If no records appear, remove filters and inspect `collection_warnings` before concluding that no logs
 exist:
@@ -165,8 +183,9 @@ lens-health --filter disk
 lens-health --json | jq '.findings'
 ```
 
-A healthy result means that checks with available source data found no problem. It does not mean
-every check ran. Review collection warnings when completeness matters.
+Collection warnings produce an informational `collection.incomplete` finding with the unavailable
+sources and suggested checks. They do not become a critical incident, and they prevent a limited
+snapshot from claiming complete health coverage.
 
 ## Script without jq for common gates
 
@@ -207,3 +226,41 @@ one-shot semantics are in the [command-line contract](CLI_CONTRACT.md). Guardrai
 service changes are in [Operational actions](ACTIONS.md). For platform-specific availability and
 common failure modes, see [Compatibility](COMPATIBILITY.md) and
 [Troubleshooting](TROUBLESHOOTING.md).
+
+
+## Follow the evidence between views
+
+Specialists show a compact summary of the collected domain. Inspecting an item adds related
+facts and next checks when there is spare space; missing access remains visible. Press `g` in a
+service detail to open its collected logs, in an attributed log to inspect its service, or in a
+health finding to open its related storage, network, service or instance view. These are read-only
+navigation steps. Selected services, instances, mounts and interfaces remain selected across refreshes.
+
+Storage puts persistent filesystems before memory/pseudo mounts and physical/logical disks before
+loop images. Wider lists show total and available bytes plus inode use. `Tab` jumps between mounts
+and devices. Inspect a filesystem to see its partition/device chain, reserved/overhead space and
+visible deleted-open files; inspect a device to see its model, parent and read-only/media flags.
+RAID controllers may expose only a logical disk. These checks do not inspect SMART or RAID members.
+Inode pressure creates a health finding independently of free bytes. Linux storage detail also
+samples kernel disk counters about once a second, with separate read/write charts for the selected
+partition or device. Rates use elapsed time; missing/reset/replaced devices clear the sampling
+baseline. Kernel active time is explicitly distinct from latency, queue depth or saturation.
+These rates are session-local; one-shot JSON exposes cumulative counters.
+
+Network puts default-route interfaces first. `Tab` jumps between interfaces, routes, listeners
+and modems. Inspect a link for carrier, negotiated speed/duplex, MAC/MTU, bridge membership, attached
+routes and bound listeners. A physically unconnected, unused port and an empty bridge are distinct
+from a configured uplink failure. Error/drop counters are cumulative, so compare samples before
+calling them a current problem. The aggregate history uses default-route interfaces when present, with an explicit UPLINK label.
+Without a default route it says ALL LINKS; interface/bridge traffic may then be counted at more
+than one layer. Per-interface rates remain available in either case.
+Listener scope distinguishes loopback, wildcard, interface-bound and specific-address sockets;
+it is not a firewall or reachability test. IPv4 and IPv6 routes are collected when `ip` is available.
+
+Services lead with failures and restart counts by default and show attributed process/RSS context
+in detail. Restart counts are cumulative, not proof of an active loop. Process detail includes its
+visible parent and direct children, with child CPU and summed RSS. Logs wrap full messages instead
+of clipping them to one line, and keep adjacent-source context inside the collected window.
+Hardware adds thermal headroom without claiming fan/PSU/disk health coverage. System highlights
+clock synchronization, configured resolvers and explicit privileged-group membership; configured
+DNS is not proof of successful resolution, and group lists do not capture all access policy.

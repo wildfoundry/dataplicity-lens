@@ -54,7 +54,7 @@ Durations are seconds. CPU and memory are percentages. Process CPU can exceed 10
 | `host` | Hostname, kernel/OS, uptime seconds, logical CPU count, CPU percentage, load averages, memory and process counts. |
 | `processes` | Identity, parent, command, user, state, CPU/memory percentages, byte counters/rates, runtime seconds and optional service/container context. |
 | `services` | Native service name, load/active/sub state, description and optional restart count. |
-| `containers` | Docker/Podman/nerdctl inventory: runtime, id, name, image, status, normalized state, created and ports. |
+| `containers` | Docker/Podman/nerdctl, local LXD and read-only libvirt inventory: runtime, id, name, image, status, normalized state, created, ports, optional instance_type, project and resources. Libvirt id is the VM UUID; memory usage is host RSS and disk usage is first-image allocation. |
 | `log_sources` | Stable source identifier and source kind. |
 | `logs` | Timestamp, source, optional unit/priority, message and adjacent-repeat count. |
 | `mounts` | Source, target, filesystem, total/used/available bytes, percentage and optional inode totals. |
@@ -135,3 +135,19 @@ assertion flags (`--fail-if-*`, `--expect-count*`, `--fail-on`) exit with status
 misses. `--fields` projects the JSON document at output time and always retains `schema_version`,
 `generated_at` and `host`. See [`CLI_CONTRACT.md`](CLI_CONTRACT.md) for the complete stdout, stderr
 and action contract.
+
+Collection warnings also produce an informational `collection.incomplete` health finding with
+evidence and next checks; this does not imply a critical incident.
+
+
+Optional `storage_details` and `network_details` maps are keyed by block-device/interface name.
+They are additive in schema 2 and omitted when unavailable. Linux storage metadata includes model,
+partition parent, rotational/read-only flags and cumulative read/write bytes and active I/O time.
+Those counters are not rates or SMART/RAID health. Linux link metadata includes kind, carrier,
+MAC, MTU, speed, duplex, bridge/master membership and cumulative errors/drops. Missing values are
+null, never inferred as zero or healthy. JSONL uses `storage_detail` and `network_detail` records
+with `name` and `details`; `--fields` supports both maps. Filters retain metadata for remaining rows.
+
+Linux journal entries use structured unit, priority, message and realtime fields. Repeated records
+are folded only when source, unit, message and priority match; other log sources can still infer
+priority from text. Invalid/unsupported journal records produce a collection warning.

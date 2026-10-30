@@ -19,8 +19,20 @@ pub(crate) enum ProbeClass {
 pub(crate) fn collect_containers(warnings: &mut Vec<String>) -> (Vec<Container>, bool) {
     let mut containers = Vec::new();
     let mut runtime_live = false;
-    for runtime in ["docker", "podman", "nerdctl", "lxd"] {
+    for runtime in ["docker", "podman", "nerdctl", "lxd", "libvirt"] {
         if !binary_on_path(runtime_program(runtime)) {
+            continue;
+        }
+        if runtime == "libvirt" {
+            match super::libvirt::collect(warnings) {
+                Ok(mut rows) => {
+                    runtime_live = true;
+                    containers.append(&mut rows);
+                }
+                Err(error) => {
+                    warnings.push(format!("libvirt read-only inspection unavailable: {error}"))
+                }
+            }
             continue;
         }
         match probe_runtime(runtime) {
@@ -32,7 +44,7 @@ pub(crate) fn collect_containers(warnings: &mut Vec<String>) -> (Vec<Container>,
                 runtime_live = true;
                 match list_containers(runtime) {
                     Ok(mut rows) => {
-                        if runtime != "lxd" {
+                        if !matches!(runtime, "lxd" | "libvirt") {
                             enrich_oci_resources(runtime, &mut rows, warnings);
                         }
                         containers.append(&mut rows);
@@ -67,7 +79,11 @@ pub(crate) fn runtime_is_usable(runtime: &str) -> bool {
 }
 
 fn runtime_program(runtime: &str) -> &str {
-    if runtime == "lxd" { "lxc" } else { runtime }
+    match runtime {
+        "lxd" => "lxc",
+        "libvirt" => "virsh",
+        other => other,
+    }
 }
 
 fn binary_on_path(program: &str) -> bool {
@@ -80,7 +96,9 @@ fn binary_on_path(program: &str) -> bool {
 }
 
 fn probe_runtime(runtime: &str) -> ProbeClass {
-    let args: &[&str] = if runtime == "lxd" {
+    let args: &[&str] = if runtime == "libvirt" {
+        &["--readonly", "--connect", "qemu:///system", "uri"]
+    } else if runtime == "lxd" {
         &["info", "local:"]
     } else {
         &["info"]
@@ -123,6 +141,8 @@ pub(crate) fn classify_runtime_error(message: &str) -> ProbeClass {
     if lower.contains("permission denied")
         || lower.contains("access denied")
         || lower.contains("operation not permitted")
+        || lower.contains("authentication unavailable")
+        || lower.contains("authorization failed")
         || (lower.contains("are you in the") && lower.contains("group"))
         || (lower.contains("dial unix") && lower.contains("permission"))
     {
@@ -506,6 +526,9 @@ fn action_command(
     action: &str,
     target: &str,
 ) -> Result<(String, Vec<String>), String> {
+    if runtime == "libvirt" {
+        return Err("libvirt VM inspection is read-only; lifecycle actions are unavailable".into());
+    }
     if !matches!(action, "start" | "stop" | "restart") {
         return Err("unsupported instance action".into());
     }
@@ -624,8 +647,9 @@ fn read_bounded(pipe: impl Read) -> Result<String, String> {
     String::from_utf8(data).map_err(|error| error.to_string())
 }
 
-fn run_text(program: &str, args: &[&str], timeout: Duration) -> Result<String, String> {
+pub(super) fn run_text(program: &str, args: &[&str], timeout: Duration) -> Result<String, String> {
     let mut child = Command::new(program)
+        .env("LC_ALL", "C")
         .args(args)
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
@@ -681,6 +705,18 @@ pub(crate) fn run_container_cli(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn libvirt_lifecycle_actions_are_never_dispatched() {
+        for action in ["start", "stop", "restart", "destroy"] {
+            assert!(
+                action_command("libvirt", action, "builder")
+                    .expect_err("read-only")
+                    .contains("read-only")
+            );
+        }
+        assert_eq!(runtime_program("libvirt"), "virsh");
+    }
 
     #[test]
     fn classifies_permission_vs_not_live() {

@@ -91,7 +91,7 @@ lens
 
 Homebrew verifies the archive digest before installing it. Current Homebrew releases require
 `brew trust` for third-party tap formulae before install. Rust and Apple's developer tools are not
-required for this binary installation. The current published release reports `lens 0.3.6`.
+required for this binary installation. The current published release reports `lens 0.3.7`.
 
 Open the overview, then check the local machine:
 
@@ -167,3 +167,20 @@ The interactive container detail page shows CPU, memory, network receive/transmi
 CPU 100% means one logical CPU, so a busy four-vCPU instance can reach 400%. Each chart scales independently to its visible peak, rather than implying a common percentage scale. Missing counters, restarts and collection gaps are shown as unavailable, not zero. The header shows sample age and collection errors. Short terminals use compact charts; Tab switches between charts and the existing allocation details.
 
 Docker, Podman and nerdctl use their compatible one-shot stats counters where supported. Network and block-I/O counters are converted to bytes per second; these are container counters, not physical drive throughput. LXD uses guest CPU/memory and attached NIC counters, excluding internal guest bridges and loopback to avoid double-counting. The current LXD instance-state API does not report VM disk I/O, so those charts show unavailable. Root-disk allocation/usage is separate from I/O throughput. History is not persisted when Lens exits.
+
+
+## Local libvirt virtual machines
+
+Lens detects `virsh` and queries only the local `qemu:///system` connection with `--readonly`.
+Use an account already permitted to inspect that daemon; denied access remains a collection warning.
+Lens does not change permissions or offer libvirt lifecycle actions.
+
+```sh
+lens-containers --runtime libvirt --once
+```
+
+VM names are joined to stable UUIDs before and after each stats query so a recycled runner name
+does not inherit another VM's history. CPU time and network/block counters feed the live detail
+charts. Memory usage is host RSS, not guest memory consumption. Disk capacity and image allocation
+refer to the first reported block device, not guest filesystem usage. Missing counters remain
+unavailable. No guest commands are executed and no remote libvirt URI is consulted.

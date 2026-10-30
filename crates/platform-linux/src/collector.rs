@@ -162,6 +162,8 @@ impl LinuxCollector {
             filesystems: Vec::new(),
             deleted_open_files: Vec::new(),
             block_devices: Vec::new(),
+            storage_details: Default::default(),
+            network_details: Default::default(),
             interfaces: Vec::new(),
             routes: Vec::new(),
             sockets: Vec::new(),

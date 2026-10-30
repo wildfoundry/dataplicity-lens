@@ -1,4 +1,5 @@
 use serde::{Deserialize, Serialize};
+use std::collections::BTreeMap;
 use time::{OffsetDateTime, format_description::well_known::Rfc3339};
 
 use crate::{Cgroup, ContainerReference, Finding, ProcessId, Relationship, ServiceReference, User};
@@ -239,7 +240,7 @@ pub struct ContainerResources {
     pub mounts: Vec<String>,
 }
 
-/// Inventory row for an OCI container or a local LXD container/virtual machine.
+/// Inventory row for an OCI container, local LXD instance or read-only local libvirt VM.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Container {
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -568,6 +569,35 @@ pub struct AiDiagnostics {
     pub unavailable: Vec<AiUnavailableField>,
 }
 
+/// Optional native block-device context. Counters are cumulative, never rates or SMART health.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct StorageDetail {
+    pub model: Option<String>,
+    pub parent: Option<String>,
+    pub rotational: Option<bool>,
+    pub read_only: Option<bool>,
+    pub read_bytes: Option<u64>,
+    pub write_bytes: Option<u64>,
+    pub io_active_ms: Option<u64>,
+}
+
+/// Optional kernel link context. Carrier and administrative state are distinct.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct NetworkDetail {
+    pub kind: String,
+    pub mac_address: Option<String>,
+    pub mtu: Option<u64>,
+    pub carrier: Option<bool>,
+    pub speed_mbps: Option<u64>,
+    pub duplex: Option<String>,
+    pub master: Option<String>,
+    pub ports: Vec<String>,
+    pub rx_errors: Option<u64>,
+    pub tx_errors: Option<u64>,
+    pub rx_dropped: Option<u64>,
+    pub tx_dropped: Option<u64>,
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Snapshot {
     pub schema_version: SchemaVersion,
@@ -588,6 +618,10 @@ pub struct Snapshot {
     pub deleted_open_files: Vec<DeletedOpenFile>,
     #[serde(default)]
     pub block_devices: Vec<BlockDevice>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub storage_details: BTreeMap<String, StorageDetail>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub network_details: BTreeMap<String, NetworkDetail>,
     pub interfaces: Vec<Interface>,
     pub routes: Vec<Route>,
     pub sockets: Vec<Socket>,
@@ -646,6 +680,8 @@ impl Snapshot {
             filesystems: Vec::new(),
             deleted_open_files: Vec::new(),
             block_devices: Vec::new(),
+            storage_details: BTreeMap::new(),
+            network_details: BTreeMap::new(),
             interfaces: Vec::new(),
             routes: Vec::new(),
             sockets: Vec::new(),

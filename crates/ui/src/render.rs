@@ -902,6 +902,51 @@ fn draw_detail(frame: &mut Frame<'_>, area: Rect, app: &App) {
         ),
         detail_line("CONTAINER", container.to_owned(), app.capabilities),
     ];
+    let parent = process.parent_pid.and_then(|pid| {
+        app.snapshot
+            .processes
+            .iter()
+            .find(|candidate| candidate.pid == pid)
+    });
+    let children: Vec<_> = app
+        .snapshot
+        .processes
+        .iter()
+        .filter(|candidate| candidate.parent_pid == Some(process.pid))
+        .collect();
+    let child_rss = children
+        .iter()
+        .fold(0u64, |total, child| total.saturating_add(child.rss_bytes));
+    context.push(detail_line(
+        "FAMILY",
+        format!(
+            "parent {} | {} direct children | {} child RSS sum",
+            parent
+                .map(|p| format!("{} ({})", p.name, p.pid))
+                .unwrap_or_else(|| "not visible".into()),
+            children.len(),
+            format_bytes(child_rss)
+        ),
+        app.capabilities,
+    ));
+    for child in children.iter().take(4) {
+        context.push(detail_line(
+            "CHILD",
+            format!(
+                "PID {} {} | CPU {:.1}% | RSS {}",
+                child.pid,
+                child.name,
+                child.cpu_percent,
+                format_bytes(child.rss_bytes)
+            ),
+            app.capabilities,
+        ));
+    }
+    context.push(detail_line(
+        "CPU SCALE",
+        "100% = one logical CPU; compare RSS and I/O with host pressure".into(),
+        app.capabilities,
+    ));
     if !process.unavailable_fields.is_empty() {
         context.push(Line::from(vec![
             Span::styled(" UNAVAILABLE ", attention_badge(app.capabilities)),

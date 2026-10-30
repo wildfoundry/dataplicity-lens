@@ -268,6 +268,26 @@ pub fn write_json_lines_filtered(
             write_json_line(writer, snapshot, "hardware_device", device)?;
         }
     }
+    if want("storage_detail") {
+        for (name, details) in &snapshot.storage_details {
+            write_json_line(
+                writer,
+                snapshot,
+                "storage_detail",
+                &serde_json::json!({"name":name,"details":details}),
+            )?;
+        }
+    }
+    if want("network_detail") {
+        for (name, details) in &snapshot.network_details {
+            write_json_line(
+                writer,
+                snapshot,
+                "network_detail",
+                &serde_json::json!({"name":name,"details":details}),
+            )?;
+        }
+    }
     if want("ai") {
         write_json_line(writer, snapshot, "ai", &snapshot.ai)?;
     }
@@ -292,6 +312,8 @@ pub fn jsonl_record_types_for_fields(fields: &[String]) -> Vec<&'static str> {
             "filesystems" => "filesystem",
             "deleted_open_files" => "deleted_open_file",
             "block_devices" => "block_device",
+            "storage_details" => "storage_detail",
+            "network_details" => "network_detail",
             "interfaces" => "interface",
             "routes" => "route",
             "sockets" => "socket",
@@ -357,6 +379,22 @@ pub fn write_json_lines(writer: &mut impl Write, snapshot: &Snapshot) -> io::Res
     }
     for relationship in &snapshot.relationships {
         write_json_line(writer, snapshot, "relationship", relationship)?;
+    }
+    for (name, details) in &snapshot.storage_details {
+        write_json_line(
+            writer,
+            snapshot,
+            "storage_detail",
+            &serde_json::json!({"name":name,"details":details}),
+        )?;
+    }
+    for (name, details) in &snapshot.network_details {
+        write_json_line(
+            writer,
+            snapshot,
+            "network_detail",
+            &serde_json::json!({"name":name,"details":details}),
+        )?;
     }
     write_json_line(writer, snapshot, "ai", &snapshot.ai)?;
     Ok(())
@@ -507,6 +545,8 @@ mod tests {
             filesystems: Vec::new(),
             deleted_open_files: Vec::new(),
             block_devices: Vec::new(),
+            storage_details: Default::default(),
+            network_details: Default::default(),
             interfaces: Vec::new(),
             routes: Vec::new(),
             sockets: Vec::new(),
