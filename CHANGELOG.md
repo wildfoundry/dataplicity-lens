@@ -5,6 +5,13 @@ versioning once the first public release is tagged.
 
 ## [Unreleased]
 
+### Added
+- Report Linux system serial/service tag, chassis and board serials, asset tag, source paths and
+  explicit unavailable reasons in Hardware and schema-version-2 structured output. Use cached,
+  bounded local reads without invoking privileged tools or elevating the current user.
+- Record the opt-in, unprivileged collector and separately isolated publisher design for future
+  fleet reporting. No daemon, service activation, registration or transmission is installed here.
+
 ## [0.3.7] - 2026-10-30
 
 ### Changed
