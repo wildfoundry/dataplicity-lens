@@ -5,6 +5,8 @@ mod container_monitor;
 mod containers;
 use container_monitor::ContainerMonitor;
 mod hardware;
+#[cfg(any(target_os = "linux", test))]
+mod hardware_identity;
 mod investigate;
 mod journal;
 mod libvirt;
@@ -5341,6 +5343,49 @@ fn hardware_identity_present(identity: &HardwareIdentity) -> bool {
         || identity.serial_number.is_some()
         || identity.firmware_version.is_some()
         || identity.raspberry_pi.is_some()
+        || identity.service_tag.is_some()
+        || identity.chassis_serial_number.is_some()
+        || identity.board_serial_number.is_some()
+        || identity.asset_tag.is_some()
+        || !identity.unavailable_fields.is_empty()
+}
+
+fn hardware_identity_extra_details(identity: &HardwareIdentity) -> Vec<String> {
+    let mut details: Vec<String> = [
+        ("Service tag", identity.service_tag.as_deref()),
+        ("Chassis serial", identity.chassis_serial_number.as_deref()),
+        ("Board serial", identity.board_serial_number.as_deref()),
+        ("Asset tag", identity.asset_tag.as_deref()),
+    ]
+    .into_iter()
+    .filter_map(|(label, value)| value.map(|value| format!("{label}: {value}")))
+    .collect();
+    details.extend(identity.unavailable_fields.iter().map(|(field, reason)| {
+        let reason = match reason {
+            lens_model::HardwareIdentityUnavailableReason::NotReported => "not reported",
+            lens_model::HardwareIdentityUnavailableReason::PermissionDenied => "permission denied",
+            lens_model::HardwareIdentityUnavailableReason::Invalid => "invalid firmware value",
+            lens_model::HardwareIdentityUnavailableReason::ReadError => "read error",
+        };
+        format!("{field}: unavailable ({reason})")
+    }));
+    details
+}
+
+fn hardware_identity_warnings(identity: &HardwareIdentity) -> Vec<String> {
+    identity
+        .unavailable_fields
+        .iter()
+        .filter_map(|(field, reason)| match reason {
+            lens_model::HardwareIdentityUnavailableReason::PermissionDenied => Some(format!(
+                "hardware {field}: permission denied; inspection continues without elevation"
+            )),
+            lens_model::HardwareIdentityUnavailableReason::ReadError => {
+                Some(format!("hardware {field}: local identity read failed"))
+            }
+            _ => None,
+        })
+        .collect()
 }
 
 fn hardware_rows(snapshot: &SystemSnapshot) -> Vec<(String, String, String)> {
@@ -5383,6 +5428,12 @@ fn hardware_rows(snapshot: &SystemSnapshot) -> Vec<(String, String, String)> {
         .flatten()
         .collect::<Vec<_>>()
         .join("\n");
+        let extra = hardware_identity_extra_details(&snapshot.hardware).join("\n");
+        let details = [details, extra]
+            .into_iter()
+            .filter(|value| !value.is_empty())
+            .collect::<Vec<_>>()
+            .join("\n");
         rows.push(("SYSTEM".into(), title, details));
         if let Some(pi) = &snapshot.hardware.raspberry_pi {
             let state = if pi.throttled_raw.is_none() {
@@ -7112,6 +7163,43 @@ pub fn collect_with_options(since: Option<&str>, log_files: &[PathBuf]) -> Syste
     enrich_snapshot(collect_base_snapshot(), since, log_files)
 }
 
+/// A bounded reporting sample: two cheap process scans, then one domain inventory pass.
+/// CPU/I/O rates describe the short measurement window, not an invented minute average.
+pub fn collect_reporting_snapshot() -> SystemSnapshot {
+    let before = collect_base_snapshot();
+    let start = Instant::now();
+    thread::sleep(Duration::from_millis(250));
+    let mut after = collect_base_snapshot();
+    apply_reporting_rates(before, &mut after, start.elapsed().as_secs_f64());
+    enrich_snapshot(after, Some("2 minutes ago"), &[])
+}
+
+fn apply_reporting_rates(mut before: SystemSnapshot, after: &mut SystemSnapshot, elapsed: f64) {
+    let mut cpu = CpuActivity::default();
+    cpu.observe(&mut before);
+    cpu.observe(after);
+    let previous: BTreeMap<_, _> = before
+        .processes
+        .iter()
+        .map(|p| (p.identity(), p.io))
+        .collect();
+    for process in &mut after.processes {
+        if let Some(old) = previous.get(&process.identity()) {
+            process.io.read_bytes_per_second =
+                process.io.read_bytes.saturating_sub(old.read_bytes) as f64 / elapsed.max(0.001);
+            process.io.write_bytes_per_second =
+                process.io.write_bytes.saturating_sub(old.write_bytes) as f64 / elapsed.max(0.001);
+        } else {
+            process.unavailable_fields.extend([
+                "cpu_percent".into(),
+                "io.read_bytes_per_second".into(),
+                "io.write_bytes_per_second".into(),
+            ]);
+        }
+    }
+    after.host.refresh_interval_ms = (elapsed * 1000.0).clamp(1.0, u64::MAX as f64) as u64;
+}
+
 fn collect_base_snapshot() -> SystemSnapshot {
     #[cfg(target_os = "linux")]
     let collected = LinuxCollector::default().collect();
@@ -7331,6 +7419,9 @@ fn enrich_snapshot(
     snapshot.routes = routes;
     snapshot.sockets = sockets;
     snapshot.cellular_modems = cellular_modems;
+    snapshot
+        .collection_warnings
+        .extend(hardware_identity_warnings(&hardware.identity));
     snapshot.hardware = hardware.identity;
     snapshot.temperatures = hardware.temperatures;
     snapshot.hardware_devices = hardware.devices;
@@ -7344,6 +7435,9 @@ fn enrich_snapshot(
 
 fn collect_hardware_context(snapshot: &mut SystemSnapshot) {
     let hardware = hardware::collect();
+    snapshot
+        .collection_warnings
+        .extend(hardware_identity_warnings(&hardware.identity));
     snapshot.hardware = hardware.identity;
     snapshot.temperatures = hardware.temperatures;
     snapshot.hardware_devices = hardware.devices;
@@ -9953,6 +10047,9 @@ fn render_plain(view: View, snapshot: &SystemSnapshot, out: &mut dyn Write) -> R
             if let Some(value) = &snapshot.hardware.firmware_version {
                 writeln!(out, "firmware: {value}")?;
             }
+            for detail in hardware_identity_extra_details(&snapshot.hardware) {
+                writeln!(out, "{detail}")?;
+            }
             if let Some(pi) = &snapshot.hardware.raspberry_pi {
                 writeln!(out, "\nRASPBERRY PI")?;
                 writeln!(
@@ -10578,6 +10675,7 @@ pub fn demo_snapshot() -> SystemSnapshot {
             active_conditions: Vec::new(),
             historical_conditions: Vec::new(),
         }),
+        ..HardwareIdentity::default()
     };
     snapshot.temperatures = vec![TemperatureSensor {
         name: "cpu-thermal".into(),
@@ -10661,6 +10759,34 @@ pub fn demo_snapshot() -> SystemSnapshot {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn reporting_rates_keep_process_lifetimes_separate() {
+        let mut before = SystemSnapshot::empty("fixture");
+        let mut process = demo_snapshot().processes.remove(0);
+        process.pid = ProcessId(42);
+        process.start_time_ticks = 100;
+        process.io.read_bytes = 100;
+        process.io.write_bytes = 200;
+        before.processes.push(process.clone());
+        let mut after = before.clone();
+        after.processes[0].io.read_bytes = 150;
+        after.processes[0].io.write_bytes = 300;
+        let mut reused = process;
+        reused.start_time_ticks = 200;
+        after.processes.push(reused);
+        apply_reporting_rates(before, &mut after, 0.5);
+        assert_eq!(after.processes[0].io.read_bytes_per_second, 100.0);
+        assert_eq!(after.processes[0].io.write_bytes_per_second, 200.0);
+        assert!(
+            after.processes[1]
+                .unavailable_fields
+                .contains(&"cpu_percent".into())
+        );
+        assert_eq!(after.host.refresh_interval_ms, 500);
+        let json = serde_json::to_value(&after.processes[0]).expect("process JSON");
+        assert_eq!(json["start_time_ticks"], 100);
+    }
 
     #[test]
     fn parses_systemd_units() {
@@ -11899,5 +12025,68 @@ mod tests {
         assert!(!snapshot.temperatures.is_empty());
         assert!(!snapshot.hardware_devices.is_empty());
         assert!(!snapshot.findings.is_empty());
+    }
+
+    #[test]
+    fn hardware_identity_is_additive_and_round_trips_with_access_reasons() {
+        // This fixture predates the extra hardware identity fields in schema version 2.
+        let old = serde_json::json!({
+            "manufacturer": "Dell Inc.", "model": "Example server", "board": null,
+            "board_revision": null, "serial_number": "EXAMPLE-SYSTEM", "firmware_version": null
+        });
+        let mut identity: HardwareIdentity =
+            serde_json::from_value(old).expect("valid old fixture");
+        assert!(identity.identity_sources.is_empty());
+        assert!(identity.unavailable_fields.is_empty());
+        identity.service_tag = identity.serial_number.clone();
+        identity.unavailable_fields.insert(
+            "board_serial_number".into(),
+            lens_model::HardwareIdentityUnavailableReason::PermissionDenied,
+        );
+        let encoded = serde_json::to_value(&identity).expect("serializable fixture");
+        assert_eq!(encoded["service_tag"], "EXAMPLE-SYSTEM");
+        assert_eq!(
+            encoded["unavailable_fields"]["board_serial_number"],
+            "permission_denied"
+        );
+        assert_eq!(
+            serde_json::from_value::<HardwareIdentity>(encoded).expect("valid new fixture"),
+            identity
+        );
+    }
+
+    #[test]
+    fn hardware_identity_labels_and_restrictions_reach_plain_and_interactive_output() {
+        let mut snapshot = SystemSnapshot::empty("fixture");
+        snapshot.hardware = HardwareIdentity {
+            manufacturer: Some("Dell Inc.".into()),
+            model: Some("Example server".into()),
+            serial_number: Some("EXAMPLE-SYSTEM".into()),
+            service_tag: Some("EXAMPLE-SYSTEM".into()),
+            chassis_serial_number: Some("EXAMPLE-CHASSIS".into()),
+            asset_tag: Some("EXAMPLE-ASSET".into()),
+            ..HardwareIdentity::default()
+        };
+        snapshot.hardware.unavailable_fields.insert(
+            "board_serial_number".into(),
+            lens_model::HardwareIdentityUnavailableReason::PermissionDenied,
+        );
+        let mut plain = Vec::new();
+        render_plain(View::Hardware, &snapshot, &mut plain).expect("render fixture");
+        let plain = String::from_utf8(plain).expect("UTF-8 output");
+        let rows = hardware_rows(&snapshot);
+        for text in [
+            "Service tag: EXAMPLE-SYSTEM",
+            "Chassis serial: EXAMPLE-CHASSIS",
+            "Asset tag: EXAMPLE-ASSET",
+            "board_serial_number: unavailable (permission denied)",
+        ] {
+            assert!(plain.contains(text), "plain output missing {text}");
+            assert!(
+                rows[0].2.contains(text),
+                "interactive details missing {text}"
+            );
+        }
+        assert_eq!(hardware_identity_warnings(&snapshot.hardware).len(), 1);
     }
 }

@@ -165,7 +165,8 @@ pub struct Process {
     pub unavailable_fields: Vec<String>,
     #[serde(skip)]
     pub cpu_time_ticks: u64,
-    #[serde(skip)]
+    /// Kernel start ticks distinguish reused PIDs within one boot.
+    #[serde(default)]
     pub start_time_ticks: u64,
 }
 
@@ -423,8 +424,31 @@ pub struct HardwareIdentity {
     pub board_revision: Option<String>,
     pub serial_number: Option<String>,
     pub firmware_version: Option<String>,
+    /// Dell's label for the system serial; never a board/chassis serial fallback.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub service_tag: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub chassis_serial_number: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub board_serial_number: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub asset_tag: Option<String>,
+    /// Field name to local source, independent of presentation labels.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub identity_sources: BTreeMap<String, String>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub unavailable_fields: BTreeMap<String, HardwareIdentityUnavailableReason>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub raspberry_pi: Option<RaspberryPiStatus>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum HardwareIdentityUnavailableReason {
+    NotReported,
+    PermissionDenied,
+    Invalid,
+    ReadError,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]

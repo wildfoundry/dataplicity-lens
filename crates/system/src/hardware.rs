@@ -51,37 +51,20 @@ fn millidegrees(path: impl AsRef<Path>) -> Option<f64> {
 
 #[cfg(target_os = "linux")]
 fn collect_linux() -> HardwareSnapshot {
-    let model = read_trimmed("/sys/firmware/devicetree/base/model")
-        .or_else(|| read_trimmed("/proc/device-tree/model"))
-        .or_else(|| read_trimmed("/sys/class/dmi/id/product_name"));
-    let cpuinfo = read_trimmed("/proc/cpuinfo").unwrap_or_default();
-    let cpuinfo_value = |key: &str| {
-        cpuinfo.lines().find_map(|line| {
-            let (name, value) = line.split_once(':')?;
-            name.trim()
-                .eq_ignore_ascii_case(key)
-                .then(|| value.trim().to_owned())
-        })
-    };
-    let is_pi = model
+    let mut identity = super::hardware_identity::collect();
+    let is_pi = identity
+        .model
         .as_deref()
         .is_some_and(|value| value.contains("Raspberry Pi"));
-    let mut identity = HardwareIdentity {
-        manufacturer: read_trimmed("/sys/class/dmi/id/sys_vendor")
-            .or_else(|| is_pi.then(|| "Raspberry Pi Foundation".to_owned())),
-        model,
-        board: read_trimmed("/sys/class/dmi/id/board_name"),
-        board_revision: read_trimmed("/sys/class/dmi/id/board_version")
-            .or_else(|| cpuinfo_value("Revision")),
-        serial_number: read_trimmed("/sys/class/dmi/id/product_serial")
-            .or_else(|| cpuinfo_value("Serial")),
-        firmware_version: read_trimmed("/sys/class/dmi/id/bios_version"),
-        raspberry_pi: None,
-    };
     let mut temperatures = linux_temperatures();
     if is_pi {
-        identity.firmware_version =
-            command_text("vcgencmd", &["version"]).or(identity.firmware_version);
+        if let Some(version) = command_text("vcgencmd", &["version"]) {
+            identity.firmware_version = Some(version);
+            identity.unavailable_fields.remove("firmware_version");
+            identity
+                .identity_sources
+                .insert("firmware_version".into(), "vcgencmd version".into());
+        }
         identity.raspberry_pi = Some(raspberry_pi_status());
         if let Some(value) = command_text("vcgencmd", &["measure_temp"])
             .and_then(|text| text.split('=').nth(1).map(str::to_owned))
@@ -272,6 +255,7 @@ fn collect_macos() -> HardwareSnapshot {
         serial_number: json_string(&hardware, &["serial_number"]),
         firmware_version: json_string(&hardware, &["system_firmware_version", "boot_rom_version"]),
         raspberry_pi: None,
+        ..HardwareIdentity::default()
     };
     let mut devices = Vec::new();
     if let Some(usb) = system_profiler("SPUSBDataType") {

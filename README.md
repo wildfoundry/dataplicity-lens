@@ -14,8 +14,8 @@ hardware inventory, system context, and health findings — in one consistent te
 When the Dataplicity agent exposes its authoritative AI state, Lens can also present a focused,
 read-only accelerator, model-store and inference-runtime diagnostic view.
 
-Built for Raspberry Pi OS, Debian, Ubuntu, other Linux systems, and macOS. No daemon, no cloud account,
-no telemetry. Install a package, run `lens`, and work with the machine in front of you.
+Built for Raspberry Pi OS, Debian, Ubuntu, other Linux systems, and macOS. Local use needs no daemon
+or cloud account and sends no telemetry. Optional Linux fleet reporting is off by default. Install a package, run `lens`, and work with the machine in front of you.
 
 > **Making Linux make sense.**
 
@@ -195,6 +195,12 @@ processes, findings, relationships, and optional build metadata. Missing permiss
 - Schema and stability: [`docs/JSON_SCHEMA.md`](docs/JSON_SCHEMA.md)
 - CLI, streaming, exit status, and actions: [`docs/CLI_CONTRACT.md`](docs/CLI_CONTRACT.md)
 - AI Fleet handoff and agent-state contract: [`docs/AI_DIAGNOSTICS.md`](docs/AI_DIAGNOSTICS.md)
+
+## Optional fleet reporting (Linux)
+
+Installation leaves reporting off. To explicitly connect read-only Lens observations to Dataplicity,
+see [fleet reporting setup](docs/FLEET_REPORTING.md). The collector and network publisher run as
+separate non-root services; local Lens needs neither service.
 
 ## Configuration
 

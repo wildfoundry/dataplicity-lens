@@ -21,8 +21,15 @@ release and disclosure with the reporter.
 ## Trust model
 
 Lens reads local operating-system interfaces and does not require a background daemon, account or
-network connection. It does not collect or transmit telemetry. Inspection runs with the invoking
+network connection. By default it does not collect or transmit telemetry. Inspection runs with the invoking
 user's permissions.
+
+Linux hardware serial/service-tag inspection uses bounded local firmware reads with those same
+permissions. Access-denied values remain unavailable; Lens does not invoke privileged identity tools,
+adjust permissions, or elevate itself. Optional Linux reporting must be explicitly enabled after
+installation, with a non-root collector and a separately restricted non-root publisher; see
+[`docs/FLEET_REPORTING_DESIGN.md`](docs/FLEET_REPORTING_DESIGN.md). Reference service units keep collector and publisher separate; installation leaves both off.
+Only explicit setup/activation starts transmission. See [`docs/FLEET_REPORTING.md`](docs/FLEET_REPORTING.md).
 
 State-changing process and service operations are explicit, typed actions. They require a precise
 target and confirmation, revalidate identity immediately before execution, and report the result.

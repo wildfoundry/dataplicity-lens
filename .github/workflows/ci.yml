@@ -52,6 +52,15 @@ jobs:
           LENS_BUILT_BY: GitHub Actions
         run: cargo build --workspace --all-features --release --locked
       - run: scripts/smoke-suite.sh target/release
+      - name: Verify opt-in Linux reporting and one-way FIFO permissions
+        run: |
+          sudo systemd-sysusers "$PWD/packaging/systemd/lens-reporting.sysusers"
+          sudo install -m 0755 target/release/lens-daemon target/release/lens-publisher /usr/bin/
+          sudo systemd-analyze verify "$PWD/packaging/systemd/lens-daemon.service" "$PWD/packaging/systemd/lens-publisher.service"
+          grep -qx 'disable lens-daemon.service' packaging/systemd/lens-reporting.preset
+          grep -qx 'disable lens-publisher.service' packaging/systemd/lens-reporting.preset
+          sudo install -m 0644 scripts/test-reporting-linux.py /tmp/lens-reporting-integration.py
+          sudo python3 /tmp/lens-reporting-integration.py /usr/bin
 
   security:
     name: Licences and advisories
