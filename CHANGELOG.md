@@ -5,6 +5,29 @@ versioning once the first public release is tagged.
 
 ## [Unreleased]
 
+## [0.3.7] - 2026-10-30
+
+### Changed
+- Improve cockpit hierarchy with quieter frames, brighter readings, semantic accents and compact
+  inventory rows; keep dark-theme colours readable and retain text cues without colour.
+
+### Added
+- Turn specialist details into investigations with related evidence, collected-domain summaries,
+  process-family context, thermal headroom and read-only navigation between services, logs and health.
+- Add live per-device/partition read/write charts, storage device/partition context, inode pressure
+  findings, persistent-filesystem priority, reserved-space context and visible deleted-open files.
+- Explain network uplinks, carrier/speed/duplex, bridge membership, cumulative errors/drops,
+  bound listeners and IPv4/IPv6 routes with explicit missing-access semantics.
+- Read structured Linux journal priorities and service identity; wrap full messages, avoid folding
+  unrelated sources together, and retain successful collector access notices as coverage limits.
+- Use spare cockpit height for per-workload CPU history charts and live inventory detail panels.
+- Show a bounded workload overview with named VMs, grouped services and host RAM, swap,
+  storage and temperature context on larger terminals; keep the full process list in lens-top.
+- Inspect local libvirt VMs read-only, including stable UUID identity, CPU, host RSS,
+  network and disk counters, allocations and live charts.
+- Show inventory age and collection coverage limits, with informational health findings
+  explaining unavailable data instead of claiming the entire host is clear.
+
 ## [0.3.6] - 2026-10-29
 
 ### Added

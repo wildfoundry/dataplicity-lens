@@ -5,9 +5,14 @@ mod container_monitor;
 mod containers;
 use container_monitor::ContainerMonitor;
 mod hardware;
+mod investigate;
+mod journal;
+mod libvirt;
+mod native_details;
+mod overview;
+mod storage_activity;
 
 use std::{
-    cmp::Ordering,
     collections::{BTreeMap, VecDeque},
     env,
     io::{self, IsTerminal, Read, Seek, SeekFrom, Write},
@@ -635,10 +640,18 @@ fn jsonl_defaults_for_view(view: View) -> Vec<&'static str> {
             "host",
             "mount",
             "block_device",
+            "storage_detail",
             "deleted_open_file",
             "finding",
         ],
-        View::Net => vec!["host", "interface", "route", "socket", "finding"],
+        View::Net => vec![
+            "host",
+            "interface",
+            "network_detail",
+            "route",
+            "socket",
+            "finding",
+        ],
         View::Hardware => vec!["host", "hardware_device", "finding"],
         View::System => vec!["host", "finding"],
         View::Health => vec!["host", "finding", "collection_warning"],
@@ -778,9 +791,12 @@ fn validate_view_args(view: View, args: &ViewArgs) -> Result<()> {
     }
     if let Some(runtime) = args.container_runtime.as_deref() {
         let runtime = runtime.to_ascii_lowercase();
-        if !matches!(runtime.as_str(), "docker" | "podman" | "nerdctl" | "lxd") {
+        if !matches!(
+            runtime.as_str(),
+            "docker" | "podman" | "nerdctl" | "lxd" | "libvirt"
+        ) {
             return Err(usage_err(
-                "--runtime must be docker, podman, nerdctl, or lxd",
+                "--runtime must be docker, podman, nerdctl, lxd, or libvirt",
             ));
         }
     }
@@ -1415,9 +1431,11 @@ fn cockpit_loop(
                             interface.tx_bytes = Some(*tx);
                         }
                     }
+                    network_activity.set_scope(&snapshot);
                     network_activity.observe(&snapshot.interfaces, Instant::now());
                     snapshot.host = sample.snapshot.host.clone();
                     snapshot.processes.clone_from(&sample.snapshot.processes);
+                    cpu_activity.workloads.observe(&snapshot);
                     latest_live_snapshot = Some(sample.snapshot);
                     live_error_reported = false;
                     live_sample_in_flight = false;
@@ -1652,6 +1670,7 @@ struct CpuActivity {
     previous_idle_ticks: u64,
     previous_process_ticks: BTreeMap<(u32, u64), u64>,
     history: VecDeque<u64>,
+    workloads: overview::WorkloadHistory,
 }
 
 impl CpuActivity {
@@ -1712,6 +1731,7 @@ struct SpecialistUpdate {
 
 #[derive(Debug, Default)]
 struct NetworkActivity {
+    scope: Option<Vec<String>>,
     previous: BTreeMap<String, (u64, u64)>,
     rates: BTreeMap<String, (u64, u64)>,
     rx_history: VecDeque<u64>,
@@ -1720,6 +1740,28 @@ struct NetworkActivity {
 }
 
 impl NetworkActivity {
+    fn set_scope(&mut self, snapshot: &SystemSnapshot) {
+        let mut names: Vec<_> = snapshot
+            .routes
+            .iter()
+            .filter(|route| matches!(route.destination.as_str(), "default" | "0.0.0.0/0" | "::/0"))
+            .filter_map(|route| route.interface.clone())
+            .collect();
+        names.sort();
+        names.dedup();
+        let scope = (!names.is_empty()).then_some(names);
+        if self.scope != scope {
+            self.rx_history.clear();
+            self.tx_history.clear();
+            self.scope = scope;
+        }
+    }
+    fn scope_label(&self) -> String {
+        self.scope
+            .as_ref()
+            .map(|names| format!("UPLINK {}", names.join(",")))
+            .unwrap_or_else(|| "ALL LINKS".into())
+    }
     fn observe(&mut self, interfaces: &[Interface], now: Instant) {
         let current: BTreeMap<_, _> = interfaces
             .iter()
@@ -1749,7 +1791,10 @@ impl NetworkActivity {
             let rx_rate = (rx.saturating_sub(*previous_rx) as f64 / elapsed) as u64;
             let tx_rate = (tx.saturating_sub(*previous_tx) as f64 / elapsed) as u64;
             self.rates.insert(name.clone(), (rx_rate, tx_rate));
-            if name != "lo" && !name.starts_with("lo0") {
+            if name != "lo"
+                && !name.starts_with("lo0")
+                && self.scope.as_ref().is_none_or(|names| names.contains(name))
+            {
                 total_rx = total_rx.saturating_add(rx_rate);
                 total_tx = total_tx.saturating_add(tx_rate);
             }
@@ -1956,10 +2001,12 @@ fn spawn_specialist_collection(view: View, args: ViewArgs) -> Receiver<Specialis
                 snapshot.deleted_open_files =
                     collect_deleted_open_files(&mut snapshot.collection_warnings);
                 snapshot.block_devices = collect_block_devices(&mut snapshot.collection_warnings);
+                snapshot.storage_details = native_details::storage(&snapshot.block_devices);
                 let _ = send_specialist_update(&sender, view, snapshot, &args, false, "Ready");
             }
             View::Net => {
                 snapshot.interfaces = collect_interfaces(&mut snapshot.collection_warnings);
+                snapshot.network_details = native_details::network(&snapshot.interfaces);
                 snapshot.routes = collect_routes(&mut snapshot.collection_warnings);
                 if !send_specialist_update(
                     &sender,
@@ -2015,11 +2062,13 @@ fn spawn_specialist_collection(view: View, args: ViewArgs) -> Receiver<Specialis
                 snapshot.log_sources = vec![platform_log_source()];
                 snapshot.log_sources.extend(file_sources);
                 snapshot.interfaces = collect_interfaces(&mut snapshot.collection_warnings);
+                snapshot.network_details = native_details::network(&snapshot.interfaces);
                 snapshot.routes = collect_routes(&mut snapshot.collection_warnings);
                 snapshot.sockets = collect_sockets(&mut snapshot.collection_warnings);
                 snapshot.deleted_open_files =
                     collect_deleted_open_files(&mut snapshot.collection_warnings);
                 snapshot.block_devices = collect_block_devices(&mut snapshot.collection_warnings);
+                snapshot.storage_details = native_details::storage(&snapshot.block_devices);
                 collect_hardware_context(&mut snapshot);
                 snapshot.findings = diagnose(&snapshot);
                 snapshot
@@ -2063,12 +2112,15 @@ fn render_cockpit_content(
     rows: u16,
     stdout: &mut impl Write,
 ) -> Result<()> {
+    let output = stdout;
+    let stdout = &mut Vec::new();
     let host = &snapshot.host;
     let columns = terminal::size().map_or(88, |(width, _)| width);
     if columns < 36 || rows < 10 {
         writeln!(stdout, "LENS")?;
         writeln!(stdout, "Terminal too small ({columns}x{rows}).")?;
         writeln!(stdout, "Resize to at least 36x10 or press q to quit.")?;
+        output.write_all(stdout)?;
         return Ok(());
     }
     let width = usize::from(columns);
@@ -2228,72 +2280,7 @@ fn render_cockpit_content(
     }
 
     if rows >= 32 {
-        let mut processes: Vec<_> = snapshot.processes.iter().collect();
-        processes.sort_by(|left, right| {
-            right
-                .cpu_percent
-                .partial_cmp(&left.cpu_percent)
-                .unwrap_or(Ordering::Equal)
-                .then_with(|| {
-                    right
-                        .memory_percent
-                        .partial_cmp(&left.memory_percent)
-                        .unwrap_or(Ordering::Equal)
-                })
-        });
-        writeln!(
-            stdout,
-            "\n  {}",
-            ink("BUSIEST PROCESSES", Ink::Label, colour)
-        )?;
-        let extra = usize::from(rows.saturating_sub(36));
-        let process_capacity = if rows < 36 {
-            usize::from(rows.saturating_sub(31)).max(1)
-        } else {
-            3 + (extra * 2 / 3)
-        };
-        for process in processes.into_iter().take(process_capacity) {
-            if width >= 70 {
-                writeln!(
-                    stdout,
-                    "  {}  {}  {} {}  {} {}",
-                    ink(&format!("{:>6}", process.pid), Ink::Muted, colour),
-                    ink(
-                        &format!(
-                            "{:<width$}",
-                            truncate_text(&process.name, width.saturating_sub(50)),
-                            width = width.saturating_sub(50)
-                        ),
-                        Ink::Bright,
-                        colour
-                    ),
-                    ink("CPU", Ink::Label, colour),
-                    ink(&format!("{:>5.1}%", process.cpu_percent), Ink::Info, colour),
-                    ink("MEM", Ink::Label, colour),
-                    ink(
-                        &format!("{:>5.1}%", process.memory_percent),
-                        Ink::Attention,
-                        colour
-                    ),
-                )?;
-            } else {
-                writeln!(
-                    stdout,
-                    "  {}  {}  {}",
-                    ink(&format!("{:>6}", process.pid), Ink::Muted, colour),
-                    ink(
-                        &format!(
-                            "{:<width$}",
-                            truncate_text(&process.name, width.saturating_sub(24)),
-                            width = width.saturating_sub(24)
-                        ),
-                        Ink::Bright,
-                        colour
-                    ),
-                    ink(&format!("{:>5.1}%", process.cpu_percent), Ink::Info, colour),
-                )?;
-            }
-        }
+        overview::render_workloads(snapshot, width, rows, stdout)?;
     }
 
     let critical = snapshot
@@ -2317,23 +2304,42 @@ fn render_cockpit_content(
                 colour,
             )
         )?;
-    } else if snapshot.findings.is_empty() {
-        writeln!(stdout, "  {}", badge(" ALL CLEAR ", Ink::Success, colour))?;
-    } else {
+    } else if critical == 0 && attention == 0 {
+        let limited = !overview::limits(snapshot).is_empty();
         writeln!(
             stdout,
-            "  {}  {}  {}",
-            badge(&format!(" {critical} CRITICAL "), Ink::Critical, colour),
-            badge(&format!(" {attention} ATTENTION "), Ink::Attention, colour),
-            ink(
-                &format!(
-                    "{critical} critical {} {attention} attention",
-                    glyphs.separator
-                ),
-                Ink::Muted,
+            "  {}",
+            badge(
+                if limited {
+                    " LIMITED COVERAGE "
+                } else {
+                    " NO ACTIONABLE ISSUES "
+                },
+                if limited {
+                    Ink::Attention
+                } else {
+                    Ink::Success
+                },
                 colour,
-            ),
+            )
         )?;
+    } else {
+        let mut badges = Vec::new();
+        if critical > 0 {
+            badges.push(badge(
+                &format!(" {critical} CRITICAL "),
+                Ink::Critical,
+                colour,
+            ));
+        }
+        if attention > 0 {
+            badges.push(badge(
+                &format!(" {attention} ATTENTION "),
+                Ink::Attention,
+                colour,
+            ));
+        }
+        writeln!(stdout, "  {}", badges.join("  "))?;
         if rows >= 36 {
             let extra = usize::from(rows.saturating_sub(36));
             let finding_capacity = 2 + (extra - extra * 2 / 3);
@@ -2341,7 +2347,11 @@ fn render_cockpit_content(
                 writeln!(
                     stdout,
                     "  {} {}",
-                    ink(&glyphs.bullet.to_string(), Ink::Critical, colour),
+                    ink(
+                        &glyphs.bullet.to_string(),
+                        severity_ink(finding.severity),
+                        colour
+                    ),
                     ink(
                         &truncate_text(&finding.title, width.saturating_sub(6)),
                         Ink::Muted,
@@ -2352,6 +2362,9 @@ fn render_cockpit_content(
         }
     }
 
+    if !loading && rows >= 40 {
+        overview::render_coverage(snapshot, width, 0, stdout)?;
+    }
     writeln!(stdout, "\n  {}", ink("EXPLORE", Ink::Label, colour))?;
     let explore_columns = if width >= 150 && rows >= 26 {
         3usize
@@ -2409,6 +2422,11 @@ fn render_cockpit_content(
             }
         }
     }
+    if !loading && rows >= 50 {
+        let used = stdout.iter().filter(|byte| **byte == b'\n').count();
+        let budget = usize::from(rows).saturating_sub(used + 5);
+        overview::render_details(snapshot, &cpu_activity.workloads, width, budget, stdout)?;
+    }
     if rows >= 30 {
         clear_gap_and_anchor_footer(stdout, rows)?;
     } else {
@@ -2451,6 +2469,7 @@ fn render_cockpit_content(
     if rows >= 22 {
         write!(stdout, "{}", ink(&frame_bottom(width), Ink::Border, colour))?;
     }
+    output.write_all(stdout)?;
     Ok(())
 }
 
@@ -2570,7 +2589,7 @@ fn render_cockpit_activity(
                 ink(&rx_chart, Ink::Info, colour),
                 glyphs.transmit,
                 human_bytes(tx),
-                ink(&tx_chart, Ink::Attention, colour),
+                ink(&tx_chart, Ink::Success, colour),
             )?;
         } else {
             writeln!(
@@ -2682,7 +2701,8 @@ fn render_wide_cockpit_activity(
         ),
         &[
             format!(
-                "{} {}/s  peak {}/s  {separator}  {} {}/s  peak {}/s",
+                "{}  {} {}/s  peak {}/s  {separator}  {} {}/s  peak {}/s",
+                network_activity.scope_label(),
                 glyphs.receive,
                 human_bytes(rx),
                 human_bytes(rx_peak),
@@ -2699,12 +2719,36 @@ fn render_wide_cockpit_activity(
     );
 
     writeln!(stdout)?;
-    for (cpu_line, network_line) in cpu_lines.iter().zip(&network_lines) {
+    let cpu_title = format!(
+        "CPU PULSE {separator} {} LIVE {separator} {cpu_graph_width} samples",
+        glyphs.live
+    );
+    let network_title = format!(
+        "NETWORK FLOW {separator} {} LIVE {separator} {network_graph_width} samples",
+        glyphs.live
+    );
+    for (index, (cpu_line, network_line)) in cpu_lines.iter().zip(&network_lines).enumerate() {
         writeln!(
             stdout,
             "  {}  {}",
-            ink(cpu_line, Ink::Info, colour),
-            ink(network_line, Ink::Attention, colour),
+            overview::style_frame_line(
+                cpu_line,
+                &cpu_title,
+                Ink::Info,
+                if index == 1 { Ink::Bright } else { Ink::Info },
+                colour
+            ),
+            overview::style_frame_line(
+                network_line,
+                &network_title,
+                Ink::Success,
+                if index == 1 {
+                    Ink::Bright
+                } else {
+                    Ink::Success
+                },
+                colour
+            ),
         )?;
     }
     Ok(())
@@ -2939,7 +2983,8 @@ fn cockpit_containers_summary(snapshot: &SystemSnapshot) -> String {
         (lower.contains("docker")
             || lower.contains("podman")
             || lower.contains("nerdctl")
-            || lower.contains("lxd"))
+            || lower.contains("lxd")
+            || lower.contains("libvirt"))
             && (lower.contains("not usable")
                 || lower.contains("access denied")
                 || lower.contains("permission"))
@@ -3216,16 +3261,21 @@ impl Ink {
     const fn foreground(self, light: bool) -> &'static str {
         match (self, light) {
             (Self::Bright, _) => "1;39",
-            (Self::Brand, _) => "1;38;2;143;91;215",
-            (Self::Info, _) => "1;38;2;0;126;163",
-            (Self::Success, _) => "1;38;2;0;137;94",
-            (Self::Attention, _) => "1;38;2;166;95;0",
-            (Self::Critical, _) => "1;38;2;199;51;80",
+            (Self::Brand, true) => "1;38;2;143;91;215",
+            (Self::Brand, false) => "1;38;2;183;145;244",
+            (Self::Info, true) => "1;38;2;0;126;163",
+            (Self::Info, false) => "1;38;2;58;195;218",
+            (Self::Success, true) => "1;38;2;0;137;94",
+            (Self::Success, false) => "1;38;2;94;214;159",
+            (Self::Attention, true) => "1;38;2;166;95;0",
+            (Self::Attention, false) => "1;38;2;240;184;87",
+            (Self::Critical, true) => "1;38;2;199;51;80",
+            (Self::Critical, false) => "1;38;2;244;112;137",
             (Self::Label, true) => "1;38;2;65;78;96",
             (Self::Muted, true) => "38;2;72;85;102",
             (Self::Border, true) => "38;2;105;116;132",
-            (Self::Label, false) => "1;38;2;105;116;132",
-            (Self::Muted, false) => "38;2;105;116;132",
+            (Self::Label, false) => "1;38;2;184;197;214",
+            (Self::Muted, false) => "38;2;142;157;177",
             (Self::Border, false) => "38;2;48;62;84",
         }
     }
@@ -3353,7 +3403,13 @@ fn preserve_specialist_selection(
             })
             .unwrap_or_else(|| selected.min(next.findings.len().saturating_sub(1))),
         View::System => selected.min(specialist_item_count(view, next).saturating_sub(1)),
-        _ => selected.min(specialist_item_count(view, next).saturating_sub(1)),
+        _ => investigate::selection_key(view, previous, selected)
+            .and_then(|key| {
+                (0..specialist_item_count(view, next)).find(|index| {
+                    investigate::selection_key(view, next, *index).as_deref() == Some(key.as_str())
+                })
+            })
+            .unwrap_or_else(|| selected.min(specialist_item_count(view, next).saturating_sub(1))),
     }
 }
 
@@ -3410,7 +3466,8 @@ fn severity_ink(severity: Severity) -> Ink {
 fn log_ink(priority: Option<&str>) -> Ink {
     match priority.unwrap_or_default().to_ascii_lowercase().as_str() {
         "emerg" | "alert" | "crit" | "critical" | "err" | "error" => Ink::Critical,
-        "warning" | "warn" | "notice" => Ink::Attention,
+        "warning" | "warn" => Ink::Attention,
+        "notice" => Ink::Bright,
         _ => Ink::Muted,
     }
 }
@@ -3420,6 +3477,7 @@ fn render_specialist(
     view: View,
     snapshot: &SystemSnapshot,
     network_activity: &NetworkActivity,
+    storage_activity: &storage_activity::StorageActivity,
     container_monitor: Option<&ContainerMonitor>,
     selected: usize,
     inspecting: bool,
@@ -3433,6 +3491,7 @@ fn render_specialist(
         view,
         snapshot,
         network_activity,
+        storage_activity,
         container_monitor,
         selected,
         inspecting,
@@ -3449,6 +3508,7 @@ fn render_specialist_content(
     view: View,
     snapshot: &SystemSnapshot,
     network_activity: &NetworkActivity,
+    storage_activity: &storage_activity::StorageActivity,
     container_monitor: Option<&ContainerMonitor>,
     selected: usize,
     inspecting: bool,
@@ -3457,11 +3517,14 @@ fn render_specialist_content(
     rows: u16,
     stdout: &mut impl Write,
 ) -> Result<()> {
+    let output = stdout;
+    let stdout = &mut Vec::new();
     let columns = terminal::size().map_or(100, |(width, _)| width);
     if columns < 36 || rows < 10 {
         writeln!(stdout, "LENS / {}", view.title().to_ascii_uppercase())?;
         writeln!(stdout, "Terminal too small ({columns}x{rows}).")?;
         writeln!(stdout, "Resize to at least 36x10 or press q to quit.")?;
+        output.write_all(stdout)?;
         return Ok(());
     }
     let width = usize::from(columns);
@@ -3486,6 +3549,8 @@ fn render_specialist_content(
             ),
             if loading {
                 badge(" LOADING ", Ink::Attention, colour)
+            } else if !snapshot.collection_warnings.is_empty() {
+                badge(" LIMITED ", Ink::Attention, colour)
             } else {
                 badge(" LIVE ", Ink::Success, colour)
             },
@@ -3516,7 +3581,17 @@ fn render_specialist_content(
         stdout,
         "  {}",
         ink(
-            &truncate_text(&console_text(status), width.saturating_sub(4)),
+            &truncate_text(
+                &journal::display(&if snapshot.collection_warnings.is_empty() {
+                    status.to_owned()
+                } else {
+                    format!(
+                        "{status} | {} collection limits",
+                        overview::limits(snapshot).len()
+                    )
+                }),
+                width.saturating_sub(4)
+            ),
             Ink::Muted,
             colour
         )
@@ -3527,6 +3602,23 @@ fn render_specialist_content(
         ink(&frame_divider(width), Ink::Border, colour)
     )?;
 
+    let content_rows = if !loading && rows >= 26 {
+        writeln!(
+            stdout,
+            "  {}",
+            ink(
+                &truncate_text(
+                    &investigate::summary(view, snapshot),
+                    width.saturating_sub(4)
+                ),
+                Ink::Bright,
+                colour
+            )
+        )?;
+        rows.saturating_sub(1)
+    } else {
+        rows
+    };
     match view {
         View::Health if loading && !specialist_has_data(view, snapshot) => writeln!(
             stdout,
@@ -3538,37 +3630,54 @@ fn render_specialist_content(
             )
         )?,
         View::Services => {
-            render_service_specialist(snapshot, selected, inspecting, rows, width, stdout)?
+            render_service_specialist(snapshot, selected, inspecting, content_rows, width, stdout)?
         }
         View::Containers => {
             if let Some((monitor, container)) = container_monitor
                 .filter(|m| inspecting && !m.allocations)
                 .zip(snapshot.containers.get(selected))
             {
-                monitor.render(container, rows, width, stdout)?;
+                monitor.render(container, content_rows, width, stdout)?;
             } else {
-                render_container_specialist(snapshot, selected, inspecting, rows, width, stdout)?;
+                render_container_specialist(
+                    snapshot,
+                    selected,
+                    inspecting,
+                    content_rows,
+                    width,
+                    stdout,
+                )?;
             }
         }
-        View::Logs => render_log_specialist(snapshot, selected, inspecting, rows, width, stdout)?,
-        View::Disk => render_disk_specialist(snapshot, selected, inspecting, rows, width, stdout)?,
+        View::Logs => {
+            render_log_specialist(snapshot, selected, inspecting, content_rows, width, stdout)?
+        }
+        View::Disk => render_disk_specialist(
+            snapshot,
+            storage_activity,
+            selected,
+            inspecting,
+            content_rows,
+            width,
+            stdout,
+        )?,
         View::Net => render_net_specialist(
             snapshot,
             network_activity,
             selected,
             inspecting,
-            rows,
+            content_rows,
             width,
             stdout,
         )?,
         View::Hardware => {
-            render_hardware_specialist(snapshot, selected, inspecting, rows, width, stdout)?
+            render_hardware_specialist(snapshot, selected, inspecting, content_rows, width, stdout)?
         }
         View::System => {
-            render_system_specialist(snapshot, selected, inspecting, rows, width, stdout)?
+            render_system_specialist(snapshot, selected, inspecting, content_rows, width, stdout)?
         }
         View::Health => {
-            render_health_specialist(snapshot, selected, inspecting, rows, width, stdout)?
+            render_health_specialist(snapshot, selected, inspecting, content_rows, width, stdout)?
         }
         _ if loading && !specialist_has_data(view, snapshot) => writeln!(
             stdout,
@@ -3586,6 +3695,17 @@ fn render_specialist_content(
         _ => render_plain(view, snapshot, stdout)?,
     }
 
+    if inspecting && !loading {
+        let used = stdout.iter().filter(|byte| **byte == b'\n').count();
+        investigate::render(
+            view,
+            snapshot,
+            selected,
+            width,
+            usize::from(rows).saturating_sub(used + 5),
+            stdout,
+        )?;
+    }
     if rows >= 30 {
         clear_gap_and_anchor_footer(stdout, rows)?;
     } else {
@@ -3632,16 +3752,24 @@ fn render_specialist_content(
         )?;
     } else if width >= 80 && view != View::Processes && specialist_item_count(view, snapshot) > 0 {
         if inspecting {
-            writeln!(
-                stdout,
-                "  {} {}   {} {}   {} {}",
-                keycap("Esc", colour),
-                ink("back", Ink::Muted, colour),
-                keycap("r", colour),
-                ink("refresh", Ink::Muted, colour),
-                keycap("q", colour),
-                ink("quit", Ink::Muted, colour),
-            )?;
+            if let Some((related, _)) = investigate::followup(view, snapshot, selected) {
+                writeln!(
+                    stdout,
+                    "  Esc: back   g: related {}   r: refresh   q: quit",
+                    related.title()
+                )?;
+            } else {
+                writeln!(
+                    stdout,
+                    "  {} {}   {} {}   {} {}",
+                    keycap("Esc", colour),
+                    ink("back", Ink::Muted, colour),
+                    keycap("r", colour),
+                    ink("refresh", Ink::Muted, colour),
+                    keycap("q", colour),
+                    ink("quit", Ink::Muted, colour),
+                )?;
+            }
         } else {
             let action_hint = if (view == View::Services && cfg!(target_os = "linux"))
                 || view == View::Containers
@@ -3685,6 +3813,7 @@ fn render_specialist_content(
         )?;
     }
     write!(stdout, "{}", ink(&frame_bottom(width), Ink::Border, colour))?;
+    output.write_all(stdout)?;
     Ok(())
 }
 
@@ -3716,7 +3845,7 @@ fn render_log_specialist(
                     " {} ",
                     item.priority
                         .as_deref()
-                        .unwrap_or("info")
+                        .unwrap_or("unknown")
                         .to_ascii_uppercase()
                 ),
                 log_ink(item.priority.as_deref()),
@@ -3747,15 +3876,13 @@ fn render_log_specialist(
             )?;
         }
         writeln!(out, "\n  {}", ink("MESSAGE", Ink::Label, colour))?;
-        writeln!(
-            out,
-            "  {}",
-            ink(
-                &truncate_text(&item.message, width.saturating_sub(4)),
-                Ink::Bright,
-                colour
-            )
-        )?;
+        for line in investigate::wrapped(
+            &item.message,
+            width.saturating_sub(4),
+            usize::from(rows.saturating_sub(15)).max(1),
+        ) {
+            writeln!(out, "  {}", ink(&line, Ink::Bright, colour))?;
+        }
         return Ok(());
     }
 
@@ -3780,7 +3907,7 @@ fn render_log_specialist(
     let start = viewport_start(selected, snapshot.logs.len(), capacity);
     let message_width = width.saturating_sub(50).max(16);
     for (index, item) in snapshot.logs.iter().enumerate().skip(start).take(capacity) {
-        let priority = item.priority.as_deref().unwrap_or("info");
+        let priority = item.priority.as_deref().unwrap_or("unknown");
         let time = item.timestamp.get(11..19).unwrap_or(&item.timestamp);
         let source = item.unit.as_deref().unwrap_or(&item.source);
         let repeat = if item.repeated > 1 {
@@ -3794,14 +3921,20 @@ fn render_log_specialist(
                 truncate_text(priority, 8),
                 time,
                 truncate_text(source, 22),
-                truncate_text(&item.message, message_width.saturating_sub(repeat.len())),
+                truncate_text(
+                    &journal::display(&item.message),
+                    message_width.saturating_sub(repeat.len())
+                ),
                 repeat
             )
         } else {
             format!(
                 "  {:<8} {}{}",
                 time,
-                truncate_text(&item.message, width.saturating_sub(14 + repeat.len())),
+                truncate_text(
+                    &journal::display(&item.message),
+                    width.saturating_sub(14 + repeat.len())
+                ),
                 repeat
             )
         };
@@ -3987,7 +4120,14 @@ fn render_container_resources(
                 .unwrap_or("not reported")
                 .to_owned(),
         ),
-        ("RAM USAGE", memory_used),
+        (
+            if container.runtime == "libvirt" {
+                "HOST RSS"
+            } else {
+                "RAM USAGE"
+            },
+            memory_used,
+        ),
         (
             "ROOT DISK LIMIT",
             r.root_disk_limit
@@ -3996,13 +4136,19 @@ fn render_container_resources(
                 .to_owned(),
         ),
         (
-            "ROOT DISK CAPACITY",
+            if container.runtime == "libvirt" {
+                "FIRST DISK CAPACITY"
+            } else {
+                "ROOT DISK CAPACITY"
+            },
             r.root_disk_capacity_bytes
                 .map(human_bytes)
                 .unwrap_or_else(|| "not reported".into()),
         ),
         (
-            if container.runtime == "lxd" {
+            if container.runtime == "libvirt" {
+                "IMAGE ALLOCATION"
+            } else if container.runtime == "lxd" {
                 "ROOT DISK USAGE"
             } else {
                 "WRITABLE LAYER"
@@ -4021,6 +4167,13 @@ fn render_container_resources(
             out,
             "  STORAGE POOL: {}",
             truncate_text(pool, width.saturating_sub(16))
+        )?;
+    }
+    if container.runtime == "libvirt" {
+        writeln!(out, "  Host RSS is distinct from guest RAM usage.")?;
+        writeln!(
+            out,
+            "  Image allocation is not guest filesystem usage. VM inspection is read-only."
         )?;
     }
     for mount in r.mounts.iter().take(4) {
@@ -4065,6 +4218,7 @@ fn render_container_specialist(
                 || warning.contains("podman")
                 || warning.contains("nerdctl")
                 || warning.contains("lxd")
+                || warning.contains("libvirt")
             {
                 writeln!(out, "  {}", ink(warning, Ink::Attention, colour))?;
             }
@@ -4394,6 +4548,7 @@ fn container_list_layout(width: usize) -> ContainerListLayout {
 
 fn render_disk_specialist(
     snapshot: &SystemSnapshot,
+    storage_activity: &storage_activity::StorageActivity,
     selected: usize,
     inspecting: bool,
     rows: u16,
@@ -4507,9 +4662,43 @@ fn render_disk_specialist(
                 }
             )?;
         }
+        let device = if let Some(mount) = snapshot.mounts.get(selected) {
+            snapshot
+                .block_devices
+                .iter()
+                .find(|device| {
+                    device
+                        .mountpoints
+                        .iter()
+                        .any(|target| target == &mount.target)
+                })
+                .map(|device| device.name.as_str())
+                .or_else(|| mount.source.strip_prefix("/dev/"))
+        } else {
+            snapshot
+                .block_devices
+                .get(selected.saturating_sub(snapshot.mounts.len()))
+                .map(|device| device.name.as_str())
+        };
+        if let Some(device) = device {
+            storage_activity.render(device, width, rows, out)?;
+        }
         return Ok(());
     }
-    if width >= 70 {
+    if width >= 110 {
+        writeln!(
+            out,
+            "{}",
+            ink(
+                &format!(
+                    "  {:<8} {:<24} {:>7} {:>9} {:>9} {:>7} {}",
+                    "TYPE", "TARGET", "USED", "TOTAL", "AVAILABLE", "INODES", "SOURCE / MODEL"
+                ),
+                Ink::Label,
+                colour
+            )
+        )?;
+    } else if width >= 70 {
         writeln!(
             out,
             "  {:<9} {:<34} {:>9}  {}",
@@ -4531,7 +4720,43 @@ fn render_disk_specialist(
     let capacity = usize::from(rows.saturating_sub(9)).max(1);
     let start = viewport_start(selected, count, capacity);
     for index in start..(start + capacity).min(count) {
-        let row = if width < 70 {
+        let row = if width >= 110 {
+            if let Some(mount) = snapshot.mounts.get(index) {
+                format!(
+                    "  {:<8} {:<24} {:>6.1}% {:>9} {:>9} {:>7} {}",
+                    if investigate::persistent_mount(mount) {
+                        "disk fs"
+                    } else {
+                        "other fs"
+                    },
+                    truncate_text(&mount.target, 24),
+                    mount.used_percent,
+                    human_bytes(mount.total_bytes),
+                    human_bytes(mount.available_bytes),
+                    investigate::inode_percent(mount)
+                        .map(|p| format!("{p:.0}%"))
+                        .unwrap_or_else(|| "?".into()),
+                    truncate_text(&mount.source, width.saturating_sub(76))
+                )
+            } else {
+                let device = &snapshot.block_devices[index - snapshot.mounts.len()];
+                let model = snapshot
+                    .storage_details
+                    .get(&device.name)
+                    .and_then(|d| d.model.as_deref())
+                    .unwrap_or("");
+                format!(
+                    "  {:<8} {:<24} {:>7} {:>9} {:>9} {:>7} {}",
+                    device.kind,
+                    truncate_text(&device.name, 24),
+                    "-",
+                    human_bytes(device.size_bytes),
+                    "-",
+                    "-",
+                    truncate_text(model, width.saturating_sub(76))
+                )
+            }
+        } else if width < 70 {
             if let Some(mount) = snapshot.mounts.get(index) {
                 format!(
                     "  {:<8} {:<target_width$} {:>6.1}%",
@@ -4571,7 +4796,30 @@ fn render_disk_specialist(
         if index == selected {
             writeln!(out, "{}", selected_row(&row, colour))?;
         } else {
-            writeln!(out, "{}", ink(&row, Ink::Muted, colour))?;
+            let tone = if let Some(mount) = snapshot.mounts.get(index) {
+                if !investigate::persistent_mount(mount) {
+                    Ink::Muted
+                } else if mount.used_percent >= 97.0
+                    || investigate::inode_percent(mount).is_some_and(|p| p >= 97.0)
+                {
+                    Ink::Critical
+                } else if mount.used_percent >= 90.0
+                    || investigate::inode_percent(mount).is_some_and(|p| p >= 90.0)
+                {
+                    Ink::Attention
+                } else {
+                    Ink::Bright
+                }
+            } else if snapshot
+                .block_devices
+                .get(index - snapshot.mounts.len())
+                .is_some_and(|d| matches!(d.kind.as_str(), "loop" | "rom"))
+            {
+                Ink::Muted
+            } else {
+                Ink::Bright
+            };
+            writeln!(out, "{}", ink(&truncate_text(&row, width), tone, colour))?;
         }
     }
     Ok(())
@@ -4631,7 +4879,11 @@ fn render_net_specialist(
                 writeln!(
                     out,
                     "  {} {} {}/s  {} {}/s",
-                    ink("ACTIVITY", Ink::Label, colour),
+                    ink(
+                        "ALL LINKS (may double-count VM traffic)",
+                        Ink::Label,
+                        colour
+                    ),
                     glyphs.receive,
                     human_bytes(rx),
                     glyphs.transmit,
@@ -4745,7 +4997,11 @@ fn render_net_specialist(
         writeln!(
             out,
             "  {}  {} {}/s  {} {}/s",
-            ink("ACTIVITY", Ink::Label, colour),
+            ink(
+                &truncate_text(&activity.scope_label(), width.saturating_sub(36)),
+                Ink::Label,
+                colour
+            ),
             glyphs.receive,
             human_bytes(rx),
             glyphs.transmit,
@@ -4766,10 +5022,10 @@ fn render_net_specialist(
             writeln!(
                 out,
                 "  {} {}",
-                ink("TX", Ink::Attention, colour),
+                ink("TX", Ink::Success, colour),
                 ink(
                     &activity_sparkline(&activity.tx_history, chart_width),
-                    Ink::Attention,
+                    Ink::Success,
                     colour
                 )
             )?;
@@ -4793,7 +5049,11 @@ fn render_net_specialist(
             ink("TYPE", Ink::Label, colour),
             ink("NAME", Ink::Label, colour),
             ink("STATE", Ink::Label, colour),
-            ink("DETAIL", Ink::Label, colour)
+            ink(
+                "ROLE / ACTIVITY / ADDRESS  (Tab: section)",
+                Ink::Label,
+                colour
+            )
         )?;
     } else {
         writeln!(
@@ -4856,7 +5116,19 @@ fn render_net_specialist(
                 truncate_text(&interface.name, 18),
                 interface.state,
                 truncate_text(
-                    &interface.addresses.join(" "),
+                    &format!(
+                        "{} | {}{}",
+                        investigate::network_role(snapshot, interface),
+                        activity
+                            .interface_rate(&interface.name)
+                            .map(|(rx, tx)| format!(
+                                "RX {}/s TX {}/s | ",
+                                human_bytes(rx),
+                                human_bytes(tx)
+                            ))
+                            .unwrap_or_default(),
+                        interface.addresses.join(" ")
+                    ),
                     width.saturating_sub(47).max(12)
                 )
             )
@@ -4877,7 +5149,12 @@ fn render_net_specialist(
                 truncate_text(&socket.local, 18),
                 socket.state,
                 truncate_text(
-                    socket.owner.as_deref().unwrap_or("unavailable"),
+                    &format!(
+                        "{} / {} | {}",
+                        socket.protocol,
+                        investigate::binding(socket),
+                        socket.owner.as_deref().unwrap_or("owner unavailable")
+                    ),
                     width.saturating_sub(47).max(12)
                 )
             )
@@ -4904,7 +5181,18 @@ fn render_net_specialist(
         if index == selected {
             writeln!(out, "{}", selected_row(&row, colour))?;
         } else {
-            writeln!(out, "{}", ink(&row, Ink::Muted, colour))?;
+            let tone = if let Some(interface) = snapshot.interfaces.get(index) {
+                if investigate::network_role(snapshot, interface) == "DEFAULT ROUTE" {
+                    Ink::Success
+                } else if interface.idle_bridge || interface.addresses.is_empty() {
+                    Ink::Muted
+                } else {
+                    Ink::Bright
+                }
+            } else {
+                Ink::Bright
+            };
+            writeln!(out, "{}", ink(&truncate_text(&row, width), tone, colour))?;
         }
     }
     Ok(())
@@ -4920,12 +5208,29 @@ fn render_health_specialist(
 ) -> Result<()> {
     let colour = terminal_colour_enabled();
     if snapshot.findings.is_empty() {
-        writeln!(out, "\n  {}", badge(" ALL CLEAR ", Ink::Success, colour))?;
+        writeln!(
+            out,
+            "\n  {}",
+            badge(
+                if overview::limits(snapshot).is_empty() {
+                    " NO ACTIONABLE ISSUES "
+                } else {
+                    " LIMITED COVERAGE "
+                },
+                if overview::limits(snapshot).is_empty() {
+                    Ink::Success
+                } else {
+                    Ink::Attention
+                },
+                colour,
+            )
+        )?;
         writeln!(
             out,
             "  {}",
             ink("No findings from the available checks.", Ink::Muted, colour)
         )?;
+        overview::render_coverage(snapshot, width, usize::from(rows.saturating_sub(12)), out)?;
         return Ok(());
     }
     let finding = &snapshot.findings[selected.min(snapshot.findings.len() - 1)];
@@ -4962,7 +5267,10 @@ fn render_health_specialist(
                         colour
                     ),
                     evidence.label,
-                    format!("{} {unit}", evidence.value).trim()
+                    truncate_text(
+                        &journal::display(&format!("{} {unit}", evidence.value)),
+                        width.saturating_sub(evidence.label.chars().count() + 8)
+                    )
                 )?;
             }
         }
@@ -5587,6 +5895,11 @@ fn specialist_loop(view: View, args: &ViewArgs, stdout: &mut impl Write) -> Resu
     let mut service_action: Option<ServiceActionDialog> = None;
     let mut container_action: Option<ContainerActionDialog> = None;
     let mut network_activity = NetworkActivity::default();
+    let mut disk_activity = storage_activity::StorageActivity::default();
+    let mut disk_receiver: Option<
+        Receiver<std::result::Result<BTreeMap<String, storage_activity::Counters>, String>>,
+    > = None;
+    let mut next_disk_sample = Instant::now();
     let mut container_monitor = ContainerMonitor::default();
     let mut container_poll_pending = false;
     let mut next_inventory = Instant::now() + Duration::from_secs(10);
@@ -5596,7 +5909,7 @@ fn specialist_loop(view: View, args: &ViewArgs, stdout: &mut impl Write) -> Resu
     let mut next_network_sample = Instant::now() + Duration::from_secs(1);
     // Kernel log output lands on top of a frame on a virtual or serial console, and only a new
     // frame removes it, so draw as often there as the network view already does.
-    let clock_interval = if matches!(view, View::Net | View::Containers)
+    let clock_interval = if matches!(view, View::Net | View::Containers | View::Disk)
         || TerminalEnvironment::detect().shares_screen_with_kernel_log()
     {
         1
@@ -5643,6 +5956,30 @@ fn specialist_loop(view: View, args: &ViewArgs, stdout: &mut impl Write) -> Resu
             activity_receiver = None;
             next_network_sample = Instant::now() + Duration::from_secs(1);
             redraw = true;
+        }
+        if view == View::Disk {
+            if let Some(update) = disk_receiver
+                .as_ref()
+                .and_then(|receiver| receiver.try_recv().ok())
+            {
+                match update {
+                    Ok(counters) => disk_activity.observe(counters, Instant::now()),
+                    Err(error) => {
+                        disk_activity.gap();
+                        status = error;
+                    }
+                }
+                disk_receiver = None;
+                next_disk_sample = Instant::now() + Duration::from_secs(1);
+                redraw = true;
+            }
+            if disk_receiver.is_none() && Instant::now() >= next_disk_sample {
+                let (sender, receiver) = mpsc::channel();
+                disk_receiver = Some(receiver);
+                thread::spawn(move || {
+                    let _ = sender.send(storage_activity::sample());
+                });
+            }
         }
         if view == View::Net
             && !snapshot.interfaces.is_empty()
@@ -5693,6 +6030,9 @@ fn specialist_loop(view: View, args: &ViewArgs, stdout: &mut impl Write) -> Resu
                 selected =
                     preserve_specialist_selection(view, &snapshot, &update.snapshot, selected);
                 snapshot = update.snapshot;
+                if view == View::Net {
+                    network_activity.set_scope(&snapshot);
+                }
                 if view == View::Net && network_activity.last_sample.is_none() {
                     network_activity.observe(&snapshot.interfaces, Instant::now());
                 }
@@ -5732,6 +6072,7 @@ fn specialist_loop(view: View, args: &ViewArgs, stdout: &mut impl Write) -> Resu
                 view,
                 &snapshot,
                 &network_activity,
+                &disk_activity,
                 Some(&container_monitor),
                 selected,
                 inspecting,
@@ -5862,6 +6203,12 @@ fn specialist_loop(view: View, args: &ViewArgs, stdout: &mut impl Write) -> Resu
                     selected = move_system_section(&snapshot, selected, 1);
                     redraw = true;
                 }
+                KeyCode::Tab if matches!(view, View::Disk | View::Net) && !inspecting => {
+                    if let Some(index) = investigate::next_section(view, &snapshot, selected) {
+                        selected = index;
+                    }
+                    redraw = true;
+                }
                 KeyCode::BackTab if view == View::System && !inspecting => {
                     selected = move_system_section(&snapshot, selected, -1);
                     redraw = true;
@@ -5877,6 +6224,15 @@ fn specialist_loop(view: View, args: &ViewArgs, stdout: &mut impl Write) -> Resu
                 }
                 KeyCode::Down | KeyCode::Char('j') if !inspecting => {
                     selected = move_selection(selected, 1, specialist_item_count(view, &snapshot));
+                    redraw = true;
+                }
+                KeyCode::Char('g') if inspecting => {
+                    if let Some((target, query)) = investigate::followup(view, &snapshot, selected)
+                    {
+                        launch_search(target, &query, stdout)?;
+                    } else {
+                        status = "No attributed related view for this selection".into();
+                    }
                     redraw = true;
                 }
                 KeyCode::Enter if inspecting && view == View::Health => {
@@ -5921,6 +6277,11 @@ fn specialist_loop(view: View, args: &ViewArgs, stdout: &mut impl Write) -> Resu
                 }
                 KeyCode::Char('a') if view == View::Containers && !inspecting => {
                     if let Some(container) = snapshot.containers.get(selected) {
+                        if container.runtime == "libvirt" {
+                            status = "Libvirt VMs are read-only; no action was offered.".into();
+                            redraw = true;
+                            continue;
+                        }
                         container_action = Some(ContainerActionDialog::new(
                             container.runtime.clone(),
                             container.id.clone(),
@@ -6828,7 +7189,7 @@ fn apply_ai_focus(mut snapshot: SystemSnapshot, args: &ViewArgs) -> SystemSnapsh
 }
 
 fn domain_base_snapshot(view: View) -> SystemSnapshot {
-    if matches!(view, View::Processes | View::Services) {
+    if matches!(view, View::Processes | View::Services | View::Net) {
         collect_base_snapshot()
     } else {
         let mut snapshot = SystemSnapshot::empty(hostname());
@@ -6874,9 +7235,11 @@ fn collect_view(
             snapshot.deleted_open_files =
                 collect_deleted_open_files(&mut snapshot.collection_warnings);
             snapshot.block_devices = collect_block_devices(&mut snapshot.collection_warnings);
+            snapshot.storage_details = native_details::storage(&snapshot.block_devices);
         }
         View::Net => {
             snapshot.interfaces = collect_interfaces(&mut snapshot.collection_warnings);
+            snapshot.network_details = native_details::network(&snapshot.interfaces);
             snapshot.routes = collect_routes(&mut snapshot.collection_warnings);
             snapshot.sockets = collect_sockets(&mut snapshot.collection_warnings);
             snapshot.cellular_modems = collect_cellular(&mut snapshot.collection_warnings);
@@ -6960,8 +7323,10 @@ fn enrich_snapshot(
     snapshot.logs = logs;
     snapshot.filesystems = filesystems(&mounts);
     snapshot.deleted_open_files = deleted_open_files;
+    snapshot.storage_details = native_details::storage(&block_devices);
     snapshot.block_devices = block_devices;
     snapshot.mounts = mounts;
+    snapshot.network_details = native_details::network(&interfaces);
     snapshot.interfaces = interfaces;
     snapshot.routes = routes;
     snapshot.sockets = sockets;
@@ -7352,6 +7717,10 @@ fn command_with_timeout(
         .and_then(|reader| reader.join().ok())
         .unwrap_or_default();
     if status.success() {
+        let notice = String::from_utf8_lossy(&stderr).trim().to_owned();
+        if !notice.is_empty() {
+            warnings.push(format!("{program}: {notice}"));
+        }
         Some(String::from_utf8_lossy(&stdout).into_owned())
     } else {
         let detail = String::from_utf8_lossy(&stderr).trim().to_owned();
@@ -7474,7 +7843,12 @@ fn parse_service_restart_counts(text: &str) -> Vec<(String, u64)> {
 #[cfg(target_os = "linux")]
 fn collect_logs(warnings: &mut Vec<String>, since: Option<&str>, limit: usize) -> Vec<LogEntry> {
     let limit = limit.to_string();
-    let mut args = vec!["--no-pager", "--output=short-iso"];
+    let mut args = vec![
+        "--no-pager",
+        "--output=json",
+        "--all",
+        "--output-fields=MESSAGE,PRIORITY,_SYSTEMD_UNIT,_SYSTEMD_USER_UNIT,UNIT,USER_UNIT",
+    ];
     if limit != "0" {
         args.extend(["-n", limit.as_str()]);
     }
@@ -7482,15 +7856,19 @@ fn collect_logs(warnings: &mut Vec<String>, since: Option<&str>, limit: usize) -
         args.extend(["--since", since]);
     }
     let text = command("journalctl", &args, warnings).unwrap_or_default();
-    let mut entries = Vec::<LogEntry>::new();
-    for line in text.lines() {
-        let entry = parse_journal_entry(line);
-        let message = entry.message.clone();
-        if let Some(previous) = entries.last_mut().filter(|entry| entry.message == message) {
-            previous.repeated += 1;
+    let mut entries = Vec::new();
+    let mut malformed = 0;
+    for line in text.lines().filter(|line| !line.trim().is_empty()) {
+        if let Some(entry) = journal::parse(line) {
+            journal::push(&mut entries, entry);
         } else {
-            entries.push(entry);
+            malformed += 1;
         }
+    }
+    if malformed > 0 {
+        warnings.push(format!(
+            "journalctl: {malformed} unsupported or malformed records omitted"
+        ));
     }
     entries
 }
@@ -7554,6 +7932,7 @@ fn parse_macos_log_entry(line: &str) -> LogEntry {
 }
 
 #[cfg(any(target_os = "linux", test))]
+#[cfg(test)]
 fn parse_journal_entry(line: &str) -> LogEntry {
     let (timestamp, message) = line.split_once(' ').unwrap_or(("", line));
     let unit = message
@@ -7835,7 +8214,12 @@ fn parse_block_device(line: &str) -> Option<BlockDevice> {
         let marker = format!("{key}=\"");
         let start = line.find(&marker)? + marker.len();
         let rest = &line[start..];
-        Some(rest.split('"').next()?.replace("\\x20", " "))
+        Some(
+            rest.split('"')
+                .next()?
+                .replace("\\x20", " ")
+                .replace("\\x0a", "\n"),
+        )
     };
     Some(BlockDevice {
         name: value("NAME")?,
@@ -7955,7 +8339,18 @@ fn parse_interface(line: &str) -> Option<Interface> {
         name: fields.next()?.to_owned(),
         state: fields.next()?.to_owned(),
         idle_bridge: false,
-        addresses: fields.map(str::to_owned).collect(),
+        addresses: fields
+            .filter(|value| {
+                value.split_once('/').is_some_and(|(address, prefix)| {
+                    address
+                        .split('%')
+                        .next()
+                        .is_some_and(|a| a.parse::<std::net::IpAddr>().is_ok())
+                        && prefix.parse::<u8>().is_ok()
+                })
+            })
+            .map(str::to_owned)
+            .collect(),
         rx_bytes: None,
         tx_bytes: None,
     })
@@ -8045,8 +8440,11 @@ fn parse_netstat_counters(text: &str) -> Vec<(String, u64, u64)> {
 #[cfg(target_os = "linux")]
 fn collect_routes(warnings: &mut Vec<String>) -> Vec<Route> {
     if let Some(text) = command("ip", &["route", "show"], warnings) {
+        let ipv6 = command("ip", &["-6", "route", "show"], warnings).unwrap_or_default();
         return text
             .lines()
+            .chain(ipv6.lines())
+            .filter(|line| !line.trim().is_empty())
             .enumerate()
             .map(|(index, line)| parse_route(index, line))
             .collect();
@@ -8468,6 +8866,21 @@ fn actionable_down_interface(interface: &Interface) -> bool {
 
 fn diagnose(snapshot: &SystemSnapshot) -> Vec<SystemFinding> {
     let mut findings = Vec::new();
+    let limits = overview::limits(snapshot);
+    if !limits.is_empty() {
+        findings.push(SystemFinding {
+            id: "collection.incomplete".into(), severity: Severity::Information,
+            title: "Inspection coverage is limited".into(),
+            summary: format!("{} collection limits; available checks cannot certify the whole host.", limits.len()),
+            evidence: limits.iter().map(|reason| lens_model::Evidence {
+                label: "collection limit".into(), value: (*reason).into(), unit: None,
+            }).collect(),
+            related_entities: vec![EntityId::Host(snapshot.host.hostname.clone())],
+            suggested_actions: vec!["Review the collector errors above and inspect the affected domain.".into(),
+                "For access-denied errors, ask an administrator to confirm the intended read-only access policy.".into()],
+        });
+    }
+
     let failed: Vec<_> = snapshot
         .services
         .iter()
@@ -8587,6 +9000,23 @@ fn diagnose(snapshot: &SystemSnapshot) -> Vec<SystemFinding> {
                 .collect(),
             suggested_actions: vec!["Open lens-net and inspect interfaces and routes.".into()],
         });
+    }
+    for mount in snapshot
+        .mounts
+        .iter()
+        .filter(|mount| actionable_mount(mount))
+    {
+        if let Some(percent) = investigate::inode_percent(mount).filter(|p| *p >= 90.0) {
+            findings.push(SystemFinding {
+                id: format!("disk.inodes.{}",mount.target),
+                severity: if percent >= 97.0 { Severity::Critical } else { Severity::Attention },
+                title: "Filesystem inode pressure".into(),
+                summary: format!("{} has {:.1}% of its inodes in use; new files may fail even with free bytes.",mount.target,percent),
+                evidence: vec![lens_model::Evidence {label: "inodes used".into(),value:format!("{percent:.1}"),unit:Some("%".into())}],
+                related_entities: vec![EntityId::Mount(mount.target.clone())],
+                suggested_actions: vec!["Inspect the filesystem in Storage and locate directories with many small files before removing anything.".into()],
+            });
+        }
     }
     for interface in snapshot.interfaces.iter().filter(|interface| {
         actionable_down_interface(interface)
@@ -9143,6 +9573,18 @@ fn apply_view_filters(
         snapshot.certificates.truncate(limit);
         snapshot.findings.truncate(limit);
     }
+    snapshot.storage_details.retain(|name, _| {
+        snapshot
+            .block_devices
+            .iter()
+            .any(|device| &device.name == name)
+    });
+    snapshot.network_details.retain(|name, _| {
+        snapshot
+            .interfaces
+            .iter()
+            .any(|interface| &interface.name == name)
+    });
     Ok(snapshot)
 }
 
@@ -9200,6 +9642,52 @@ fn parse_finding_severity(value: &str) -> Result<lens_model::Severity> {
 
 fn sort_snapshot_domain(view: View, snapshot: &mut SystemSnapshot, sort: Option<SpecialistSort>) {
     let Some(sort) = sort else {
+        match view {
+            View::Disk => {
+                snapshot.mounts.sort_by(|a, b| {
+                    (!investigate::persistent_mount(a))
+                        .cmp(&(!investigate::persistent_mount(b)))
+                        .then_with(|| b.used_percent.total_cmp(&a.used_percent))
+                        .then_with(|| a.target.cmp(&b.target))
+                });
+                snapshot.block_devices.sort_by_key(|d| {
+                    (
+                        matches!(d.kind.as_str(), "loop" | "rom"),
+                        d.kind != "disk",
+                        d.name.clone(),
+                    )
+                });
+            }
+            View::Net => {
+                let uplinks: Vec<_> = snapshot
+                    .routes
+                    .iter()
+                    .filter(|r| matches!(r.destination.as_str(), "default" | "0.0.0.0/0" | "::/0"))
+                    .filter_map(|r| r.interface.clone())
+                    .collect();
+                snapshot.interfaces.sort_by_key(|i| {
+                    (
+                        !uplinks.contains(&i.name),
+                        i.addresses.is_empty(),
+                        i.name.clone(),
+                    )
+                });
+                snapshot.routes.sort_by_key(|r| {
+                    (
+                        !matches!(r.destination.as_str(), "default" | "0.0.0.0/0" | "::/0"),
+                        r.destination.clone(),
+                    )
+                });
+            }
+            View::Services => snapshot.services.sort_by_key(|s| {
+                (
+                    s.active != "failed",
+                    std::cmp::Reverse(s.restart_count.unwrap_or(0)),
+                    s.name.clone(),
+                )
+            }),
+            _ => {}
+        }
         return;
     };
     match (view, sort) {
@@ -10437,7 +10925,7 @@ mod tests {
         assert!(loading_output.contains("Memory"));
         assert!(loading_output.contains("LIVE ACTIVITY"));
         assert!(loading_output.contains("logical CPU"));
-        assert!(loading_output.contains("BUSIEST PROCESSES"));
+        assert!(loading_output.contains("BUSIEST WORKLOADS"));
         assert!(loading_output.contains("Checking services, logs, storage and network"));
         assert!(loading_output.contains("Processes    1 processes"));
         assert!(loading_output.contains("Services     checking"));
@@ -10454,7 +10942,7 @@ mod tests {
         )
         .expect("compact cockpit");
         let compact_output = String::from_utf8(compact_output).expect("UTF-8");
-        assert!(!compact_output.contains("BUSIEST PROCESSES"));
+        assert!(!compact_output.contains("BUSIEST WORKLOADS"));
         // Compact height still lists every specialist; nine explore rows need a little more room.
         assert!(compact_output.matches('\n').count() <= 24);
 
@@ -10474,7 +10962,7 @@ mod tests {
         )
         .expect("complete cockpit");
         let complete_output = String::from_utf8(complete_output).expect("UTF-8");
-        assert!(complete_output.contains("critical ·"));
+        assert!(complete_output.contains("CRITICAL"));
         assert!(complete_output.contains("▶ Storage"));
         assert!(complete_output.contains("root filesystem · 97% used"));
         assert!(complete_output.contains("Containers"));
@@ -10766,7 +11254,17 @@ mod tests {
         for renderer in [View::Services, View::Disk, View::Net, View::Hardware] {
             let mut list = Vec::new();
             render_specialist(
-                renderer, &snapshot, &activity, None, 0, false, false, "Ready", 30, &mut list,
+                renderer,
+                &snapshot,
+                &activity,
+                &storage_activity::StorageActivity::default(),
+                None,
+                0,
+                false,
+                false,
+                "Ready",
+                30,
+                &mut list,
             )
             .expect("list");
             let mut detail = Vec::new();
@@ -10774,6 +11272,7 @@ mod tests {
                 renderer,
                 &snapshot,
                 &activity,
+                &storage_activity::StorageActivity::default(),
                 None,
                 0,
                 true,
@@ -10796,6 +11295,7 @@ mod tests {
             View::Hardware,
             &snapshot,
             &NetworkActivity::default(),
+            &storage_activity::StorageActivity::default(),
             None,
             0,
             false,
@@ -10819,6 +11319,7 @@ mod tests {
             View::Disk,
             &snapshot,
             &NetworkActivity::default(),
+            &storage_activity::StorageActivity::default(),
             None,
             0,
             true,
@@ -10853,7 +11354,16 @@ mod tests {
         render_service_specialist(&snapshot, 0, false, 16, 50, &mut output)
             .expect("compact services");
         render_log_specialist(&snapshot, 0, false, 16, 50, &mut output).expect("compact logs");
-        render_disk_specialist(&snapshot, 0, false, 16, 50, &mut output).expect("compact storage");
+        render_disk_specialist(
+            &snapshot,
+            &storage_activity::StorageActivity::default(),
+            0,
+            false,
+            16,
+            50,
+            &mut output,
+        )
+        .expect("compact storage");
         render_net_specialist(
             &snapshot,
             &NetworkActivity::default(),
@@ -10874,8 +11384,16 @@ mod tests {
     fn storage_detail_uses_two_columns_when_space_is_available() {
         let snapshot = demo_snapshot();
         let mut output = Vec::new();
-        render_disk_specialist(&snapshot, 0, true, 20, 120, &mut output)
-            .expect("wide storage detail");
+        render_disk_specialist(
+            &snapshot,
+            &storage_activity::StorageActivity::default(),
+            0,
+            true,
+            20,
+            120,
+            &mut output,
+        )
+        .expect("wide storage detail");
         let output = String::from_utf8(output).expect("UTF-8");
         assert!(
             output
@@ -11268,6 +11786,7 @@ mod tests {
                     view,
                     &snapshot,
                     &NetworkActivity::default(),
+                    &storage_activity::StorageActivity::default(),
                     None,
                     0,
                     false,

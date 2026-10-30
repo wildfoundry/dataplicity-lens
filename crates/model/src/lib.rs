@@ -14,7 +14,7 @@ pub use snapshot::{
     BlockDevice, BuildInfo, CellularModem, CellularSim, CertificateInfo, ClockContext, Container,
     ContainerResources, DeletedOpenFile, DnsContext, Filesystem, GroupInfo, HardwareDevice,
     HardwareIdentity, Host, Interface, IoCounters, LoadAverage, LogEntry, LogSource, Memory,
-    Metric, MetricPoint, MetricSeries, ModelStore, Mount, Process, ProcessCounts, ProcessState,
-    RaspberryPiStatus, Route, SchemaVersion, Service, Snapshot, Socket, TemperatureSensor,
-    Timestamp,
+    Metric, MetricPoint, MetricSeries, ModelStore, Mount, NetworkDetail, Process, ProcessCounts,
+    ProcessState, RaspberryPiStatus, Route, SchemaVersion, Service, Snapshot, Socket,
+    StorageDetail, TemperatureSensor, Timestamp,
 };
