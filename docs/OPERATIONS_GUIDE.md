@@ -269,6 +269,7 @@ DNS is not proof of successful resolution, and group lists do not capture all ac
 
 On terminals at least 150 columns wide and 32 rows high, specialist lists show a live preview of
 that selection alongside the list. Enter opens the full-width detail; Esc returns to the list.
+The preview also accepts `g` for its related view and, for instances, Tab for charts/allocations.
 Smaller terminals retain the single-pane layout. Coloured headers use the same visible column
 widths as their data. Memory and byte rates use IEC KiB/MiB/GiB units.
 

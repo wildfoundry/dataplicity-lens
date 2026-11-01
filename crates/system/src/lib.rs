@@ -3794,8 +3794,16 @@ fn render_specialist_content_with_ui(
         "{}",
         ink(&frame_divider(width), Ink::Border, colour)
     )?;
-    if view == View::Containers && inspecting {
-        writeln!(stdout, "  Tab: charts/allocations  Esc: back  q: quit")?;
+    if view == View::Containers && (inspecting || split) {
+        writeln!(
+            stdout,
+            "  {}",
+            if inspecting {
+                "Tab: charts/allocations  Esc: back  q: quit"
+            } else {
+                "Up/Down: move  Tab: charts/allocations  Enter: full screen  /: search  q: quit"
+            }
+        )?;
     } else if width < 64 {
         writeln!(
             stdout,
@@ -5629,7 +5637,10 @@ fn render_health_specialist(
             .iter()
             .any(|entity| matches!(entity, EntityId::Mount(_)))
         {
-            writeln!(out, "  Enter: open affected mount in Storage")?;
+            writeln!(
+                out,
+                "  Full detail: Enter opens the affected mount in Storage"
+            )?;
         }
         return Ok(());
     }
@@ -6650,6 +6661,9 @@ fn specialist_loop(view: View, args: &ViewArgs, stdout: &mut impl Write) -> Resu
                 redraw = true;
                 continue;
             }
+            let preview = !inspecting
+                && specialist_item_count(view, &snapshot) > 0
+                && terminal::size().is_ok_and(|(width, rows)| width >= 150 && rows >= 32);
             match key.code {
                 KeyCode::Char('q') => return Ok(()),
                 KeyCode::Esc if inspecting => {
@@ -6663,7 +6677,7 @@ fn specialist_loop(view: View, args: &ViewArgs, stdout: &mut impl Write) -> Resu
                 KeyCode::Char('l') if key.modifiers.contains(KeyModifiers::CONTROL) => {
                     redraw = true;
                 }
-                KeyCode::Tab if view == View::Containers && inspecting => {
+                KeyCode::Tab if view == View::Containers && (inspecting || preview) => {
                     container_monitor.allocations = !container_monitor.allocations;
                     redraw = true;
                 }
@@ -6734,7 +6748,7 @@ fn specialist_loop(view: View, args: &ViewArgs, stdout: &mut impl Write) -> Resu
                     snapshot = next;
                     redraw = true;
                 }
-                KeyCode::Char('g') if inspecting => {
+                KeyCode::Char('g') if inspecting || preview => {
                     if let Some((target, query)) = investigate::followup(view, &snapshot, selected)
                     {
                         launch_search(target, &query, stdout)?;
