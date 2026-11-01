@@ -56,7 +56,7 @@ jobs:
           brew link --overwrite dataplicity-lens
           brew test wildfoundry/tap/dataplicity-lens
           lens-top --version | grep -Fx "lens-top $VERSION"
-          brew uninstall dataplicity-lens
+          brew uninstall --force dataplicity-lens
       - name: Fresh install, command tests and uninstall
         shell: bash
         run: |
@@ -69,7 +69,7 @@ jobs:
             "$command" --demo --json > "$RUNNER_TEMP/$command.json"
             grep -q '"schema_version": "2"' "$RUNNER_TEMP/$command.json"
           done
-          brew uninstall dataplicity-lens
+          brew uninstall --force dataplicity-lens
           if brew list --formula dataplicity-lens >/dev/null 2>&1; then
             echo 'Lens remains installed after uninstall' >&2
             exit 1
