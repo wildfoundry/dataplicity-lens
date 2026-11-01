@@ -5,6 +5,8 @@ versioning once the first public release is tagged.
 
 ## [Unreleased]
 
+## [0.3.8] - 2026-11-01
+
 ### Changed
 - Align coloured specialist table headers; use accurate IEC byte units and logical CPU labels.
 - Show selected-item previews beside wide specialist lists, with bounded compact/full-screen details.
@@ -17,6 +19,7 @@ versioning once the first public release is tagged.
 - Wrap health evidence and separate actionable findings from inspection coverage limitations.
 
 ### Fixed
+- Keep VM resource inventory and preview sparklines on single rows when space permits.
 - Align host resource readings with compact usage gauges and explicit memory headroom; retain
   resource rows when there are fewer workloads to display.
 - Give recent flagged logs a full-width inventory row so longer entries remain readable.
