@@ -6343,7 +6343,8 @@ fn specialist_loop(view: View, args: &ViewArgs, stdout: &mut impl Write) -> Resu
     let mut redraw = true;
     loop {
         if Instant::now() >= next_clock {
-            next_clock = Instant::now() + Duration::from_secs(clock_interval);
+            next_clock =
+                Instant::now() + Duration::from_secs(if ui.paused { 1 } else { clock_interval });
             redraw = true;
         }
         if diagnostic.poll() {
@@ -6707,6 +6708,7 @@ fn specialist_loop(view: View, args: &ViewArgs, stdout: &mut impl Write) -> Resu
                 }
                 KeyCode::Char('p') if view == View::Logs => {
                     ui.paused = !ui.paused;
+                    next_clock = Instant::now();
                     redraw = true;
                 }
                 KeyCode::Char('f')
