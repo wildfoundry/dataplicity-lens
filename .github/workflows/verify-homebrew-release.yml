@@ -35,6 +35,9 @@ jobs:
           [[ "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]
           brew tap wildfoundry/tap
           tap_dir="$(brew --repository wildfoundry/tap)"
+          if [[ "$(git -C "$tap_dir" rev-parse --is-shallow-repository)" == true ]]; then
+            git -C "$tap_dir" fetch --unshallow
+          fi
           formula=Formula/dataplicity-lens.rb
           current_version="$(awk '/^  version /{gsub(/"/,"",$2);print $2;exit}' "$tap_dir/$formula")"
           [[ "$current_version" == "$VERSION" ]]
@@ -45,10 +48,12 @@ jobs:
           [[ "$previous_version" != "$VERSION" ]]
           brew trust --formula wildfoundry/tap/dataplicity-lens
           brew install wildfoundry/tap/dataplicity-lens
+          brew link --overwrite dataplicity-lens
           lens-top --version | grep -Fx "lens-top $previous_version"
           git -C "$tap_dir" restore -- "$formula"
           brew trust --formula wildfoundry/tap/dataplicity-lens
           brew upgrade wildfoundry/tap/dataplicity-lens
+          brew link --overwrite dataplicity-lens
           brew test wildfoundry/tap/dataplicity-lens
           lens-top --version | grep -Fx "lens-top $VERSION"
           brew uninstall dataplicity-lens
@@ -57,6 +62,7 @@ jobs:
         run: |
           set -euo pipefail
           brew install wildfoundry/tap/dataplicity-lens
+          brew link --overwrite dataplicity-lens
           brew test wildfoundry/tap/dataplicity-lens
           for command in lens lens-top lens-services lens-containers lens-logs lens-disk lens-net lens-hardware lens-system lens-health; do
             "$command" --version | grep -Fx "$command $VERSION"
