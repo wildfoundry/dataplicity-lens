@@ -5,6 +5,11 @@ versioning once the first public release is tagged.
 
 ## [Unreleased]
 
+### Fixed
+- Align host resource readings with compact usage gauges and explicit memory headroom; retain
+  resource rows when there are fewer workloads to display.
+- Give recent flagged logs a full-width inventory row so longer entries remain readable.
+
 ## [0.3.7] - 2026-10-30
 
 ### Changed
