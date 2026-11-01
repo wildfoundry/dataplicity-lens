@@ -609,10 +609,7 @@ pub(super) fn render_details(
             .logs
             .iter()
             .rev()
-            .filter(|log| {
-                let text = log.message.to_ascii_lowercase();
-                text.contains("error") || text.contains("fail") || text.contains("warn")
-            })
+            .filter(|log| presentation::flagged(log))
             .map(|log| {
                 format!(
                     "{} {}: {}",

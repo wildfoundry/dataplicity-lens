@@ -438,7 +438,7 @@ fn draw_summary(frame: &mut Frame<'_>, area: Rect, app: &App) {
             ),
             detail_line(
                 "CPU",
-                format!("{} cores", app.snapshot.host.cpu_count),
+                format!("{} logical CPUs", app.snapshot.host.cpu_count),
                 app.capabilities,
             ),
             detail_line("SWAP", swap, app.capabilities),
@@ -548,7 +548,7 @@ fn draw_processes(frame: &mut Frame<'_>, area: Rect, app: &App) {
             .group_label
             .as_ref()
             .map_or_else(String::new, |label| format!("[{label}] "));
-        let name = format!("{group}{prefix}{}", process.name);
+        let name = format!("{group}{prefix}{}", process.display_name());
         let mut cells = vec![
             Cell::from(process.pid.0.to_string()).style(muted_style(app.capabilities)),
             Cell::from(truncate(&name, columns.name as usize)).style(title_style(app.capabilities)),
@@ -750,7 +750,7 @@ fn draw_detail(frame: &mut Frame<'_>, area: Rect, app: &App) {
     let identity = vec![
         Line::from(vec![
             Span::styled(
-                format!("{} ", process.name),
+                format!("{} ", process.display_name()),
                 title_style(app.capabilities).add_modifier(Modifier::BOLD),
             ),
             Span::styled(
@@ -801,13 +801,21 @@ fn draw_detail(frame: &mut Frame<'_>, area: Rect, app: &App) {
         ]),
         detail_line(
             "I/O",
-            format!(
-                "read {} ({})   write {} ({})",
-                format_rate(process.io.read_bytes_per_second),
-                format_bytes(process.io.read_bytes),
-                format_rate(process.io.write_bytes_per_second),
-                format_bytes(process.io.write_bytes),
-            ),
+            if process
+                .unavailable_fields
+                .iter()
+                .any(|field| field.to_ascii_lowercase().contains("i/o"))
+            {
+                "unavailable (access denied or counter not reported)".into()
+            } else {
+                format!(
+                    "read {} ({})   write {} ({})",
+                    format_rate(process.io.read_bytes_per_second),
+                    format_bytes(process.io.read_bytes),
+                    format_rate(process.io.write_bytes_per_second),
+                    format_bytes(process.io.write_bytes)
+                )
+            },
             app.capabilities,
         ),
         detail_line(
@@ -2052,7 +2060,7 @@ mod tests {
         let rendered = rendered_text(&terminal);
         assert!(rendered.contains("HOST"), "host facts fill the summary row");
         assert!(rendered.contains("UPTIME"));
-        assert!(rendered.contains("8 cores"));
+        assert!(rendered.contains("8 logical CPUs"));
     }
 
     #[test]

@@ -5,6 +5,17 @@ versioning once the first public release is tagged.
 
 ## [Unreleased]
 
+### Changed
+- Align coloured specialist table headers; use accurate IEC byte units and logical CPU labels.
+- Show selected-item previews beside wide specialist lists, with bounded compact/full-screen details.
+- Add service CPU/RSS/restart trends, instance live readings and CPU allocation gauges, scoped network
+  histories/error deltas, grouped thermal trends, and storage capacity/inode gauges.
+- Add log follow/pause and severity filters, dated windows and bounded new-record activity; share
+  recorded-priority semantics across cockpit, specialist and health findings.
+- Add summary/expanded storage and hardware inventories, human-readable VM allocations and host-RSS
+  labels, process VM names, grouped system status, resolver context and certificate expiry status.
+- Wrap health evidence and separate actionable findings from inspection coverage limitations.
+
 ### Fixed
 - Align host resource readings with compact usage gauges and explicit memory headroom; retain
   resource rows when there are fewer workloads to display.

@@ -10,6 +10,7 @@ mod journal;
 mod libvirt;
 mod native_details;
 mod overview;
+mod presentation;
 mod storage_activity;
 
 use std::{
@@ -1736,6 +1737,8 @@ struct NetworkActivity {
     rates: BTreeMap<String, (u64, u64)>,
     rx_history: VecDeque<u64>,
     tx_history: VecDeque<u64>,
+    rx_interfaces: BTreeMap<String, VecDeque<u64>>,
+    tx_interfaces: BTreeMap<String, VecDeque<u64>>,
     last_sample: Option<Instant>,
 }
 
@@ -1782,25 +1785,51 @@ impl NetworkActivity {
             return;
         }
         self.rates.clear();
+        self.rx_interfaces
+            .retain(|name, _| current.contains_key(name));
+        self.tx_interfaces
+            .retain(|name, _| current.contains_key(name));
         let mut total_rx = 0u64;
         let mut total_tx = 0u64;
+        let mut scope_samples = 0usize;
         for (name, (rx, tx)) in &current {
             let Some((previous_rx, previous_tx)) = self.previous.get(name) else {
                 continue;
             };
+            if rx < previous_rx || tx < previous_tx || elapsed > 5.0 {
+                self.rx_interfaces.remove(name);
+                self.tx_interfaces.remove(name);
+                continue;
+            }
             let rx_rate = (rx.saturating_sub(*previous_rx) as f64 / elapsed) as u64;
             let tx_rate = (tx.saturating_sub(*previous_tx) as f64 / elapsed) as u64;
             self.rates.insert(name.clone(), (rx_rate, tx_rate));
+            push_bounded(
+                self.rx_interfaces.entry(name.clone()).or_default(),
+                rx_rate,
+                ACTIVITY_HISTORY_CAPACITY,
+            );
+            push_bounded(
+                self.tx_interfaces.entry(name.clone()).or_default(),
+                tx_rate,
+                ACTIVITY_HISTORY_CAPACITY,
+            );
             if name != "lo"
                 && !name.starts_with("lo0")
                 && self.scope.as_ref().is_none_or(|names| names.contains(name))
             {
+                scope_samples += 1;
                 total_rx = total_rx.saturating_add(rx_rate);
                 total_tx = total_tx.saturating_add(tx_rate);
             }
         }
-        push_bounded(&mut self.rx_history, total_rx, ACTIVITY_HISTORY_CAPACITY);
-        push_bounded(&mut self.tx_history, total_tx, ACTIVITY_HISTORY_CAPACITY);
+        if scope_samples > 0 {
+            push_bounded(&mut self.rx_history, total_rx, ACTIVITY_HISTORY_CAPACITY);
+            push_bounded(&mut self.tx_history, total_tx, ACTIVITY_HISTORY_CAPACITY);
+        } else {
+            self.rx_history.clear();
+            self.tx_history.clear();
+        }
         self.previous = current;
         self.last_sample = Some(now);
     }
@@ -3002,15 +3031,9 @@ fn cockpit_log_summary(snapshot: &SystemSnapshot) -> String {
     let mut errors = 0usize;
     let mut warnings = 0usize;
     for entry in &snapshot.logs {
-        match entry
-            .priority
-            .as_deref()
-            .unwrap_or_default()
-            .to_ascii_lowercase()
-            .as_str()
-        {
-            "emerg" | "alert" | "crit" | "critical" | "err" | "error" => errors += 1,
-            "warning" | "warn" => warnings += 1,
+        match presentation::level(entry) {
+            Some("error") => errors += 1,
+            Some("warning") => warnings += 1,
             _ => {}
         }
     }
@@ -3472,6 +3495,7 @@ fn log_ink(priority: Option<&str>) -> Ink {
     }
 }
 
+#[cfg(test)]
 #[allow(clippy::too_many_arguments)]
 fn render_specialist(
     view: View,
@@ -3486,8 +3510,7 @@ fn render_specialist(
     rows: u16,
     stdout: &mut impl Write,
 ) -> Result<()> {
-    let mut frame = Vec::new();
-    render_specialist_content(
+    render_specialist_with_ui(
         view,
         snapshot,
         network_activity,
@@ -3498,11 +3521,12 @@ fn render_specialist(
         loading,
         status,
         rows,
-        &mut frame,
-    )?;
-    present_frame(stdout, &frame)
+        None,
+        stdout,
+    )
 }
 
+#[cfg(test)]
 #[allow(clippy::too_many_arguments)]
 fn render_specialist_content(
     view: View,
@@ -3515,6 +3539,70 @@ fn render_specialist_content(
     loading: bool,
     status: &str,
     rows: u16,
+    stdout: &mut impl Write,
+) -> Result<()> {
+    render_specialist_content_with_ui(
+        view,
+        snapshot,
+        network_activity,
+        storage_activity,
+        container_monitor,
+        selected,
+        inspecting,
+        loading,
+        status,
+        rows,
+        None,
+        stdout,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn render_specialist_with_ui(
+    view: View,
+    snapshot: &SystemSnapshot,
+    network_activity: &NetworkActivity,
+    storage_activity: &storage_activity::StorageActivity,
+    container_monitor: Option<&ContainerMonitor>,
+    selected: usize,
+    inspecting: bool,
+    loading: bool,
+    status: &str,
+    rows: u16,
+    ui: Option<&presentation::SessionView>,
+    stdout: &mut impl Write,
+) -> Result<()> {
+    let mut frame = Vec::new();
+    render_specialist_content_with_ui(
+        view,
+        snapshot,
+        network_activity,
+        storage_activity,
+        container_monitor,
+        selected,
+        inspecting,
+        loading,
+        status,
+        rows,
+        ui,
+        &mut frame,
+    )?;
+    present_frame(stdout, &frame)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn render_specialist_content_with_ui(
+    view: View,
+    snapshot: &SystemSnapshot,
+    network_activity: &NetworkActivity,
+    storage_activity: &storage_activity::StorageActivity,
+    container_monitor: Option<&ContainerMonitor>,
+    selected: usize,
+    inspecting: bool,
+    loading: bool,
+    status: &str,
+    rows: u16,
+    ui: Option<&presentation::SessionView>,
     stdout: &mut impl Write,
 ) -> Result<()> {
     let output = stdout;
@@ -3547,8 +3635,18 @@ fn render_specialist_content(
                 Ink::Info,
                 colour
             ),
-            if loading {
-                badge(" LOADING ", Ink::Attention, colour)
+            if view == View::Logs && ui.is_some_and(|state| state.paused) {
+                badge(" PAUSED ", Ink::Attention, colour)
+            } else if loading {
+                badge(
+                    if specialist_has_data(view, snapshot) {
+                        " UPDATING "
+                    } else {
+                        " LOADING "
+                    },
+                    Ink::Attention,
+                    colour,
+                )
             } else if !snapshot.collection_warnings.is_empty() {
                 badge(" LIMITED ", Ink::Attention, colour)
             } else {
@@ -3570,7 +3668,9 @@ fn render_specialist_content(
                 Ink::Info,
                 colour
             ),
-            if loading {
+            if view == View::Logs && ui.is_some_and(|state| state.paused) {
+                badge(" PAUSED ", Ink::Attention, colour)
+            } else if loading {
                 badge(&format!(" {} ", glyphs.ellipsis), Ink::Attention, colour)
             } else {
                 badge(" LIVE ", Ink::Success, colour)
@@ -3602,7 +3702,7 @@ fn render_specialist_content(
         ink(&frame_divider(width), Ink::Border, colour)
     )?;
 
-    let content_rows = if !loading && rows >= 26 {
+    let content_rows = if (!loading || specialist_has_data(view, snapshot)) && rows >= 26 {
         writeln!(
             stdout,
             "  {}",
@@ -3619,90 +3719,68 @@ fn render_specialist_content(
     } else {
         rows
     };
-    match view {
-        View::Health if loading && !specialist_has_data(view, snapshot) => writeln!(
-            stdout,
-            "\n  {}",
-            ink(
-                &format!("Running system checks{}", glyphs.ellipsis),
-                Ink::Muted,
-                colour
-            )
-        )?,
-        View::Services => {
-            render_service_specialist(snapshot, selected, inspecting, content_rows, width, stdout)?
-        }
-        View::Containers => {
-            if let Some((monitor, container)) = container_monitor
-                .filter(|m| inspecting && !m.allocations)
-                .zip(snapshot.containers.get(selected))
-            {
-                monitor.render(container, content_rows, width, stdout)?;
-            } else {
-                render_container_specialist(
-                    snapshot,
-                    selected,
-                    inspecting,
-                    content_rows,
-                    width,
-                    stdout,
-                )?;
-            }
-        }
-        View::Logs => {
-            render_log_specialist(snapshot, selected, inspecting, content_rows, width, stdout)?
-        }
-        View::Disk => render_disk_specialist(
-            snapshot,
-            storage_activity,
-            selected,
-            inspecting,
-            content_rows,
-            width,
-            stdout,
-        )?,
-        View::Net => render_net_specialist(
-            snapshot,
-            network_activity,
-            selected,
-            inspecting,
-            content_rows,
-            width,
-            stdout,
-        )?,
-        View::Hardware => {
-            render_hardware_specialist(snapshot, selected, inspecting, content_rows, width, stdout)?
-        }
-        View::System => {
-            render_system_specialist(snapshot, selected, inspecting, content_rows, width, stdout)?
-        }
-        View::Health => {
-            render_health_specialist(snapshot, selected, inspecting, content_rows, width, stdout)?
-        }
-        _ if loading && !specialist_has_data(view, snapshot) => writeln!(
-            stdout,
-            "\n  {}",
-            ink(
-                &format!(
-                    "Loading {} data{}",
-                    view.title().to_ascii_lowercase(),
-                    glyphs.ellipsis
-                ),
-                Ink::Muted,
-                colour,
-            )
-        )?,
-        _ => render_plain(view, snapshot, stdout)?,
-    }
-
-    if inspecting && !loading {
-        let used = stdout.iter().filter(|byte| **byte == b'\n').count();
-        investigate::render(
+    let body_loading = loading && !specialist_has_data(view, snapshot);
+    let split = width >= 150
+        && rows >= 32
+        && !inspecting
+        && !body_loading
+        && specialist_item_count(view, snapshot) > 0;
+    if split {
+        let left_width = (width - 7) * 55 / 100;
+        let right_width = width - 7 - left_width;
+        let mut left = Vec::new();
+        let mut right = Vec::new();
+        render_specialist_body(
             view,
             snapshot,
+            network_activity,
+            storage_activity,
+            container_monitor,
             selected,
+            false,
+            body_loading,
+            content_rows,
+            left_width,
+            ui,
+            &mut left,
+        )?;
+        writeln!(right, "  SELECTED DETAIL / Enter: full screen")?;
+        render_specialist_body(
+            view,
+            snapshot,
+            network_activity,
+            storage_activity,
+            container_monitor,
+            selected,
+            true,
+            body_loading,
+            content_rows.saturating_sub(1),
+            right_width,
+            ui,
+            &mut right,
+        )?;
+        let used = stdout.iter().filter(|b| **b == b'\n').count();
+        presentation::columns(
+            &left,
+            &right,
+            left_width,
+            right_width,
+            usize::from(rows).saturating_sub(used + 4),
+            stdout,
+        )?;
+    } else {
+        render_specialist_body(
+            view,
+            snapshot,
+            network_activity,
+            storage_activity,
+            container_monitor,
+            selected,
+            inspecting,
+            body_loading,
+            content_rows,
             width,
-            usize::from(rows).saturating_sub(used + 5),
+            ui,
             stdout,
         )?;
     }
@@ -3716,8 +3794,16 @@ fn render_specialist_content(
         "{}",
         ink(&frame_divider(width), Ink::Border, colour)
     )?;
-    if view == View::Containers && inspecting {
-        writeln!(stdout, "  Tab: charts/allocations  Esc: back  q: quit")?;
+    if view == View::Containers && (inspecting || split) {
+        writeln!(
+            stdout,
+            "  {}",
+            if inspecting {
+                "Tab: charts/allocations  Esc: back  q: quit"
+            } else {
+                "Up/Down: move  Tab: charts/allocations  Enter: full screen  /: search  q: quit"
+            }
+        )?;
     } else if width < 64 {
         writeln!(
             stdout,
@@ -3817,6 +3903,146 @@ fn render_specialist_content(
     Ok(())
 }
 
+#[allow(clippy::too_many_arguments)]
+fn render_specialist_body(
+    view: View,
+    snapshot: &SystemSnapshot,
+    network_activity: &NetworkActivity,
+    storage_activity: &storage_activity::StorageActivity,
+    container_monitor: Option<&ContainerMonitor>,
+    selected: usize,
+    inspecting: bool,
+    loading: bool,
+    rows: u16,
+    width: usize,
+    ui: Option<&presentation::SessionView>,
+    stdout: &mut Vec<u8>,
+) -> Result<()> {
+    let body_start = stdout.len();
+    let total_rows = rows;
+    let colour = terminal_colour_enabled();
+    let glyphs = glyphs();
+    let rows = if view == View::Logs && !inspecting {
+        let before = stdout.iter().filter(|b| **b == b'\n').count();
+        if let Some(ui) = ui {
+            ui.render(view, snapshot, selected, width, 5, stdout)?;
+        }
+        let used = stdout
+            .iter()
+            .filter(|b| **b == b'\n')
+            .count()
+            .saturating_sub(before);
+        rows.saturating_sub(used as u16)
+    } else {
+        rows
+    };
+    match view {
+        View::Health if loading && !specialist_has_data(view, snapshot) => writeln!(
+            stdout,
+            "\n  {}",
+            ink(
+                &format!("Running system checks{}", glyphs.ellipsis),
+                Ink::Muted,
+                colour
+            )
+        )?,
+        View::Services => {
+            render_service_specialist(snapshot, selected, inspecting, rows, width, stdout)?
+        }
+        View::Containers => {
+            if let Some((monitor, container)) = container_monitor
+                .filter(|m| inspecting && !m.allocations)
+                .zip(snapshot.containers.get(selected))
+            {
+                monitor.render(container, rows, width, stdout)?;
+            } else {
+                let mut display = snapshot.clone();
+                if let Some(monitor) = container_monitor {
+                    for container in &mut display.containers {
+                        let cpu = monitor.cpu_percent(container);
+                        if let Some(r) = &mut container.resources {
+                            r.cpu_usage_percent = cpu.map(|n| format!("{n:.1}%"));
+                        }
+                    }
+                }
+                render_container_specialist(&display, selected, inspecting, rows, width, stdout)?;
+            }
+        }
+        View::Logs => render_log_specialist(snapshot, selected, inspecting, rows, width, stdout)?,
+        View::Disk => render_disk_specialist(
+            snapshot,
+            storage_activity,
+            selected,
+            inspecting,
+            rows,
+            width,
+            stdout,
+        )?,
+        View::Net => render_net_specialist(
+            snapshot,
+            network_activity,
+            selected,
+            inspecting,
+            rows,
+            width,
+            stdout,
+        )?,
+        View::Hardware => {
+            render_hardware_specialist(snapshot, selected, inspecting, rows, width, stdout)?
+        }
+        View::System => {
+            render_system_specialist(snapshot, selected, inspecting, rows, width, stdout)?
+        }
+        View::Health => {
+            render_health_specialist(snapshot, selected, inspecting, rows, width, stdout)?
+        }
+        _ if loading && !specialist_has_data(view, snapshot) => writeln!(
+            stdout,
+            "\n  {}",
+            ink(
+                &format!(
+                    "Loading {} data{}",
+                    view.title().to_ascii_lowercase(),
+                    glyphs.ellipsis
+                ),
+                Ink::Muted,
+                colour,
+            )
+        )?,
+        _ => render_plain(view, snapshot, stdout)?,
+    }
+
+    if inspecting && !loading {
+        if let Some(ui) = ui {
+            let used = stdout.iter().filter(|b| **b == b'\n').count();
+            ui.render(
+                view,
+                snapshot,
+                selected,
+                width,
+                usize::from(rows).saturating_sub(used + 9),
+                stdout,
+            )?;
+        }
+        let used = stdout.iter().filter(|byte| **byte == b'\n').count();
+        investigate::render(
+            view,
+            snapshot,
+            selected,
+            width,
+            usize::from(rows).saturating_sub(used + 9),
+            stdout,
+        )?;
+    }
+    presentation::bound_body(
+        stdout,
+        body_start,
+        width,
+        usize::from(total_rows.saturating_sub(9)).max(1),
+    );
+    Ok(())
+}
+
 fn render_log_specialist(
     snapshot: &SystemSnapshot,
     selected: usize,
@@ -3889,26 +4115,33 @@ fn render_log_specialist(
     if width >= 70 {
         writeln!(
             out,
-            "  {}  {}  {}  {}",
-            ink("LEVEL", Ink::Label, colour),
-            ink("TIME", Ink::Label, colour),
-            ink("SOURCE", Ink::Label, colour),
-            ink("MESSAGE", Ink::Label, colour)
+            "{}",
+            ink(
+                &format!(
+                    "  {:<8} {:<8} {:<22} {}",
+                    "LEVEL", "TIME UTC", "SOURCE", "MESSAGE"
+                ),
+                Ink::Label,
+                colour
+            )
         )?;
     } else {
         writeln!(
             out,
-            "  {}  {}",
-            ink("TIME", Ink::Label, colour),
-            ink("MESSAGE", Ink::Label, colour)
+            "{}",
+            ink(
+                &format!("  {:<8} {}", "TIME UTC", "MESSAGE"),
+                Ink::Label,
+                colour
+            )
         )?;
     }
-    let capacity = usize::from(rows.saturating_sub(9)).max(1);
+    let capacity = usize::from(rows.saturating_sub(10)).max(1);
     let start = viewport_start(selected, snapshot.logs.len(), capacity);
     let message_width = width.saturating_sub(50).max(16);
     for (index, item) in snapshot.logs.iter().enumerate().skip(start).take(capacity) {
         let priority = item.priority.as_deref().unwrap_or("unknown");
-        let time = item.timestamp.get(11..19).unwrap_or(&item.timestamp);
+        let time = presentation::log_clock(&item.timestamp);
         let source = item.unit.as_deref().unwrap_or(&item.source);
         let repeat = if item.repeated > 1 {
             format!(" {}{}", glyphs().times, item.repeated)
@@ -4005,22 +4238,33 @@ fn render_service_specialist(
     if width >= 70 {
         writeln!(
             out,
-            "  {:<34} {:<12} {:<14} {}",
-            ink("SERVICE", Ink::Label, colour),
-            ink("ACTIVE", Ink::Label, colour),
-            ink("STATE", Ink::Label, colour),
-            ink("DESCRIPTION", Ink::Label, colour)
+            "{}",
+            ink(
+                &format!(
+                    "  {:<34} {:<12} {:<14} {}",
+                    "SERVICE", "ACTIVE", "STATE", "DESCRIPTION"
+                ),
+                Ink::Label,
+                colour
+            )
         )?;
     } else {
         writeln!(
             out,
-            "  {:<width$} {}",
-            ink("SERVICE", Ink::Label, colour),
-            ink("STATE", Ink::Label, colour),
-            width = width.saturating_sub(16)
+            "{}",
+            ink(
+                &format!(
+                    "  {:<width$} {}",
+                    "SERVICE",
+                    "STATE",
+                    width = width.saturating_sub(16)
+                ),
+                Ink::Label,
+                colour
+            )
         )?;
     }
-    let capacity = usize::from(rows.saturating_sub(9)).max(1);
+    let capacity = usize::from(rows.saturating_sub(10)).max(1);
     let start = viewport_start(selected, snapshot.services.len(), capacity);
     for (index, service) in snapshot
         .services
@@ -4072,7 +4316,7 @@ fn container_resource_summary(resources: &ContainerResources) -> String {
     format!(
         "CPU {} | RAM {} | Disk {}",
         resources.cpu_limit.as_deref().unwrap_or("not reported"),
-        resources.memory_limit.as_deref().unwrap_or("not reported"),
+        presentation::readable_limit(resources.memory_limit.as_deref()),
         resources
             .root_disk_limit
             .as_deref()
@@ -4115,10 +4359,7 @@ fn render_container_resources(
         ("CPU USAGE", cpu_used),
         (
             "RAM LIMIT",
-            r.memory_limit
-                .as_deref()
-                .unwrap_or("not reported")
-                .to_owned(),
+            presentation::readable_limit(r.memory_limit.as_deref()),
         ),
         (
             if container.runtime == "libvirt" {
@@ -4310,14 +4551,108 @@ fn render_container_specialist(
         render_container_resources(container, width, out)?;
         return Ok(());
     }
+    // VM inventory has no useful image/status columns; keep resource values on
+    // the same row instead of spending two lines on every guest.
+    if width >= 70 && snapshot.containers.iter().all(|c| c.runtime == "libvirt") {
+        let allocations = width >= 95;
+        let name_width = width
+            .saturating_sub(if allocations { 77 } else { 48 })
+            .clamp(18, 40);
+        let row =
+            |name: &str, state: &str, cpu: &str, rss: &str, ram: &str, vcpus: &str, disk: &str| {
+                let mut text = format!(
+                    "  {:<name_width$} {:<9} {:>8} {:>10} {:>10}",
+                    truncate_text(name, name_width),
+                    truncate_text(state, 9),
+                    truncate_text(cpu, 8),
+                    truncate_text(rss, 10),
+                    truncate_text(ram, 10)
+                );
+                if allocations {
+                    text.push_str(&format!(
+                        " {:>8} {:>10}",
+                        truncate_text(vcpus, 8),
+                        truncate_text(disk, 10)
+                    ));
+                }
+                text
+            };
+        writeln!(
+            out,
+            "{}",
+            ink(
+                &row(
+                    "NAME",
+                    "STATE",
+                    "CPU",
+                    "HOST RSS",
+                    "RAM ALLOC",
+                    "vCPUs",
+                    "DISK CAP"
+                ),
+                Ink::Label,
+                colour
+            )
+        )?;
+        let capacity = usize::from(rows.saturating_sub(10)).max(1);
+        let start = viewport_start(selected, snapshot.containers.len(), capacity);
+        for (index, container) in snapshot
+            .containers
+            .iter()
+            .enumerate()
+            .skip(start)
+            .take(capacity)
+        {
+            let r = container.resources.as_ref();
+            let rss = r
+                .and_then(|r| r.memory_usage_bytes)
+                .map(human_bytes)
+                .unwrap_or_else(|| "-".into());
+            let ram = r
+                .map(|r| presentation::readable_limit(r.memory_limit.as_deref()))
+                .unwrap_or_else(|| "-".into());
+            let disk = r
+                .and_then(|r| {
+                    r.root_disk_capacity_bytes
+                        .map(human_bytes)
+                        .or_else(|| r.root_disk_limit.clone())
+                })
+                .unwrap_or_else(|| "-".into());
+            let text = row(
+                &container.name,
+                &container.state,
+                r.and_then(|r| r.cpu_usage_percent.as_deref())
+                    .unwrap_or("sampling"),
+                &rss,
+                &ram,
+                r.and_then(|r| r.cpu_limit.as_deref())
+                    .map(|v| v.strip_suffix(" vCPUs").unwrap_or(v))
+                    .unwrap_or("-"),
+                &disk,
+            );
+            writeln!(
+                out,
+                "{}",
+                if index == selected {
+                    selected_row(&text, colour)
+                } else {
+                    ink(&text, Ink::Bright, colour)
+                }
+            )?;
+        }
+        return Ok(());
+    }
     let layout = container_list_layout(width);
     match layout {
         ContainerListLayout::Compact { name_width } => {
             writeln!(
                 out,
-                "  {:<name_width$} {}",
-                ink("NAME", Ink::Label, colour),
-                ink("STATE", Ink::Label, colour),
+                "{}",
+                ink(
+                    &format!("  {:<name_width$} {}", "NAME", "STATE",),
+                    Ink::Label,
+                    colour
+                )
             )?;
         }
         ContainerListLayout::Standard {
@@ -4326,11 +4661,15 @@ fn render_container_specialist(
         } => {
             writeln!(
                 out,
-                "  {:<8} {:<name_width$} {:<12} {:<image_width$}",
-                ink("RUNTIME", Ink::Label, colour),
-                ink("NAME", Ink::Label, colour),
-                ink("STATE", Ink::Label, colour),
-                ink("IMAGE", Ink::Label, colour),
+                "{}",
+                ink(
+                    &format!(
+                        "  {:<8} {:<name_width$} {:<12} {:<image_width$}",
+                        "RUNTIME", "NAME", "STATE", "IMAGE",
+                    ),
+                    Ink::Label,
+                    colour
+                )
             )?;
         }
         ContainerListLayout::Wide {
@@ -4340,12 +4679,15 @@ fn render_container_specialist(
         } => {
             writeln!(
                 out,
-                "  {:<8} {:<name_width$} {:<10} {:<status_width$} {:<image_width$}",
-                ink("RUNTIME", Ink::Label, colour),
-                ink("NAME", Ink::Label, colour),
-                ink("STATE", Ink::Label, colour),
-                ink("STATUS", Ink::Label, colour),
-                ink("IMAGE", Ink::Label, colour),
+                "{}",
+                ink(
+                    &format!(
+                        "  {:<8} {:<name_width$} {:<10} {:<status_width$} {:<image_width$}",
+                        "RUNTIME", "NAME", "STATE", "STATUS", "IMAGE",
+                    ),
+                    Ink::Label,
+                    colour
+                )
             )?;
         }
         ContainerListLayout::ExtraWide {
@@ -4356,13 +4698,15 @@ fn render_container_specialist(
         } => {
             writeln!(
                 out,
-                "  {:<8} {:<name_width$} {:<10} {:<status_width$} {:<ports_width$} {:<image_width$}",
-                ink("RUNTIME", Ink::Label, colour),
-                ink("NAME", Ink::Label, colour),
-                ink("STATE", Ink::Label, colour),
-                ink("STATUS", Ink::Label, colour),
-                ink("PORTS", Ink::Label, colour),
-                ink("IMAGE", Ink::Label, colour),
+                "{}",
+                ink(
+                    &format!(
+                        "  {:<8} {:<name_width$} {:<10} {:<status_width$} {:<ports_width$} {:<image_width$}",
+                        "RUNTIME", "NAME", "STATE", "STATUS", "PORTS", "IMAGE",
+                    ),
+                    Ink::Label,
+                    colour
+                )
             )?;
         }
     }
@@ -4371,7 +4715,7 @@ fn render_container_specialist(
         .iter()
         .any(|row| row.resources.is_some());
     let lines_per_item = if show_resources { 2 } else { 1 };
-    let capacity = (usize::from(rows.saturating_sub(9)) / lines_per_item).max(1);
+    let capacity = (usize::from(rows.saturating_sub(10)) / lines_per_item).max(1);
     let start = viewport_start(selected, snapshot.containers.len(), capacity);
     for (index, container) in snapshot
         .containers
@@ -4467,7 +4811,26 @@ fn render_container_specialist(
             let summary = container
                 .resources
                 .as_ref()
-                .map(container_resource_summary)
+                .map(|r| {
+                    format!(
+                        "CPU {} / {} | {} {} | RAM {} allocated | Disk {}",
+                        r.cpu_usage_percent.as_deref().unwrap_or("sampling"),
+                        r.cpu_limit.as_deref().unwrap_or("shared"),
+                        if container.runtime == "libvirt" {
+                            "Host RSS"
+                        } else {
+                            "Memory"
+                        },
+                        r.memory_usage_bytes
+                            .map(human_bytes)
+                            .unwrap_or_else(|| "unavailable".into()),
+                        presentation::readable_limit(r.memory_limit.as_deref()),
+                        r.root_disk_capacity_bytes
+                            .map(human_bytes)
+                            .or_else(|| r.root_disk_limit.clone())
+                            .unwrap_or_else(|| "unavailable".into())
+                    )
+                })
                 .unwrap_or_else(|| "Resources not reported".into());
             writeln!(
                 out,
@@ -4662,6 +5025,28 @@ fn render_disk_specialist(
                 }
             )?;
         }
+        if let Some(mount) = snapshot.mounts.get(selected) {
+            writeln!(
+                out,
+                "  {}",
+                ink(
+                    &presentation::gauge("Capacity", mount.used_percent, width.saturating_sub(4)),
+                    Ink::Info,
+                    colour
+                )
+            )?;
+            if let Some(percent) = investigate::inode_percent(mount) {
+                writeln!(
+                    out,
+                    "  {}",
+                    ink(
+                        &presentation::gauge("Inodes  ", percent, width.saturating_sub(4)),
+                        Ink::Info,
+                        colour
+                    )
+                )?;
+            }
+        }
         let device = if let Some(mount) = snapshot.mounts.get(selected) {
             snapshot
                 .block_devices
@@ -4701,23 +5086,34 @@ fn render_disk_specialist(
     } else if width >= 70 {
         writeln!(
             out,
-            "  {:<9} {:<34} {:>9}  {}",
-            ink("TYPE", Ink::Label, colour),
-            ink("TARGET", Ink::Label, colour),
-            ink("USE", Ink::Label, colour),
-            ink("SOURCE", Ink::Label, colour)
+            "{}",
+            ink(
+                &format!(
+                    "  {:<9} {:<34} {:>9}  {}",
+                    "TYPE", "TARGET", "USE", "SOURCE"
+                ),
+                Ink::Label,
+                colour
+            )
         )?;
     } else {
         writeln!(
             out,
-            "  {:<8} {:<width$} {}",
-            ink("TYPE", Ink::Label, colour),
-            ink("TARGET", Ink::Label, colour),
-            ink("USE", Ink::Label, colour),
-            width = width.saturating_sub(23)
+            "{}",
+            ink(
+                &format!(
+                    "  {:<8} {:<width$} {}",
+                    "TYPE",
+                    "TARGET",
+                    "USE",
+                    width = width.saturating_sub(23)
+                ),
+                Ink::Label,
+                colour
+            )
         )?;
     }
-    let capacity = usize::from(rows.saturating_sub(9)).max(1);
+    let capacity = usize::from(rows.saturating_sub(10)).max(1);
     let start = viewport_start(selected, count, capacity);
     for index in start..(start + capacity).min(count) {
         let row = if width >= 110 {
@@ -4740,11 +5136,19 @@ fn render_disk_specialist(
                 )
             } else {
                 let device = &snapshot.block_devices[index - snapshot.mounts.len()];
-                let model = snapshot
-                    .storage_details
-                    .get(&device.name)
-                    .and_then(|d| d.model.as_deref())
-                    .unwrap_or("");
+                let meta = snapshot.storage_details.get(&device.name);
+                let model = format!(
+                    "{}{}{}",
+                    meta.and_then(|d| d.model.as_deref()).unwrap_or(""),
+                    meta.and_then(|d| d.parent.as_deref())
+                        .map(|p| format!(" parent {p}"))
+                        .unwrap_or_default(),
+                    if device.mountpoints.is_empty() {
+                        String::new()
+                    } else {
+                        format!(" -> {}", device.mountpoints.join(", "))
+                    }
+                );
                 format!(
                     "  {:<8} {:<24} {:>7} {:>9} {:>9} {:>7} {}",
                     device.kind,
@@ -4753,7 +5157,7 @@ fn render_disk_specialist(
                     human_bytes(device.size_bytes),
                     "-",
                     "-",
-                    truncate_text(model, width.saturating_sub(76))
+                    truncate_text(&model, width.saturating_sub(76))
                 )
             }
         } else if width < 70 {
@@ -4879,16 +5283,45 @@ fn render_net_specialist(
                 writeln!(
                     out,
                     "  {} {} {}/s  {} {}/s",
-                    ink(
-                        "ALL LINKS (may double-count VM traffic)",
-                        Ink::Label,
-                        colour
-                    ),
+                    ink("INTERFACE TRAFFIC", Ink::Label, colour),
                     glyphs.receive,
                     human_bytes(rx),
                     glyphs.transmit,
                     human_bytes(tx)
                 )?;
+                if rows >= 32 {
+                    for (label, history) in [
+                        ("RX", activity.rx_interfaces.get(&interface.name)),
+                        ("TX", activity.tx_interfaces.get(&interface.name)),
+                    ] {
+                        if let Some(history) = history {
+                            let visible = width.saturating_sub(34).min(60);
+                            let peak = history
+                                .iter()
+                                .rev()
+                                .take(visible)
+                                .max()
+                                .copied()
+                                .unwrap_or(0);
+                            writeln!(
+                                out,
+                                "  {}",
+                                ink(
+                                    &truncate_text(
+                                        &format!(
+                                            "{label} {}  peak {}/s | ~1s/sample",
+                                            activity_sparkline(history, visible),
+                                            human_bytes(peak)
+                                        ),
+                                        width.saturating_sub(4)
+                                    ),
+                                    Ink::Success,
+                                    colour
+                                )
+                            )?;
+                        }
+                    }
+                }
             } else if interface.rx_bytes.is_some() {
                 writeln!(
                     out,
@@ -5045,12 +5478,12 @@ fn render_net_specialist(
     if width >= 70 {
         writeln!(
             out,
-            "  {:<11} {:<18} {:<12} {}",
-            ink("TYPE", Ink::Label, colour),
-            ink("NAME", Ink::Label, colour),
-            ink("STATE", Ink::Label, colour),
+            "{}",
             ink(
-                "ROLE / ACTIVITY / ADDRESS  (Tab: section)",
+                &format!(
+                    "  {:<11} {:<18} {:<12} {}",
+                    "TYPE", "NAME", "STATE", "ROLE / ACTIVITY / ADDRESS  (Tab: section)"
+                ),
                 Ink::Label,
                 colour
             )
@@ -5058,15 +5491,22 @@ fn render_net_specialist(
     } else {
         writeln!(
             out,
-            "  {:<10} {:<name_width$} {}",
-            ink("TYPE", Ink::Label, colour),
-            ink("NAME", Ink::Label, colour),
-            ink("STATE", Ink::Label, colour),
-            name_width = width.saturating_sub(25)
+            "{}",
+            ink(
+                &format!(
+                    "  {:<10} {:<name_width$} {}",
+                    "TYPE",
+                    "NAME",
+                    "STATE",
+                    name_width = width.saturating_sub(25)
+                ),
+                Ink::Label,
+                colour
+            )
         )?;
     }
     let activity_rows = if has_activity && width >= 70 { 3 } else { 1 };
-    let capacity = usize::from(rows.saturating_sub(9 + activity_rows)).max(1);
+    let capacity = usize::from(rows.saturating_sub(10 + activity_rows)).max(1);
     let start = viewport_start(selected, count, capacity);
     for index in start..(start + capacity).min(count) {
         let row = if width < 70 {
@@ -5256,33 +5696,31 @@ fn render_health_specialist(
         )?;
         if !finding.evidence.is_empty() {
             writeln!(out, "\n  {}", ink("EVIDENCE", Ink::Label, colour))?;
+            let mut remaining = usize::from(rows.saturating_sub(15));
             for evidence in &finding.evidence {
-                let unit = evidence.unit.as_deref().unwrap_or_default();
-                writeln!(
-                    out,
-                    "  {}  {} {}",
-                    ink(
-                        &glyphs().bullet.to_string(),
-                        severity_ink(finding.severity),
-                        colour
-                    ),
+                let text = format!(
+                    "{}: {} {}",
                     evidence.label,
-                    truncate_text(
-                        &journal::display(&format!("{} {unit}", evidence.value)),
-                        width.saturating_sub(evidence.label.chars().count() + 8)
-                    )
-                )?;
+                    evidence.value,
+                    evidence.unit.as_deref().unwrap_or("")
+                );
+                for line in investigate::wrapped(&text, width.saturating_sub(6), remaining.min(8)) {
+                    writeln!(out, "  {}", ink(&line, Ink::Bright, colour))?;
+                    remaining = remaining.saturating_sub(1);
+                }
             }
         }
-        if !finding.suggested_actions.is_empty() {
+        if !finding.suggested_actions.is_empty() && rows >= 24 {
             writeln!(out, "\n  {}", ink("WHAT TO CHECK", Ink::Label, colour))?;
-            for action in &finding.suggested_actions {
-                writeln!(
-                    out,
-                    "  {}  {}",
-                    ink(glyphs().action, Ink::Info, colour),
-                    truncate_text(action, width.saturating_sub(6))
-                )?;
+            for action in finding.suggested_actions.iter().take(2) {
+                for line in investigate::wrapped(action, width.saturating_sub(6), 2) {
+                    writeln!(
+                        out,
+                        "  {} {}",
+                        glyphs().action,
+                        ink(&line, Ink::Info, colour)
+                    )?;
+                }
             }
         }
         if finding
@@ -5292,16 +5730,23 @@ fn render_health_specialist(
         {
             writeln!(
                 out,
-                "\n  {}  {}",
-                keycap("Enter", colour),
-                ink("open the affected mount in Storage", Ink::Info, colour)
+                "  Full detail: Enter opens the affected mount in Storage"
             )?;
         }
         return Ok(());
     }
 
-    writeln!(out, "  {} findings\n", snapshot.findings.len())?;
-    let capacity = usize::from(rows.saturating_sub(10)).max(1);
+    let actionable = snapshot
+        .findings
+        .iter()
+        .filter(|f| matches!(f.severity, Severity::Critical | Severity::Attention))
+        .count();
+    writeln!(
+        out,
+        "  {actionable} actionable / {} informational or coverage findings\n",
+        snapshot.findings.len().saturating_sub(actionable)
+    )?;
+    let capacity = usize::from(rows.saturating_sub(11)).max(1);
     let start = viewport_start(selected, snapshot.findings.len(), capacity);
     for (index, finding) in snapshot
         .findings
@@ -5428,7 +5873,10 @@ fn hardware_rows(snapshot: &SystemSnapshot) -> Vec<(String, String, String)> {
             "TEMPERATURE".into(),
             format!(
                 "{} {} {:.1} {}C",
-                sensor.name, glyphs.separator, sensor.temperature_c, glyphs.degree
+                presentation::sensor_label(snapshot, sensor),
+                glyphs.separator,
+                sensor.temperature_c,
+                glyphs.degree
             ),
             details,
         )
@@ -5620,7 +6068,7 @@ fn system_rows(snapshot: &SystemSnapshot) -> Vec<SystemRow> {
                 .map(|value| SystemRow {
                     section: SystemSection::Dns,
                     kind: "DNS SERVER",
-                    value,
+                    value: presentation::resolver_label(&value),
                 }),
         );
     }
@@ -5784,7 +6232,13 @@ fn certificate_summary(item: &CertificateInfo) -> String {
         .unwrap_or(&item.path);
     item.not_after.as_deref().map_or_else(
         || identity.to_owned(),
-        |expiry| format!("{identity} {} expires {expiry}", glyphs().separator),
+        |expiry| {
+            format!(
+                "{identity} {} {} ({expiry})",
+                glyphs().separator,
+                presentation::expiry_status(expiry, OffsetDateTime::now_utc())
+            )
+        },
     )
 }
 
@@ -5838,6 +6292,12 @@ fn render_system_specialist(
             }
             if let Some(expiry) = &certificate.not_after {
                 writeln!(out, "  {:<10} {}", "EXPIRES", expiry)?;
+                writeln!(
+                    out,
+                    "  {:<10} {}",
+                    "STATUS",
+                    presentation::expiry_status(expiry, OffsetDateTime::now_utc())
+                )?;
             }
             writeln!(out, "  {:<10} {}", "PATH", certificate.path)?;
             writeln!(
@@ -5852,13 +6312,75 @@ fn render_system_specialist(
         }
         return Ok(());
     }
+    let overview_rows = if rows >= 40 {
+        let expired = snapshot
+            .certificates
+            .iter()
+            .filter(|c| {
+                c.not_after.as_deref().is_some_and(|e| {
+                    presentation::expiry_status(e, OffsetDateTime::now_utc()).starts_with("EXPIRED")
+                })
+            })
+            .count();
+        let cards = [
+            overview::OverviewPanel::new(
+                "CLOCK",
+                vec![
+                    format!(
+                        "Sync {}",
+                        snapshot.clock.ntp_synchronized.map_or("unknown", |v| if v {
+                            "yes"
+                        } else {
+                            "no"
+                        })
+                    ),
+                    snapshot
+                        .clock
+                        .timezone
+                        .clone()
+                        .unwrap_or_else(|| "zone unavailable".into()),
+                ],
+                Ink::Info,
+            ),
+            overview::OverviewPanel::new(
+                "DNS",
+                vec![
+                    snapshot.dns.nameservers.join(", "),
+                    "Configured resolver(s)".into(),
+                ],
+                Ink::Success,
+            ),
+            overview::OverviewPanel::new(
+                "CERTIFICATES",
+                vec![
+                    format!("{} visible", snapshot.certificates.len()),
+                    format!("{expired} expired"),
+                ],
+                if expired > 0 {
+                    Ink::Critical
+                } else {
+                    Ink::Label
+                },
+            ),
+        ];
+        if width >= 95 {
+            overview::draw_panels(&cards, width.saturating_sub(8) / 3, 2, out)?;
+            5
+        } else {
+            0
+        }
+    } else {
+        0
+    };
     let section_lines = render_system_section_nav(item.section, width, colour, out)?;
     writeln!(
         out,
         "  {}\n",
         ink("Tab changes section", Ink::Muted, colour)
     )?;
-    let reserved = 12usize.saturating_add(section_lines);
+    let reserved = 12usize
+        .saturating_add(section_lines)
+        .saturating_add(overview_rows);
     let capacity = usize::from(rows).saturating_sub(reserved).max(1);
     // Keep context above and below the cursor when crossing a section boundary.
     // Section jumps remain obvious in the navigation strip without forcing the
@@ -5889,6 +6411,10 @@ fn specialist_loop(view: View, args: &ViewArgs, stdout: &mut impl Write) -> Resu
     let mut loading = true;
     let mut status = format!("Loading {} data…", view.title().to_ascii_lowercase());
     let mut selected = 0usize;
+    let mut ui = presentation::SessionView::for_args(args);
+    let mut source_snapshot = snapshot.clone();
+    let mut service_cpu = CpuActivity::default();
+    let mut log_follow = view == View::Logs;
     let mut inspecting = false;
     let mut search_query: Option<String> = None;
     let mut diagnostic = DiagnosticShell::new();
@@ -5904,7 +6430,6 @@ fn specialist_loop(view: View, args: &ViewArgs, stdout: &mut impl Write) -> Resu
     let mut container_poll_pending = false;
     let mut next_inventory = Instant::now() + Duration::from_secs(10);
     let mut next_container_sample = Instant::now();
-    let mut last_container_sample: Option<Instant> = None;
     let mut activity_receiver: Option<Receiver<Vec<(String, u64, u64)>>> = None;
     let mut next_network_sample = Instant::now() + Duration::from_secs(1);
     // Kernel log output lands on top of a frame on a virtual or serial console, and only a new
@@ -5920,7 +6445,8 @@ fn specialist_loop(view: View, args: &ViewArgs, stdout: &mut impl Write) -> Resu
     let mut redraw = true;
     loop {
         if Instant::now() >= next_clock {
-            next_clock = Instant::now() + Duration::from_secs(clock_interval);
+            next_clock =
+                Instant::now() + Duration::from_secs(if ui.paused { 1 } else { clock_interval });
             redraw = true;
         }
         if diagnostic.poll() {
@@ -5998,6 +6524,7 @@ fn specialist_loop(view: View, args: &ViewArgs, stdout: &mut impl Write) -> Resu
             container_poll_pending = true;
         }
         if view != View::Containers
+            && !(view == View::Logs && ui.paused)
             && !loading
             && service_action.is_none()
             && container_action.is_none()
@@ -6008,6 +6535,24 @@ fn specialist_loop(view: View, args: &ViewArgs, stdout: &mut impl Write) -> Resu
         }
         match receiver.try_recv() {
             Ok(mut update) => {
+                if update.loading_more && specialist_has_data(view, &snapshot) {
+                    status = update.status.into();
+                    loading = true;
+                    redraw = true;
+                    continue;
+                }
+                if view == View::Logs && ui.paused {
+                    loading = false;
+                    continue;
+                }
+                if view == View::Services {
+                    service_cpu.observe(&mut update.snapshot);
+                }
+                if !update.loading_more {
+                    ui.observe(&update.snapshot, Instant::now());
+                }
+                source_snapshot = update.snapshot.clone();
+                ui.apply(view, &mut update.snapshot);
                 if view == View::Containers {
                     container_poll_pending = false;
                     next_container_sample = Instant::now() + Duration::from_secs(2);
@@ -6025,11 +6570,13 @@ fn specialist_loop(view: View, args: &ViewArgs, stdout: &mut impl Write) -> Resu
                         continue;
                     }
                     container_monitor.observe(&update.snapshot.containers, Instant::now());
-                    last_container_sample = Some(Instant::now());
                 }
                 selected =
                     preserve_specialist_selection(view, &snapshot, &update.snapshot, selected);
                 snapshot = update.snapshot;
+                if view == View::Logs && log_follow {
+                    selected = snapshot.logs.len().saturating_sub(1);
+                }
                 if view == View::Net {
                     network_activity.set_scope(&snapshot);
                 }
@@ -6068,7 +6615,7 @@ fn specialist_loop(view: View, args: &ViewArgs, stdout: &mut impl Write) -> Resu
 
         if redraw {
             let (_, rows) = terminal::size().unwrap_or((100, 30));
-            render_specialist(
+            render_specialist_with_ui(
                 view,
                 &snapshot,
                 &network_activity,
@@ -6077,17 +6624,40 @@ fn specialist_loop(view: View, args: &ViewArgs, stdout: &mut impl Write) -> Resu
                 selected,
                 inspecting,
                 loading,
-                &if view == View::Containers {
-                    format!(
-                        "{status} | sample age {}",
-                        last_container_sample
-                            .map(|at| format!("{}s", at.elapsed().as_secs()))
-                            .unwrap_or_else(|| "unknown".into())
-                    )
-                } else {
-                    status.clone()
-                },
+                &format!(
+                    "{} | {}{}{}",
+                    status,
+                    ui.last_sample.map_or_else(
+                        || "awaiting sample".into(),
+                        |at| format!(
+                            "{} {}s ago",
+                            if view == View::Containers {
+                                "metrics"
+                            } else {
+                                "inventory"
+                            },
+                            at.elapsed().as_secs()
+                        )
+                    ),
+                    match view {
+                        View::Logs => format!(
+                            " | {} | f: levels | p: {} | End: follow",
+                            ui.label(view),
+                            if ui.paused { "resume" } else { "pause" }
+                        ),
+                        View::Services => format!(" | {} | f: state", ui.label(view)),
+                        View::Disk | View::Hardware =>
+                            format!(" | {} | v: expand/collapse", ui.label(view)),
+                        _ => String::new(),
+                    },
+                    if view == View::Logs && !log_follow {
+                        " | browsing"
+                    } else {
+                        ""
+                    }
+                ),
                 rows,
+                Some(&ui),
                 stdout,
             )?;
             if let Some(query) = search_query.as_deref() {
@@ -6182,6 +6752,9 @@ fn specialist_loop(view: View, args: &ViewArgs, stdout: &mut impl Write) -> Resu
                 redraw = true;
                 continue;
             }
+            let preview = !inspecting
+                && specialist_item_count(view, &snapshot) > 0
+                && terminal::size().is_ok_and(|(width, rows)| width >= 150 && rows >= 32);
             match key.code {
                 KeyCode::Char('q') => return Ok(()),
                 KeyCode::Esc if inspecting => {
@@ -6195,7 +6768,7 @@ fn specialist_loop(view: View, args: &ViewArgs, stdout: &mut impl Write) -> Resu
                 KeyCode::Char('l') if key.modifiers.contains(KeyModifiers::CONTROL) => {
                     redraw = true;
                 }
-                KeyCode::Tab if view == View::Containers && inspecting => {
+                KeyCode::Tab if view == View::Containers && (inspecting || preview) => {
                     container_monitor.allocations = !container_monitor.allocations;
                     redraw = true;
                 }
@@ -6219,14 +6792,54 @@ fn specialist_loop(view: View, args: &ViewArgs, stdout: &mut impl Write) -> Resu
                     redraw = true;
                 }
                 KeyCode::Up | KeyCode::Char('k') if !inspecting => {
+                    log_follow = false;
                     selected = move_selection(selected, -1, specialist_item_count(view, &snapshot));
                     redraw = true;
                 }
                 KeyCode::Down | KeyCode::Char('j') if !inspecting => {
+                    log_follow = false;
                     selected = move_selection(selected, 1, specialist_item_count(view, &snapshot));
                     redraw = true;
                 }
-                KeyCode::Char('g') if inspecting => {
+                KeyCode::Home if !inspecting => {
+                    selected = 0;
+                    log_follow = false;
+                    redraw = true;
+                }
+                KeyCode::End if !inspecting => {
+                    selected = specialist_item_count(view, &snapshot).saturating_sub(1);
+                    log_follow = view == View::Logs;
+                    redraw = true;
+                }
+                KeyCode::Char('p') if view == View::Logs => {
+                    ui.paused = !ui.paused;
+                    next_clock = Instant::now();
+                    redraw = true;
+                }
+                KeyCode::Char('f')
+                    if matches!(view, View::Services | View::Logs) && !inspecting =>
+                {
+                    ui.cycle(view);
+                    let mut next = source_snapshot.clone();
+                    ui.apply(view, &mut next);
+                    selected = preserve_specialist_selection(view, &snapshot, &next, selected);
+                    snapshot = next;
+                    if log_follow {
+                        selected = snapshot.logs.len().saturating_sub(1);
+                    }
+                    redraw = true;
+                }
+                KeyCode::Char('v')
+                    if matches!(view, View::Disk | View::Hardware) && !inspecting =>
+                {
+                    ui.expanded = !ui.expanded;
+                    let mut next = source_snapshot.clone();
+                    ui.apply(view, &mut next);
+                    selected = preserve_specialist_selection(view, &snapshot, &next, selected);
+                    snapshot = next;
+                    redraw = true;
+                }
+                KeyCode::Char('g') if inspecting || preview => {
                     if let Some((target, query)) = investigate::followup(view, &snapshot, selected)
                     {
                         launch_search(target, &query, stdout)?;
@@ -6252,6 +6865,9 @@ fn specialist_loop(view: View, args: &ViewArgs, stdout: &mut impl Write) -> Resu
                 }
                 KeyCode::Enter if !inspecting && specialist_item_count(view, &snapshot) > 0 => {
                     inspecting = true;
+                    if view == View::Logs {
+                        log_follow = false;
+                    }
                     container_monitor.allocations = false;
                     redraw = true;
                 }
@@ -9082,13 +9698,7 @@ fn diagnose(snapshot: &SystemSnapshot) -> Vec<SystemFinding> {
     let severe_logs: Vec<_> = snapshot
         .logs
         .iter()
-        .filter(|entry| {
-            let message = entry.message.to_ascii_lowercase();
-            message.contains("error")
-                || message.contains("failed")
-                || message.contains("panic")
-                || message.contains("out of memory")
-        })
+        .filter(|entry| presentation::level(entry) == Some("error"))
         .collect();
     let severe_occurrences: u64 = severe_logs.iter().map(|entry| entry.repeated).sum();
     if severe_occurrences >= 5 {
@@ -9096,9 +9706,7 @@ fn diagnose(snapshot: &SystemSnapshot) -> Vec<SystemFinding> {
             id: "logs.error-volume".into(),
             severity: Severity::Attention,
             title: "Elevated error logging".into(),
-            summary: format!(
-                "{severe_occurrences} recent log occurrences contain error indicators."
-            ),
+            summary: format!("{severe_occurrences} collected log occurrences have error severity."),
             evidence: severe_logs
                 .iter()
                 .rev()
@@ -10663,6 +11271,86 @@ mod tests {
     use super::*;
 
     #[test]
+    fn specialist_bodies_fit_wide_and_compact_terminals() {
+        let source = demo_snapshot();
+        for view in View::ALL.into_iter().filter(|v| *v != View::Processes) {
+            let args = ViewArgs::try_parse_from(["lens-system"]).unwrap();
+            let mut ui = presentation::SessionView::for_args(&args);
+            ui.observe(&source, Instant::now());
+            let mut snapshot = source.clone();
+            ui.apply(view, &mut snapshot);
+            for width in [36, 50, 80, 100, 150, 200] {
+                for rows in [16, 30, 70] {
+                    for inspecting in [false, true] {
+                        let mut out = Vec::new();
+                        render_specialist_body(
+                            view,
+                            &snapshot,
+                            &NetworkActivity::default(),
+                            &storage_activity::StorageActivity::default(),
+                            None,
+                            0,
+                            inspecting,
+                            false,
+                            rows,
+                            width,
+                            Some(&ui),
+                            &mut out,
+                        )
+                        .unwrap();
+                        let text = String::from_utf8(out).unwrap();
+                        assert!(
+                            text.lines().count() <= usize::from(rows.saturating_sub(9)).max(1),
+                            "{view:?} {width}x{rows}"
+                        );
+                        assert!(
+                            text.lines()
+                                .all(|line| unicode_width::UnicodeWidthStr::width(line) <= width),
+                            "{view:?} {width}x{rows}"
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn network_counter_reset_clears_history_instead_of_showing_zero_traffic() {
+        let mut snapshot = demo_snapshot();
+        snapshot.interfaces.truncate(1);
+        let mut activity = NetworkActivity::default();
+        let now = Instant::now();
+        snapshot.interfaces[0].rx_bytes = Some(100);
+        snapshot.interfaces[0].tx_bytes = Some(100);
+        activity.observe(&snapshot.interfaces, now);
+        snapshot.interfaces[0].rx_bytes = Some(200);
+        snapshot.interfaces[0].tx_bytes = Some(200);
+        activity.observe(&snapshot.interfaces, now + Duration::from_secs(1));
+        assert_eq!(activity.current(), Some((100, 100)));
+        snapshot.interfaces[0].rx_bytes = Some(1);
+        activity.observe(&snapshot.interfaces, now + Duration::from_secs(2));
+        assert!(activity.current().is_none());
+        assert!(
+            activity
+                .interface_rate(&snapshot.interfaces[0].name)
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn process_vm_display_name_keeps_native_identity_and_command() {
+        let mut process = demo_snapshot().processes[0].clone();
+        process.name = "qemu-system-x86".into();
+        process.command_line = Some(
+            "qemu-system-x86_64 -name guest=r630-builder-01,debug-threads=on -uuid abc".into(),
+        );
+        assert_eq!(process.display_name(), "VM r630-builder-01");
+        assert_eq!(process.name, "qemu-system-x86");
+        process.command_line = Some("qemu-system-x86_64 -name guest= -uuid abc".into());
+        assert_eq!(process.display_name(), "qemu-system-x86");
+    }
+
+    #[test]
     fn parses_systemd_units() {
         let service =
             parse_service("nginx.service loaded active running A web server").expect("service");
@@ -11433,6 +12121,37 @@ mod tests {
     }
 
     #[test]
+    fn vm_inventory_keeps_each_guest_on_one_row() {
+        let mut snapshot = demo_snapshot();
+        snapshot.containers.truncate(1);
+        snapshot.containers[0].runtime = "libvirt".into();
+        snapshot.containers[0].resources = Some(ContainerResources {
+            cpu_usage_percent: Some("104.5%".into()),
+            cpu_limit: Some("4 vCPUs".into()),
+            memory_limit: Some("12GiB".into()),
+            memory_usage_bytes: Some(1 << 30),
+            root_disk_capacity_bytes: Some(80 << 30),
+            ..Default::default()
+        });
+        for width in [70, 94, 95, 106, 200] {
+            let mut out = Vec::new();
+            render_container_specialist(&snapshot, 0, false, 40, width, &mut out).unwrap();
+            let text = String::from_utf8(out).unwrap();
+            assert_eq!(text.lines().count(), 2, "{width}: {text}");
+            assert!(
+                text.lines()
+                    .all(|s| unicode_width::UnicodeWidthStr::width(s) <= width)
+            );
+            assert!(text.contains("104.5%"));
+            assert!(text.contains("12.0GiB"));
+            assert!(!text.contains("IMAGE"));
+            if width >= 95 {
+                assert!(text.contains("80.0GiB"));
+            }
+        }
+    }
+
+    #[test]
     fn container_allocations_appear_in_list_and_detail() {
         let mut snapshot = demo_snapshot();
         snapshot.containers[0].resources = Some(ContainerResources {
@@ -11447,7 +12166,7 @@ mod tests {
             let mut out = Vec::new();
             render_container_specialist(&snapshot, 0, inspecting, 40, 100, &mut out).unwrap();
             let out = String::from_utf8(out).unwrap();
-            assert!(out.contains("12GiB"));
+            assert!(out.contains("12.0GiB"));
             assert!(out.contains("40GiB"));
             if inspecting {
                 assert!(out.contains("RAM USAGE"));

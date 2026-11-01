@@ -264,3 +264,36 @@ of clipping them to one line, and keep adjacent-source context inside the collec
 Hardware adds thermal headroom without claiming fan/PSU/disk health coverage. System highlights
 clock synchronization, configured resolvers and explicit privileged-group membership; configured
 DNS is not proof of successful resolution, and group lists do not capture all access policy.
+
+### Interactive presentation and session trends
+
+On terminals at least 150 columns wide and 32 rows high, specialist lists show a live preview of
+that selection alongside the list. Enter opens the full-width detail; Esc returns to the list.
+The preview also accepts `g` for its related view and, for instances, Tab for charts/allocations.
+Smaller terminals retain the single-pane layout. Coloured headers use the same visible column
+widths as their data. Memory and byte rates use IEC KiB/MiB/GiB units.
+
+- Services: `f` cycles all, running, failed and previously restarted units. Detail shows attributed
+  CPU/RSS trends and the change in restart count since the session baseline. A counter reset starts
+  a new baseline; cumulative restarts remain visible. CPU 100% is one logical CPU.
+- Logs: start at recent records and follow newly collected entries. Up/Down or Home switches to
+  browsing; End follows again. `p` pauses/resumes collection, and `f` cycles all, warning+ and error+
+  records. The summary reports the dated window in UTC; undated file messages remain undated.
+  The trend counts newly observed flagged records in the latest 2,000 records per refresh, not an
+  inferred events-per-second rate. Recorded journal severity takes precedence over message words.
+- Storage: persistent filesystems and relevant block devices appear first. `v` expands/collapses
+  pseudo filesystems, loop and optical devices. Detail separates capacity/inode gauges from live
+  read/write activity, labels the visible peak and sampling interval, and shows backing relations.
+- Hardware: `v` expands/collapses individual CPU cores. CPU package identities distinguish identical
+  core labels; package/device trends and thermal thresholds use only locally reported observations.
+- Network: bridge members follow their bridge. Selected-interface histories are scoped to that
+  interface; session error/drop deltas are distinct from cumulative totals. Counter resets, missing
+  samples and collection gaps do not become zero-throughput observations.
+- System: tall layouts group clock, configured resolver and certificate status. Loopback DNS entries
+  are labelled as local stubs; upstream DNS is not inferred. Recognized certificate dates show time
+  to expiry. Health evidence wraps within the available space, separates actionable counts from
+  informational/coverage findings, and keeps full evidence available in JSON.
+
+Histories live only in the current process and are bounded: 120 samples per service/sensor/log
+series and the existing bounded interface/instance histories. Refresh and collection age remain
+visible. These presentation controls do not change one-shot JSON/JSONL schemas or collect guest data.
