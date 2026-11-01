@@ -174,6 +174,27 @@ impl Process {
         (self.pid, self.start_time_ticks)
     }
 
+    pub fn display_name(&self) -> String {
+        if self.name.starts_with("qemu-system") {
+            let mut args = self
+                .command_line
+                .as_deref()
+                .unwrap_or("")
+                .split_whitespace();
+            while let Some(arg) = args.next() {
+                if arg == "-name" {
+                    if let Some(name) = args.next().and_then(|name| name.strip_prefix("guest=")) {
+                        let name = name.split(',').next().unwrap_or("");
+                        if !name.is_empty() {
+                            return format!("VM {name}");
+                        }
+                    }
+                }
+            }
+        }
+        self.name.clone()
+    }
+
     pub fn display_command(&self) -> &str {
         self.command_line.as_deref().unwrap_or(&self.name)
     }

@@ -152,19 +152,15 @@ pub(super) fn summary(view: View, snapshot: &SystemSnapshot) -> String {
             let flagged = snapshot
                 .logs
                 .iter()
-                .filter(|log| {
-                    matches!(
-                        log.priority.as_deref(),
-                        Some("error" | "critical" | "warning")
-                    )
-                })
+                .filter(|log| presentation::flagged(log))
                 .count();
             let repeats: u64 = snapshot.logs.iter().map(|log| log.repeated.max(1)).sum();
             format!(
-                "{} records | {} flagged | {} occurrences in collected window | Enter reads full message",
+                "{} records | {} flagged | {} occurrences | {} | window UTC; Enter: full message",
                 snapshot.logs.len(),
                 flagged,
-                repeats
+                repeats,
+                presentation::log_window(&snapshot.logs)
             )
         }
         View::Hardware => format!(
@@ -175,7 +171,11 @@ pub(super) fn summary(view: View, snapshot: &SystemSnapshot) -> String {
                 .temperatures
                 .iter()
                 .max_by(|a, b| a.temperature_c.total_cmp(&b.temperature_c))
-                .map(|s| format!("hottest {} {:.1}C", s.name, s.temperature_c))
+                .map(|s| format!(
+                    "hottest {} {:.1}C",
+                    presentation::sensor_label(snapshot, s),
+                    s.temperature_c
+                ))
                 .unwrap_or_else(|| "temperature unavailable".into()),
             snapshot
                 .hardware
@@ -594,7 +594,7 @@ fn cards(view: View, snapshot: &SystemSnapshot, selected: usize) -> Vec<Overview
                     .map(|sensor| {
                         format!(
                             "{} {:.1}C | {}",
-                            sensor.name,
+                            presentation::sensor_label(snapshot, sensor),
                             sensor.temperature_c,
                             sensor
                                 .critical_c
@@ -633,7 +633,13 @@ fn cards(view: View, snapshot: &SystemSnapshot, selected: usize) -> Vec<Overview
                     ),
                     format!(
                         "Configured resolvers: {}",
-                        snapshot.dns.nameservers.join(", ")
+                        snapshot
+                            .dns
+                            .nameservers
+                            .iter()
+                            .map(|v| presentation::resolver_label(v))
+                            .collect::<Vec<_>>()
+                            .join(", ")
                     ),
                     "Configured DNS servers are not proof that DNS queries succeed".into(),
                 ],
@@ -671,7 +677,11 @@ fn cards(view: View, snapshot: &SystemSnapshot, selected: usize) -> Vec<Overview
         }
         View::Processes => {}
     }
-    let reasons = overview::limits(snapshot);
+    let reasons = if view == View::Health {
+        Vec::new()
+    } else {
+        overview::limits(snapshot)
+    };
     add(
         "COLLECTION LIMITS",
         reasons.into_iter().map(str::to_owned).collect(),
