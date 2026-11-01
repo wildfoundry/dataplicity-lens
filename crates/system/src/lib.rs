@@ -4551,6 +4551,97 @@ fn render_container_specialist(
         render_container_resources(container, width, out)?;
         return Ok(());
     }
+    // VM inventory has no useful image/status columns; keep resource values on
+    // the same row instead of spending two lines on every guest.
+    if width >= 70 && snapshot.containers.iter().all(|c| c.runtime == "libvirt") {
+        let allocations = width >= 95;
+        let name_width = width
+            .saturating_sub(if allocations { 77 } else { 48 })
+            .clamp(18, 40);
+        let row =
+            |name: &str, state: &str, cpu: &str, rss: &str, ram: &str, vcpus: &str, disk: &str| {
+                let mut text = format!(
+                    "  {:<name_width$} {:<9} {:>8} {:>10} {:>10}",
+                    truncate_text(name, name_width),
+                    truncate_text(state, 9),
+                    truncate_text(cpu, 8),
+                    truncate_text(rss, 10),
+                    truncate_text(ram, 10)
+                );
+                if allocations {
+                    text.push_str(&format!(
+                        " {:>8} {:>10}",
+                        truncate_text(vcpus, 8),
+                        truncate_text(disk, 10)
+                    ));
+                }
+                text
+            };
+        writeln!(
+            out,
+            "{}",
+            ink(
+                &row(
+                    "NAME",
+                    "STATE",
+                    "CPU",
+                    "HOST RSS",
+                    "RAM ALLOC",
+                    "vCPUs",
+                    "DISK CAP"
+                ),
+                Ink::Label,
+                colour
+            )
+        )?;
+        let capacity = usize::from(rows.saturating_sub(10)).max(1);
+        let start = viewport_start(selected, snapshot.containers.len(), capacity);
+        for (index, container) in snapshot
+            .containers
+            .iter()
+            .enumerate()
+            .skip(start)
+            .take(capacity)
+        {
+            let r = container.resources.as_ref();
+            let rss = r
+                .and_then(|r| r.memory_usage_bytes)
+                .map(human_bytes)
+                .unwrap_or_else(|| "-".into());
+            let ram = r
+                .map(|r| presentation::readable_limit(r.memory_limit.as_deref()))
+                .unwrap_or_else(|| "-".into());
+            let disk = r
+                .and_then(|r| {
+                    r.root_disk_capacity_bytes
+                        .map(human_bytes)
+                        .or_else(|| r.root_disk_limit.clone())
+                })
+                .unwrap_or_else(|| "-".into());
+            let text = row(
+                &container.name,
+                &container.state,
+                r.and_then(|r| r.cpu_usage_percent.as_deref())
+                    .unwrap_or("sampling"),
+                &rss,
+                &ram,
+                r.and_then(|r| r.cpu_limit.as_deref())
+                    .map(|v| v.strip_suffix(" vCPUs").unwrap_or(v))
+                    .unwrap_or("-"),
+                &disk,
+            );
+            writeln!(
+                out,
+                "{}",
+                if index == selected {
+                    selected_row(&text, colour)
+                } else {
+                    ink(&text, Ink::Bright, colour)
+                }
+            )?;
+        }
+        return Ok(());
+    }
     let layout = container_list_layout(width);
     match layout {
         ContainerListLayout::Compact { name_width } => {
@@ -12026,6 +12117,37 @@ mod tests {
                 seen.iter().all(|present| *present),
                 "columns={columns} missed a specialist tile"
             );
+        }
+    }
+
+    #[test]
+    fn vm_inventory_keeps_each_guest_on_one_row() {
+        let mut snapshot = demo_snapshot();
+        snapshot.containers.truncate(1);
+        snapshot.containers[0].runtime = "libvirt".into();
+        snapshot.containers[0].resources = Some(ContainerResources {
+            cpu_usage_percent: Some("104.5%".into()),
+            cpu_limit: Some("4 vCPUs".into()),
+            memory_limit: Some("12GiB".into()),
+            memory_usage_bytes: Some(1 << 30),
+            root_disk_capacity_bytes: Some(80 << 30),
+            ..Default::default()
+        });
+        for width in [70, 94, 95, 106, 200] {
+            let mut out = Vec::new();
+            render_container_specialist(&snapshot, 0, false, 40, width, &mut out).unwrap();
+            let text = String::from_utf8(out).unwrap();
+            assert_eq!(text.lines().count(), 2, "{width}: {text}");
+            assert!(
+                text.lines()
+                    .all(|s| unicode_width::UnicodeWidthStr::width(s) <= width)
+            );
+            assert!(text.contains("104.5%"));
+            assert!(text.contains("12.0GiB"));
+            assert!(!text.contains("IMAGE"));
+            if width >= 95 {
+                assert!(text.contains("80.0GiB"));
+            }
         }
     }
 

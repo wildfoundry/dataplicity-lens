@@ -152,7 +152,7 @@ impl ContainerMonitor {
         let history = self
             .histories
             .get(&(container.runtime.clone(), container.id.clone()));
-        let expanded = rows >= 28;
+        let expanded = rows >= 28 && width >= 100;
         for (index, label) in LABELS.iter().enumerate() {
             let label = if index == 1 && container.runtime == "libvirt" {
                 "Host RSS"
@@ -176,7 +176,7 @@ impl ContainerMonitor {
             let chart_width = if expanded {
                 width.saturating_sub(6)
             } else {
-                width.saturating_sub(46)
+                width.saturating_sub(57)
             };
             let chart = sparkline(series, chart_width);
             if expanded {
@@ -196,7 +196,22 @@ impl ContainerMonitor {
                     )
                 )?;
             } else {
-                line(out, &format!("{label:<11} {current:<25} {chart}"))?;
+                let peak = series
+                    .and_then(|s| s.iter().rev().take(chart_width).flatten().max())
+                    .copied()
+                    .map(format_value)
+                    .unwrap_or_else(|| "-".into());
+                let values = format!("{label:<11} {current:<23} peak {peak:<10}");
+                writeln!(
+                    out,
+                    "  {} {}",
+                    values,
+                    ink(
+                        &chart,
+                        if index < 2 { Ink::Success } else { Ink::Info },
+                        colour
+                    )
+                )?;
             }
         }
         if rows >= 32 {
