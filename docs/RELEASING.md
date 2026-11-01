@@ -48,4 +48,6 @@ Lens repository must provide `HOMEBREW_TAP_TOKEN` owned by `dataplicity-release-
 variables `HOMEBREW_TAP_REPOSITORY` and `HOMEBREW_FORMULA_NAME`. The tap PR is reviewed and merged
 only after its required formula analysis check passes. A tag is not complete until adding
 `wildfoundry/tap`, trusting the formula, installing `dataplicity-lens`, upgrading it and uninstalling
-it pass on both macOS architectures.
+it pass on both macOS architectures. After merging the tap PR, dispatch
+`Verify published Homebrew release` with the version to exercise the previous-release upgrade,
+fresh installation, all ten commands and uninstall on Apple Silicon and Intel.
