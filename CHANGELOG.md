@@ -5,6 +5,15 @@ versioning once the first public release is tagged.
 
 ## [Unreleased]
 
+## [0.3.9] - 2026-11-03
+
+### Added
+- Show CPU model, sockets, physical cores and logical threads in the cockpit header,
+  with readable server service tags/serials alongside the OS details.
+- Optional credential-free EC2/ECS host metadata and local Dell iDRAC, HPE iLO,
+  IBM IMM/BMC and Lenovo management identity/address discovery.
+- Optional SMART/NVMe health and PERC/StorCLI RAID volume/member states in storage details.
+
 ## [0.3.8] - 2026-11-01
 
 ### Changed

@@ -382,6 +382,7 @@ mod tests {
                 os_name: None,
                 uptime_seconds: 1,
                 cpu_count: 1,
+                cpu: None,
                 cpu_percent: 0.0,
                 load: LoadAverage::default(),
                 memory: Memory::default(),

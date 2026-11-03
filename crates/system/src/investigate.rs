@@ -378,6 +378,10 @@ fn cards(view: View, snapshot: &SystemSnapshot, selected: usize) -> Vec<Overview
                     human_bytes(device.size_bytes)
                 )];
                 if let Some(meta) = snapshot.storage_details.get(&device.name) {
+                    if let Some(health) = &meta.health {
+                        lines.push(format!("Health: {}", storage_health::summary(health)));
+                        lines.push(format!("Health source: {}", health.source));
+                    }
                     if let Some(model) = &meta.model {
                         lines.push(format!("Model: {model}"));
                     }

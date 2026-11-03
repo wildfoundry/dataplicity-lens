@@ -22,7 +22,9 @@ release and disclosure with the reporter.
 
 Lens reads local operating-system interfaces and does not require a background daemon, account or
 network connection. It does not collect or transmit telemetry. Inspection runs with the invoking
-user's permissions.
+user's permissions. Optional AWS host diagnostics make bounded requests only to local link-local
+metadata endpoints, retain allowlisted identity fields, and never request IAM credentials or user-data.
+See [host diagnostics](docs/HOST-DIAGNOSTICS.md) for the exact collection boundaries.
 
 State-changing process and service operations are explicit, typed actions. They require a precise
 target and confirmation, revalidate identity immediately before execution, and report the result.

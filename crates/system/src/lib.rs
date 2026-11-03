@@ -5,6 +5,7 @@ mod container_monitor;
 mod containers;
 use container_monitor::ContainerMonitor;
 mod hardware;
+mod host_context;
 mod investigate;
 mod journal;
 mod libvirt;
@@ -12,6 +13,7 @@ mod native_details;
 mod overview;
 mod presentation;
 mod storage_activity;
+mod storage_health;
 
 use std::{
     collections::{BTreeMap, VecDeque},
@@ -1645,7 +1647,8 @@ fn spawn_cockpit_live_sampler() -> (
         while request_receiver.recv().is_ok() {
             let sample = collector
                 .collect()
-                .map(|snapshot| {
+                .map(|mut snapshot| {
+                    snapshot.host.cpu = host_context::cpu();
                     let mut warnings = Vec::new();
                     let interface_counters = collect_interface_counters(&mut warnings);
                     CockpitLiveSample {
@@ -2205,30 +2208,36 @@ fn render_cockpit_content(
             stdout,
             "  {}",
             ink(
-                &format!(
-                    "{}{}{}",
-                    host.os_name
-                        .as_deref()
-                        .unwrap_or("Operating system unknown"),
-                    if width >= 72 {
-                        format!("  {}  kernel {}", glyphs.bullet, host.kernel)
-                    } else {
-                        String::new()
-                    },
-                    if width >= 52 {
-                        format!(
-                            "  {}  up {}",
-                            glyphs.bullet,
-                            human_duration(host.uptime_seconds)
-                        )
-                    } else {
-                        String::new()
-                    }
-                ),
+                &cockpit_host_summary(snapshot, width.saturating_sub(2)),
                 Ink::Muted,
                 colour,
             )
         )?;
+    }
+    if rows >= 30 {
+        if let Some(cpu) = &host.cpu {
+            let summary = host_context::cpu_summary(cpu);
+            let model_width = width.saturating_sub(summary.chars().count() + 10);
+            let model = cpu.model.as_deref().unwrap_or("CPU model unavailable");
+            let line = if model_width >= 12 {
+                format!(
+                    "CPU  {}  {}  {summary}",
+                    truncate_text(model, model_width),
+                    glyphs.bullet
+                )
+            } else {
+                format!("CPU  {summary}")
+            };
+            writeln!(
+                stdout,
+                "  {}",
+                ink(
+                    &truncate_text(&line, width.saturating_sub(2)),
+                    Ink::Info,
+                    colour
+                )
+            )?;
+        }
     }
     writeln!(
         stdout,
@@ -2500,6 +2509,57 @@ fn render_cockpit_content(
     }
     output.write_all(stdout)?;
     Ok(())
+}
+
+/// Keep the server identity visible without adding another header row.
+fn cockpit_host_summary(snapshot: &SystemSnapshot, width: usize) -> String {
+    let host = &snapshot.host;
+    let separator = format!("  {}  ", glyphs().bullet);
+    let tag = snapshot.hardware.server.as_ref().and_then(|server| {
+        let tag = server.service_tag.as_deref()?;
+        if tag.trim().is_empty() {
+            return None;
+        }
+        let label = if server
+            .management
+            .as_deref()
+            .is_some_and(|name| name.starts_with("Dell"))
+        {
+            "Service tag"
+        } else {
+            "Serial"
+        };
+        Some(format!("{label}: {tag}"))
+    });
+    let os = host
+        .os_name
+        .as_deref()
+        .unwrap_or("Operating system unknown");
+    let mut line = if let Some(tag) = tag {
+        let tag = truncate_text(&tag, width.saturating_sub(8));
+        let os_width = width.saturating_sub(tag.chars().count() + separator.chars().count());
+        format!("{}{separator}{tag}", truncate_text(os, os_width))
+    } else {
+        truncate_text(os, width)
+    };
+    // Drop lower-priority fields before the service tag on narrow terminals.
+    let optional = [
+        (
+            width >= 70 && !host.kernel.is_empty(),
+            format!("kernel {}", host.kernel),
+        ),
+        (
+            width >= 50,
+            format!("up {}", human_duration(host.uptime_seconds)),
+        ),
+    ];
+    for (enabled, value) in optional {
+        let suffix = format!("{separator}{value}");
+        if enabled && line.chars().count() + suffix.chars().count() <= width {
+            line.push_str(&suffix);
+        }
+    }
+    line
 }
 
 fn cockpit_explore_cell(
@@ -5066,6 +5126,29 @@ fn render_disk_specialist(
                 .map(|device| device.name.as_str())
         };
         if let Some(device) = device {
+            let health = snapshot
+                .storage_details
+                .get(device)
+                .and_then(|d| d.health.as_ref());
+            writeln!(
+                out,
+                "  HEALTH {}",
+                health
+                    .map(storage_health::summary)
+                    .unwrap_or_else(|| "unavailable".into())
+            )?;
+            if let Some(health) = health {
+                writeln!(
+                    out,
+                    "  Source: {}  observed {}",
+                    health.source,
+                    health
+                        .observed_at
+                        .as_ref()
+                        .map(|t| t.0.as_str())
+                        .unwrap_or("unknown")
+                )?;
+            }
             storage_activity.render(device, width, rows, out)?;
         }
         return Ok(());
@@ -5138,7 +5221,10 @@ fn render_disk_specialist(
                 let device = &snapshot.block_devices[index - snapshot.mounts.len()];
                 let meta = snapshot.storage_details.get(&device.name);
                 let model = format!(
-                    "{}{}{}",
+                    "{}{}{}{}",
+                    meta.and_then(|d| d.health.as_ref())
+                        .map(|h| format!("{} | ", storage_health::summary(h)))
+                        .unwrap_or_default(),
                     meta.and_then(|d| d.model.as_deref()).unwrap_or(""),
                     meta.and_then(|d| d.parent.as_deref())
                         .map(|p| format!(" parent {p}"))
@@ -5194,13 +5280,26 @@ fn render_disk_specialist(
                 "device",
                 truncate_text(&device.name, 34),
                 human_bytes(device.size_bytes),
-                device.kind
+                snapshot
+                    .storage_details
+                    .get(&device.name)
+                    .and_then(|d| d.health.as_ref())
+                    .map(storage_health::summary)
+                    .unwrap_or_else(|| device.kind.clone())
             )
         };
         if index == selected {
             writeln!(out, "{}", selected_row(&row, colour))?;
         } else {
-            let tone = if let Some(mount) = snapshot.mounts.get(index) {
+            let storage_severity = index
+                .checked_sub(snapshot.mounts.len())
+                .and_then(|i| snapshot.block_devices.get(i))
+                .and_then(|device| snapshot.storage_details.get(&device.name))
+                .and_then(|detail| detail.health.as_ref())
+                .and_then(storage_health::severity);
+            let tone = if let Some(severity) = storage_severity {
+                severity_ink(severity)
+            } else if let Some(mount) = snapshot.mounts.get(index) {
                 if !investigate::persistent_mount(mount) {
                     Ink::Muted
                 } else if mount.used_percent >= 97.0
@@ -5858,6 +5957,37 @@ fn hardware_rows(snapshot: &SystemSnapshot) -> Vec<(String, String, String)> {
                 details.push_str(&format!("\nFirmware flags: 0x{raw:x}"));
             }
             rows.push(("RASPBERRY PI".into(), state, details));
+        }
+    }
+    if let Some(server) = &snapshot.hardware.server {
+        if let Some(platform) = &server.platform {
+            rows.push((
+                "CLOUD HOST".into(),
+                platform.clone(),
+                server
+                    .details
+                    .iter()
+                    .map(|(k, v)| format!("{k}: {v}"))
+                    .chain(std::iter::once(format!(
+                        "Source: {}",
+                        server.source.join(", ")
+                    )))
+                    .collect::<Vec<_>>()
+                    .join("\n"),
+            ));
+        }
+        if let Some(management) = &server.management {
+            let mut details = Vec::new();
+            if let Some(tag) = &server.service_tag {
+                details.push(format!("Service tag / serial: {tag}"));
+            }
+            for address in &server.management_addresses {
+                details.push(format!("Management IP: {address}"));
+            }
+            if server.management_addresses.is_empty() {
+                details.push("Management IP: unavailable through local interfaces".into());
+            }
+            rows.push(("SERVER".into(), management.clone(), details.join("\n")));
         }
     }
     rows.extend(snapshot.temperatures.iter().map(|sensor| {
@@ -7740,6 +7870,7 @@ fn collect_base_snapshot() -> SystemSnapshot {
             .push(format!("process collector unavailable: {error}"));
         snapshot
     });
+    snapshot.host.cpu = host_context::cpu();
     snapshot.schema_version = SchemaVersion(SCHEMA_VERSION.to_owned());
     snapshot
 }
@@ -7809,6 +7940,7 @@ fn domain_base_snapshot(view: View) -> SystemSnapshot {
         collect_base_snapshot()
     } else {
         let mut snapshot = SystemSnapshot::empty(hostname());
+        snapshot.host.cpu = host_context::cpu();
         snapshot.schema_version = SchemaVersion(SCHEMA_VERSION.to_owned());
         snapshot
     }
@@ -9481,7 +9613,7 @@ fn actionable_down_interface(interface: &Interface) -> bool {
 }
 
 fn diagnose(snapshot: &SystemSnapshot) -> Vec<SystemFinding> {
-    let mut findings = Vec::new();
+    let mut findings = storage_health::findings(snapshot);
     let limits = overview::limits(snapshot);
     if !limits.is_empty() {
         findings.push(SystemFinding {
@@ -10452,6 +10584,13 @@ fn render_plain(view: View, snapshot: &SystemSnapshot, out: &mut dyn Write) -> R
                         item.filesystem.as_deref().unwrap_or("-"),
                         item.mountpoints.join(", ")
                     )?;
+                    if let Some(health) = snapshot
+                        .storage_details
+                        .get(&item.name)
+                        .and_then(|d| d.health.as_ref())
+                    {
+                        writeln!(out, "  Health: {}", storage_health::summary(health))?;
+                    }
                 }
                 writeln!(out)?;
             }
@@ -10560,6 +10699,23 @@ fn render_plain(view: View, snapshot: &SystemSnapshot, out: &mut dyn Write) -> R
             }
             if let Some(value) = &snapshot.hardware.firmware_version {
                 writeln!(out, "firmware: {value}")?;
+            }
+            if let Some(server) = &snapshot.hardware.server {
+                if let Some(platform) = &server.platform {
+                    writeln!(out, "\nHOST PLATFORM: {platform}")?;
+                }
+                for (key, value) in &server.details {
+                    writeln!(out, "{key}: {value}")?;
+                }
+                if let Some(management) = &server.management {
+                    writeln!(out, "\nMANAGEMENT: {management}")?;
+                }
+                if let Some(tag) = &server.service_tag {
+                    writeln!(out, "Service tag / serial: {tag}")?;
+                }
+                for address in &server.management_addresses {
+                    writeln!(out, "Management IP: {address}")?;
+                }
             }
             if let Some(pi) = &snapshot.hardware.raspberry_pi {
                 writeln!(out, "\nRASPBERRY PI")?;
@@ -10703,6 +10859,14 @@ fn render_overview(snapshot: &SystemSnapshot, out: &mut dyn Write) -> Result<()>
         "Dataplicity Lens {separator} {}",
         snapshot.host.hostname
     )?;
+    if let Some(cpu) = &snapshot.host.cpu {
+        writeln!(
+            out,
+            "CPU: {} {separator} {}",
+            cpu.model.as_deref().unwrap_or("model unavailable"),
+            host_context::cpu_summary(cpu)
+        )?;
+    }
     writeln!(
         out,
         "{} services {separator} {} mounts {separator} {} interfaces {separator} {} listeners",
@@ -11175,6 +11339,7 @@ pub fn demo_snapshot() -> SystemSnapshot {
         members: Vec::new(),
     }];
     snapshot.hardware = HardwareIdentity {
+        server: None,
         manufacturer: Some("Raspberry Pi Foundation".into()),
         model: Some("Raspberry Pi 4 Model B Rev 1.5".into()),
         board: Some("BCM2711".into()),
@@ -12618,5 +12783,72 @@ mod tests {
         assert!(!snapshot.temperatures.is_empty());
         assert!(!snapshot.hardware_devices.is_empty());
         assert!(!snapshot.findings.is_empty());
+    }
+    #[test]
+    fn cockpit_cpu_topology_and_optional_server_details_render() {
+        let mut snapshot = demo_snapshot();
+        snapshot.host.cpu = Some(lens_model::CpuTopology {
+            model: Some("Example Xeon".into()),
+            sockets: Some(2),
+            cores: Some(28),
+            threads: 56,
+        });
+        let mut output = Vec::new();
+        render_cockpit_content(
+            &snapshot,
+            &CpuActivity::default(),
+            &NetworkActivity::default(),
+            0,
+            false,
+            40,
+            &mut output,
+        )
+        .expect("render fixture");
+        let output = String::from_utf8(output).expect("UTF-8 fixture");
+        assert!(output.contains("Example Xeon"));
+        assert!(output.contains("2 CPUs  /  28 cores  /  56 threads"));
+        snapshot.hardware.server = Some(lens_model::ServerContext {
+            management: Some("Dell iDRAC".into()),
+            service_tag: Some("EXAMPLE".into()),
+            management_addresses: vec!["192.0.2.10".into()],
+            ..Default::default()
+        });
+        let rows = hardware_rows(&snapshot);
+        assert!(rows.iter().any(|(_, title, detail)| title == "Dell iDRAC"
+            && detail.contains("EXAMPLE")
+            && detail.contains("192.0.2.10")));
+    }
+    #[test]
+    fn cpu_topology_survives_specialist_and_live_collection() {
+        let expected = host_context::cpu();
+        assert_eq!(domain_base_snapshot(View::Hardware).host.cpu, expected);
+        let (sender, receiver) = spawn_cockpit_live_sampler();
+        sender.send(()).expect("request live sample");
+        let sample = receiver
+            .recv_timeout(Duration::from_secs(10))
+            .expect("live sample deadline")
+            .expect("live collection");
+        assert_eq!(sample.snapshot.host.cpu, expected);
+    }
+    #[test]
+    fn cockpit_header_keeps_server_tag_visible_within_available_width() {
+        let mut snapshot = demo_snapshot();
+        snapshot.host.os_name = Some("Ubuntu 26.04.1 LTS".into());
+        snapshot.hardware.server = Some(lens_model::ServerContext {
+            management: Some("Dell iDRAC".into()),
+            service_tag: Some("EXAMPLE".into()),
+            ..Default::default()
+        });
+        for width in [38, 78, 98, 158] {
+            let summary = cockpit_host_summary(&snapshot, width);
+            assert!(summary.contains("Service tag: EXAMPLE"), "{summary}");
+            assert!(summary.chars().count() <= width, "{summary}");
+        }
+        assert!(cockpit_host_summary(&snapshot, 158).contains("kernel"));
+        snapshot.hardware.server = None;
+        let summary = cockpit_host_summary(&snapshot, 98);
+        assert!(!summary.contains("Service tag"));
+        assert!(!summary.contains("Serial"));
+        assert!(summary.contains("Ubuntu 26.04.1 LTS"));
     }
 }

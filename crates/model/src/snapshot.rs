@@ -78,6 +78,8 @@ pub struct Host {
     pub os_name: Option<String>,
     pub uptime_seconds: u64,
     pub cpu_count: usize,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cpu: Option<CpuTopology>,
     pub cpu_percent: f64,
     pub load: LoadAverage,
     pub memory: Memory,
@@ -87,6 +89,47 @@ pub struct Host {
     pub total_cpu_ticks: u64,
     #[serde(skip)]
     pub idle_cpu_ticks: u64,
+}
+
+/// Topology visible to the operating system; sockets in a VM are virtual sockets.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CpuTopology {
+    pub model: Option<String>,
+    pub sockets: Option<usize>,
+    pub cores: Option<usize>,
+    pub threads: usize,
+}
+
+/// Credential-free local host context. Only allowlisted metadata fields are retained.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ServerContext {
+    pub platform: Option<String>,
+    pub details: BTreeMap<String, String>,
+    pub management: Option<String>,
+    pub management_addresses: Vec<String>,
+    pub service_tag: Option<String>,
+    pub source: Vec<String>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct StorageMember {
+    pub slot: String,
+    pub model: Option<String>,
+    pub state: String,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct StorageHealth {
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub members: Vec<StorageMember>,
+    pub source: String,
+    pub observed_at: Option<Timestamp>,
+    pub smart_passed: Option<bool>,
+    pub device_state: Option<String>,
+    pub temperature_c: Option<i64>,
+    pub percentage_used: Option<u64>,
+    pub media_errors: Option<u64>,
+    pub critical_warning: Option<u64>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -446,6 +489,8 @@ pub struct HardwareIdentity {
     pub firmware_version: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub raspberry_pi: Option<RaspberryPiStatus>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub server: Option<ServerContext>,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -600,6 +645,8 @@ pub struct StorageDetail {
     pub read_bytes: Option<u64>,
     pub write_bytes: Option<u64>,
     pub io_active_ms: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub health: Option<StorageHealth>,
 }
 
 /// Optional kernel link context. Carrier and administrative state are distinct.
@@ -683,6 +730,7 @@ impl Snapshot {
                 os_name: None,
                 uptime_seconds: 0,
                 cpu_count: 0,
+                cpu: None,
                 cpu_percent: 0.0,
                 load: LoadAverage::default(),
                 memory: Memory::default(),

@@ -76,6 +76,7 @@ impl DemoSource {
                 os_name: Some("Ubuntu 24.04 LTS".to_owned()),
                 uptime_seconds: 8 * 86_400 + sequence,
                 cpu_count: 8,
+                cpu: None,
                 cpu_percent: 0.0,
                 load: LoadAverage {
                     one: 0.41,

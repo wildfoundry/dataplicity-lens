@@ -50,7 +50,8 @@ utilities; macOS uses `sysctl`, `vm_stat`, `ps`, `launchctl`, the unified log, `
 - `/etc/os-release`, `/etc/passwd`
 
 Required host-level files produce a clear top-level error. Optional process fields are represented as
-unavailable and collection continues. Environment variables are deliberately not read.
+unavailable and collection continues. Process environments are deliberately not read. Host detection reads only the current process's
+`AWS_EXECUTION_ENV`, `ECS_CONTAINER_METADATA_URI_V4` and `ECS_CONTAINER_METADATA_URI` hints.
 
 The interactive `lens` cockpit collects host and process data for its first screen, then enriches that
 snapshot with services, logs, storage, network and hardware data on background threads. Specialist commands
