@@ -77,6 +77,7 @@ fn collect_linux() -> HardwareSnapshot {
             .or_else(|| cpuinfo_value("Serial")),
         firmware_version: read_trimmed("/sys/class/dmi/id/bios_version"),
         raspberry_pi: None,
+        server: super::host_context::server(),
     };
     let mut temperatures = linux_temperatures();
     if is_pi {
@@ -272,6 +273,7 @@ fn collect_macos() -> HardwareSnapshot {
         serial_number: json_string(&hardware, &["serial_number"]),
         firmware_version: json_string(&hardware, &["system_firmware_version", "boot_rom_version"]),
         raspberry_pi: None,
+        server: super::host_context::server(),
     };
     let mut devices = Vec::new();
     if let Some(usb) = system_profiler("SPUSBDataType") {

@@ -140,6 +140,7 @@ impl LinuxCollector {
                 os_name,
                 uptime_seconds,
                 cpu_count: cpu.cpu_count,
+                cpu: None,
                 cpu_percent: 0.0,
                 load,
                 memory,

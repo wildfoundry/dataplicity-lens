@@ -517,6 +517,7 @@ mod tests {
                 os_name: Some("Demo Linux".to_owned()),
                 uptime_seconds: 3_661,
                 cpu_count: 4,
+                cpu: None,
                 cpu_percent: 18.2,
                 load: LoadAverage {
                     one: 0.4,
