@@ -1,0 +1,3 @@
+d /run/lens-report 0710 lens-collector lens-report -
+p /run/lens-report/observations 0240 lens-collector lens-report -
+d /var/lib/lens-publisher 0700 lens-publisher lens-publisher -

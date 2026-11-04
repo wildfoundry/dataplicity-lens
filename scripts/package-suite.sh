@@ -14,7 +14,18 @@ mkdir -p "$stage/usr/bin" "$stage/usr/share/doc/dataplicity-lens" "$out"
 for binary in "${binaries[@]}"; do
   install -m 0755 "target/${TARGET}/release/${binary}" "$stage/usr/bin/${binary}"
 done
-install -m 0644 LICENSE NOTICE README.md PHILOSOPHY.md SECURITY.md CHANGELOG.md "$stage/usr/share/doc/dataplicity-lens/"
+if [[ "$TARGET" == *linux* ]]; then
+  install -m 0755 packaging/systemd/lens-reporting-enable "$stage/usr/bin/lens-reporting-enable"
+  for binary in lens-daemon lens-publisher; do
+    install -m 0755 "target/${TARGET}/release/${binary}" "$stage/usr/bin/${binary}"
+  done
+  mkdir -p "$stage/usr/lib/systemd/system" "$stage/usr/lib/sysusers.d" "$stage/usr/lib/tmpfiles.d" "$stage/usr/lib/systemd/system-preset"
+  install -m 0644 packaging/systemd/*.service "$stage/usr/lib/systemd/system/"
+  install -m 0644 packaging/systemd/lens-reporting.sysusers "$stage/usr/lib/sysusers.d/lens-reporting.conf"
+  install -m 0644 packaging/systemd/lens-reporting.tmpfiles "$stage/usr/lib/tmpfiles.d/lens-reporting.conf"
+  install -m 0644 packaging/systemd/lens-reporting.preset "$stage/usr/lib/systemd/system-preset/00-lens-reporting.preset"
+fi
+install -m 0644 docs/FLEET_REPORTING.md docs/REPORTING_PROTOCOL.md LICENSE NOTICE README.md PHILOSOPHY.md SECURITY.md CHANGELOG.md "$stage/usr/share/doc/dataplicity-lens/"
 if [[ -d dist/generated ]]; then
   mkdir -p "$stage/usr/share/man/man1" "$stage/usr/share/bash-completion/completions" "$stage/usr/share/zsh/site-functions" "$stage/usr/share/fish/vendor_completions.d"
   for binary in "${binaries[@]}"; do
@@ -28,6 +39,11 @@ fi
 root="dataplicity-lens-v${version}-${TARGET}"
 mkdir -p "$out/$root"
 cp -a "$stage/usr/bin" "$out/$root/"
+if [[ "$TARGET" == *linux* ]]; then
+  mkdir -p "$out/$root/lib" "$out/$root/docs"
+  cp -a "$stage/usr/lib/". "$out/$root/lib/"
+  install -m 0644 docs/FLEET_REPORTING.md docs/REPORTING_PROTOCOL.md "$out/$root/docs/"
+fi
 install -m 0644 LICENSE NOTICE README.md "$out/$root/"
 if [[ -d dist/generated ]]; then
   mkdir -p "$out/$root/completions"

@@ -1,0 +1,4 @@
+g lens-report -
+u lens-collector - "Lens observation collector" /nonexistent
+u lens-publisher - "Lens report publisher" /nonexistent
+m lens-publisher lens-report

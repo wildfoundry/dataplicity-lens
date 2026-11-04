@@ -151,3 +151,32 @@ with `name` and `details`; `--fields` supports both maps. Filters retain metadat
 Linux journal entries use structured unit, priority, message and realtime fields. Repeated records
 are folded only when source, unit, message and priority match; other log sources can still infer
 priority from text. Invalid/unsupported journal records produce a collection warning.
+
+## Hardware identity
+
+The existing `hardware.serial_number` remains the system serial. Linux adds optional `service_tag`
+(Dell's label for that same system serial), `chassis_serial_number`, `board_serial_number` and
+`asset_tag`. Component serials are never substituted for the system serial. `identity_sources`
+maps field names to their local source path (or named local source). `unavailable_fields` maps
+missing fields to `not_reported`, `permission_denied`, `invalid` (including firmware placeholders),
+or `read_error`. A valid fallback records its successful source and has no unavailable entry.
+Old documents without these additive schema-version-2 fields remain readable.
+
+Collection uses the invoking user's permissions and never invokes `sudo`, `dmidecode`, vendor
+management utilities, or a firmware/network API to obtain these values. Serial sysfs files can
+be root-readable only; Lens reports `permission_denied`, rather than requiring the whole application
+to run as root. Firmware identity is cached for the current process; restarting Lens picks up
+firmware or access-policy changes. Each source read is capped at 1 MiB. Linux sources are DMI sysfs,
+device-tree serial/system-id properties (including IBM Power), and the existing `/proc/cpuinfo`
+Serial/Revision fallback.
+
+Virtual machines may expose guest firmware identifiers; these are not proof of physical identity.
+Serials are not registration credentials or guaranteed unique keys. Containers must not be assigned
+the host serial as their own identity. These fields are observations, not a persistent inventory
+database or a reporting service. See the [future fleet reporting design](FLEET_REPORTING_DESIGN.md).
+
+`processes[].start_time_ticks` is an additive integer field: Linux kernel process start ticks since
+boot. Join it with PID and the reporting envelope boot/host identity to distinguish PID reuse.
+Older documents default this field to zero; absence in an old document does not establish a
+trustworthy cross-sample process identity. Raw CPU tick counters remain internal. Optional reporting
+uses the [separately versioned envelope](REPORTING_PROTOCOL.md), not terminal display text.

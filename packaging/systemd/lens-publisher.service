@@ -1,0 +1,49 @@
+[Unit]
+Description=Lens one-way report publisher (explicit opt-in)
+After=network-online.target systemd-tmpfiles-setup.service
+Wants=network-online.target
+StartLimitIntervalSec=3600
+StartLimitBurst=3
+
+[Service]
+Type=simple
+User=lens-publisher
+Group=lens-publisher
+SupplementaryGroups=lens-report
+StateDirectory=lens-publisher
+StateDirectoryMode=0700
+ExecStart=/usr/bin/lens-publisher run
+Restart=on-failure
+RestartSec=300
+UMask=0077
+NoNewPrivileges=yes
+CapabilityBoundingSet=
+AmbientCapabilities=
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectProc=invisible
+ProcSubset=pid
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+RestrictSUIDSGID=yes
+RestrictNamespaces=yes
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+BindReadOnlyPaths=/run/lens-report
+InaccessiblePaths=-/sys -/proc/cpuinfo -/proc/meminfo -/proc/stat -/proc/uptime -/proc/loadavg -/var/log -/run/docker.sock -/run/podman -/var/lib/lxd
+NoExecPaths=/
+ExecPaths=/usr/bin/lens-publisher /usr/lib -/lib -/lib64
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+LimitCORE=0
+MemorySwapMax=0
+MemoryMax=64M
+CPUQuota=5%
+TasksMax=8
+TimeoutStopSec=25
+
+[Install]
+WantedBy=multi-user.target
