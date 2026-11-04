@@ -6,6 +6,7 @@ from pathlib import Path
 import subprocess
 import sys
 import tempfile
+import uuid
 
 assert sys.platform == 'linux' and os.geteuid() != 0
 binary = Path(sys.argv[1]).resolve()
@@ -22,6 +23,14 @@ with tempfile.TemporaryDirectory(prefix='lens-syslog-ci-') as root:
     config=directory/'rsyslog.conf'
     config.write_text(generated.stdout);config.chmod(0o600)
     assert state['device_secret'] not in generated.stdout
-    result=subprocess.run(['rsyslogd','-N1','-f',str(config)],capture_output=True,text=True)
-    assert result.returncode==0,(result.stdout+result.stderr).replace(token,'[redacted]')
+    # Ubuntu confines rsyslog configuration reads to /etc. Use the same private root-owned
+    # location as production setup instead of weakening directory/token permissions.
+    assert os.environ.get('GITHUB_ACTIONS') == 'true', 'run only on disposable Linux CI'
+    installed = Path('/etc/rsyslog.d') / ('.lens-ci-' + uuid.uuid4().hex + '.conf')
+    subprocess.run(['sudo','install','-m','0600',str(config),str(installed)],check=True)
+    try:
+        result=subprocess.run(['sudo','rsyslogd','-N1','-f',str(installed)],capture_output=True,text=True)
+        assert result.returncode==0,(result.stdout+result.stderr).replace(token,'[redacted]')
+    finally:
+        subprocess.run(['sudo','rm','-f',str(installed)],check=True)
     print('Generated rsyslog configuration accepted; logs-only credential and TLS boundary verified.')
