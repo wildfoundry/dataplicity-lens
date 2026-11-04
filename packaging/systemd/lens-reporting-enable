@@ -19,6 +19,22 @@ while (($#)); do
     *) echo 'Usage: lens-reporting-enable [--name HOSTNAME] [--server-url HTTPS_ORIGIN] [--refresh] [--no-syslog-upload | --syslog-upload]' >&2; exit 2;;
   esac
 done
+lens_publisher_was_active=0
+if systemctl is-active --quiet lens-publisher.service; then lens_publisher_was_active=1; fi
+lens_setup_failed() {
+  local lens_rc=$?
+  if [[ $lens_publisher_was_active == 1 ]]; then
+    if systemctl start lens-publisher.service >/dev/null 2>&1; then
+      echo 'Lens setup did not finish. The previous publisher was restarted; check its service status.' >&2
+    else
+      echo 'Lens setup did not finish and the previous publisher could not restart. Run: sudo systemctl status lens-publisher.service' >&2
+    fi
+  else
+    echo 'Lens setup did not finish. Reporting has not been confirmed enabled.' >&2
+  fi
+  exit "$lens_rc"
+}
+trap lens_setup_failed ERR
 systemd-sysusers /usr/lib/sysusers.d/lens-reporting.conf
 systemd-tmpfiles --create /usr/lib/tmpfiles.d/lens-reporting.conf
 systemctl stop lens-publisher.service
@@ -73,7 +89,29 @@ if [[ $lens_syslog_mode != off ]]; then
       # Validation output may contain the inline credential. Never echo it.
       lens_validation=$(mktemp)
       chmod 0600 "$lens_validation"
+      lens_tls_valid=0
       if rsyslogd -N1 -f "$lens_config_stage" > "$lens_validation" 2>&1; then
+        lens_tls_valid=1
+      elif grep -Eiq 'lmnsd_gtls|could not load.*gtls|gtls.*(not found|cannot|failed)' "$lens_validation"; then
+        # Repair only a diagnosed missing TLS module using the OS package manager.
+        # Keep package diagnostics private: repository URLs can themselves contain credentials.
+        lens_dependency_log=$(mktemp)
+        chmod 0600 "$lens_dependency_log"
+        lens_dependency_installed=0
+        echo 'Lens logs: installing the system rsyslog TLS module.'
+        if command -v apt-get >/dev/null 2>&1; then
+          if NEEDRESTART_MODE=l DEBIAN_FRONTEND=noninteractive apt-get -y install rsyslog-gnutls > "$lens_dependency_log" 2>&1; then lens_dependency_installed=1; fi
+        elif command -v dnf >/dev/null 2>&1; then
+          if NEEDRESTART_MODE=l dnf -y install rsyslog-gnutls > "$lens_dependency_log" 2>&1; then lens_dependency_installed=1; fi
+        fi
+        rm -f "$lens_dependency_log"
+        if [[ $lens_dependency_installed == 1 ]] && rsyslogd -N1 -f "$lens_config_stage" > "$lens_validation" 2>&1; then
+          lens_tls_valid=1
+        else
+          echo 'Lens logs could not enable TLS. Install rsyslog-gnutls with your OS package manager, then rerun this setup command. Reporting will still be enabled.' >&2
+        fi
+      fi
+      if [[ $lens_tls_valid == 1 ]]; then
         mv -f "$lens_config_stage" "$lens_syslog_conf"
         if rsyslogd -N1 > "$lens_validation" 2>&1 && systemctl restart rsyslog.service >/dev/null 2>&1; then
           lens_syslog_enabled=1
@@ -104,3 +142,14 @@ fi
 printf 'Lens syslog: %s\n' "$lens_syslog_reason"
 systemctl daemon-reload
 systemctl enable --now lens-daemon.service lens-publisher.service
+for lens_unit in lens-daemon.service lens-publisher.service; do
+  if ! systemctl is-active --quiet "$lens_unit"; then
+    echo "Lens reporting is not ready: $lens_unit is not active. Run: sudo journalctl -u $lens_unit -n 30 --no-pager" >&2
+    false
+  fi
+done
+printf 'Lens reporting enabled. The first report appears after local collection completes.\n'
+if [[ $lens_syslog_enabled == 0 && $lens_syslog_mode != off && $lens_other_path == 0 ]]; then
+  printf 'Lens logs are disabled: %s\n' "$lens_syslog_reason" >&2
+fi
+trap - ERR

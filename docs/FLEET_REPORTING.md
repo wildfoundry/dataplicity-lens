@@ -57,8 +57,11 @@ This disables Lens-managed forwarding while leaving operational reporting enable
 Agent installation or a known existing Dataplicity destination causes forwarding to stay off, with a
 visible reason. `--syslog-upload` explicitly overrides this duplicate-path check; review existing
 sources first. Only one managed destination file is maintained. The helper validates the TLS snippet,
-uses root-only file permissions and never prints the logs-only credential. It does not install
-rsyslog or its TLS module; absent/invalid local forwarding leaves reporting active and logs disabled.
+uses root-only file permissions and never prints the logs-only credential. It uses your existing
+rsyslog forwarder. If validation identifies a missing TLS module, setup installs the official
+`rsyslog-gnutls` package through `apt-get` or `dnf` and validates again. Unrelated service restarts
+are deferred. It does not add another forwarder when rsyslog is absent. A failed repair leaves
+reporting enabled and logs disabled, with a specific recovery command rather than a false success.
 Custom API origins require explicit local configuration of their own syslog destination.
 
 The forwarder uses certificate-validated TLS, warning+ severity, a bounded 1000-event memory queue,

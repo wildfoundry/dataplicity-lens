@@ -12,4 +12,4 @@ workspace = true
 [dependencies]
 anyhow.workspace = true
 clap.workspace = true
-lens-reporting = { path = "../../crates/reporting", version = "=0.3.10" }
+lens-reporting = { path = "../../crates/reporting", version = "=0.3.11" }
