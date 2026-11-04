@@ -1,0 +1,2 @@
+disable lens-daemon.service
+disable lens-publisher.service
