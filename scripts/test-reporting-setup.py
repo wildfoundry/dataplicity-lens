@@ -85,6 +85,48 @@ class ReportingSetupTests(unittest.TestCase):
         self.assertFalse(self.conf.exists())
         self.assertIn('validation failed',result.stdout)
 
+    def test_missing_tls_module_is_repaired_then_validated_without_exposing_output(self):
+        marker=self.root/'tls-installed'
+        self.env['SETUP_TEST_TLS_MARKER']=str(marker)
+        self.stub('rsyslogd','test -f "$SETUP_TEST_TLS_MARKER" || { echo "could not load lmnsd_gtls test-secret-not-for-output" >&2; exit 1; }')
+        self.stub('apt-get','test "$NEEDRESTART_MODE" = l; test "$DEBIAN_FRONTEND" = noninteractive; echo test-secret-not-for-output; touch "$SETUP_TEST_TLS_MARKER"')
+        result=self.run_setup()
+        self.assertTrue(marker.exists());self.assertTrue(self.conf.exists())
+        self.assertIn('installing the system rsyslog TLS module',result.stdout)
+
+    def test_dependency_failure_is_actionable_and_does_not_claim_logs_are_enabled(self):
+        self.stub('rsyslogd','echo "could not load lmnsd_gtls test-secret-not-for-output" >&2; exit 1')
+        self.stub('apt-get','echo test-secret-not-for-output >&2; exit 1')
+        result=self.run_setup()
+        self.assertFalse(self.conf.exists())
+        self.assertIn('Install rsyslog-gnutls',result.stderr)
+        self.assertIn('Lens logs are disabled',result.stderr)
+        self.assertNotIn('TLS forwarding configured',result.stdout)
+
+    def test_no_syslog_and_existing_forwarding_never_install_dependencies(self):
+        marker=self.root/'unexpected-package-change'
+        self.stub('apt-get',f'touch "{marker}"; exit 1')
+        self.stub('rsyslogd','echo lmnsd_gtls >&2; exit 1')
+        self.run_setup('--no-syslog-upload')
+        self.stub('prelude-agent',':')
+        self.run_setup()
+        self.assertFalse(marker.exists())
+
+    def test_failed_registration_restores_an_already_running_publisher(self):
+        self.stub('systemctl','printf "%s\\n" "$*" >> "$SETUP_TEST_LOG"')
+        self.stub('runuser','case "$*" in *status*) exit 1 ;; *register*) exit 1 ;; *) : ;; esac')
+        result=subprocess.run(['bash',str(self.script)],env=self.env,input='example-code\n',capture_output=True,text=True)
+        self.assertNotEqual(result.returncode,0)
+        self.assertIn('start lens-publisher.service',self.log.read_text())
+        self.assertIn('previous publisher was restarted',result.stderr)
+
+    def test_inactive_service_after_start_is_reported_as_failure(self):
+        self.stub('systemctl','case "$*" in *is-active*lens-daemon*) exit 1 ;; *) : ;; esac')
+        result=subprocess.run(['bash',str(self.script),'--no-syslog-upload'],env=self.env,capture_output=True,text=True)
+        self.assertNotEqual(result.returncode,0)
+        self.assertIn('lens-daemon.service is not active',result.stderr)
+        self.assertNotIn('Lens reporting enabled.',result.stdout)
+
     def test_conflicting_flags_are_rejected(self):
         result=subprocess.run(['bash',str(self.script),'--no-syslog-upload','--syslog-upload'],env=self.env,capture_output=True,text=True)
         self.assertEqual(result.returncode,2)
