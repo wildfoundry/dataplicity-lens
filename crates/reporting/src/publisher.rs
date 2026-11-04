@@ -387,7 +387,6 @@ pub fn run(dir: PathBuf, pipe: PathBuf) -> Result<()> {
 }
 
 /// Local-only configuration. Never accepts remote settings or clears cooldowns.
-
 pub fn configure_syslog(dir: &Path, enabled: bool, reason: &str) -> Result<()> {
     if reason.len() > 255 {
         bail!("configuration reason too long");
