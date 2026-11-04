@@ -7,7 +7,7 @@ license.workspace = true
 repository.workspace = true
 
 [dependencies]
-lens-system = { path = "../../crates/system", version = "=0.3.9" }
+lens-system = { path = "../../crates/system", version = "=0.3.10" }
 
 [lints]
 workspace = true

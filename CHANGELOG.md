@@ -5,13 +5,17 @@ versioning once the first public release is tagged.
 
 ## [Unreleased]
 
+## [0.3.10] - 2026-11-04
+
 ### Added
+- Configure existing rsyslog with separate logs-only credentials, verified TLS, bounded queues
+  and duplicate-forwarding detection; explicit opt-out with `--no-syslog-upload`.
 - Honour server-directed upload intervals from one minute to four hours, persisted across restarts.
   Longer intervals publish only the newest sample and preserve stricter retry holds.
 - Add opt-in, separate non-root Linux collector/publisher services with one-way FIFO framing,
   bounded RAM-only 30-minute buffers, timed workers, minute cadence, restart-safe scheduling,
   uncapped Retry-After floors, jittered exponential backoff and paced recovery batches.
-- Add explicit organisation-code setup using agent provisioning and the versioned Lens report API.
+- Add explicit organisation-code setup using independent free Lens registration and the versioned Lens report API.
   Packages leave services disabled; no telemetry is transmitted until explicitly enabled.
 - Include process start ticks in structured output so PID reuse is distinguishable across reports.
 - Report Linux system serial/service tag, chassis and board serials, asset tag, source paths and

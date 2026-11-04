@@ -13,7 +13,7 @@ workspace = true
 anyhow.workspace = true
 serde.workspace = true
 serde_json.workspace = true
-lens-model = { path = "../model", version = "=0.3.9" }
+lens-model = { path = "../model", version = "=0.3.10" }
 rand = "=0.9.5"
 uuid = { version = "=1.26.1", features = ["v4"] }
 rustix = { version = "=1.1.5", features = ["fs", "process", "pipe"] }
