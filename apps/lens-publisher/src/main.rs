@@ -29,6 +29,18 @@ enum Action {
     },
     /// Show registration status without exposing credentials.
     Status,
+    /// Change local syslog forwarding while the publisher is stopped.
+    Configure {
+        #[arg(long)]
+        no_syslog_upload: bool,
+        #[arg(long, default_value = "local setup")]
+        reason: String,
+    },
+    /// Print private rsyslog configuration to standard output for local installation.
+    SyslogConfig {
+        #[arg(long)]
+        ca_file: String,
+    },
     /// Start the publisher in the foreground. Installation does not invoke this command.
     Run {
         #[arg(long, default_value = "/run/lens-report/observations")]
@@ -52,6 +64,8 @@ fn main() -> Result<()> {
             }
             lens_reporting::publisher::register(&args.state_dir, &server_url, &name, &code, refresh)
         }
+        Action::Configure { no_syslog_upload, reason } => lens_reporting::publisher::configure_syslog(&args.state_dir, !no_syslog_upload, &reason),
+        Action::SyslogConfig { ca_file } => { print!("{}", lens_reporting::publisher::syslog_config(&args.state_dir, &ca_file)?); Ok(()) },
         Action::Status => lens_reporting::publisher::status(&args.state_dir),
         Action::Run { pipe } => lens_reporting::publisher::run(args.state_dir, pipe),
     }

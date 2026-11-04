@@ -22,6 +22,12 @@ struct State {
     registration_id: String,
     device_hash: Option<String>,
     device_secret: Option<String>,
+    #[serde(default)]
+    syslog_upload: bool,
+    #[serde(default)]
+    syslog_reason: String,
+    #[serde(default)]
+    syslog_token: Option<String>,
     gate: Gate,
 }
 impl fmt::Debug for State {
@@ -128,6 +134,9 @@ pub fn register(dir: &Path, base: &str, name: &str, code: &str, refresh: bool) -
             registration_id: uuid::Uuid::new_v4().to_string(),
             device_hash: None,
             device_secret: None,
+            syslog_upload: false,
+            syslog_reason: "not configured".into(),
+            syslog_token: None,
             gate: Gate::default(),
         }
     };
@@ -225,6 +234,7 @@ pub fn register(dir: &Path, base: &str, name: &str, code: &str, refresh: bool) -
         write_state(dir, &state)?;
         bail!("registration changed existing host identity; refusing replacement");
     }
+    state.syslog_token = json.get("syslog_token").and_then(serde_json::Value::as_str).map(str::to_owned);
     state.device_hash = Some(hash.into());
     state.device_secret = Some(secret.into());
     write_state(dir, &state)?;
@@ -343,7 +353,11 @@ pub fn run(dir: PathBuf, pipe: PathBuf) -> Result<()> {
             }
             state.gate.reserve_attempt(wall_ms());
             write_state(&dir, &state)?;
-            let body = encode_batch(&batch);
+            let mut outgoing = batch.clone();
+            for report in &mut outgoing {
+                prepare_upload(report, state.syslog_upload, &state.syslog_reason);
+            }
+            let body = encode_batch(&outgoing);
             let outcome = send_upload(
                 &agent,
                 &format!("{}/device-gateway/lens/{hash}/reports/", state.server_url),
@@ -368,6 +382,56 @@ pub fn run(dir: PathBuf, pipe: PathBuf) -> Result<()> {
         .join()
         .map_err(|_| anyhow::anyhow!("reader thread panicked"))?;
     result.and(reader_result)
+}
+
+/// Local-only configuration. Never accepts remote settings or clears cooldowns.
+
+pub fn configure_syslog(dir: &Path, enabled: bool, reason: &str) -> Result<()> {
+    if reason.len() > 255 { bail!("configuration reason too long"); }
+    let _lock = ipc::singleton(&dir.join("publisher.lock"))?;
+    let mut state = read_state(dir)?;
+    state.syslog_upload = enabled;
+    state.syslog_reason = reason.to_owned();
+    write_state(dir, &state)
+}
+
+fn prepare_upload(report: &mut crate::protocol::Report, enabled: bool, reason: &str) {
+    if let Some(object) = report.snapshot.as_object_mut() {
+        // Operational reports never carry raw logs. The existing local syslog daemon owns transport.
+        object.insert("logs".into(), serde_json::json!([]));
+        object.insert("log_sources".into(), serde_json::json!([]));
+        object.insert("lens_reporting".into(), serde_json::json!({
+            "syslog_upload": enabled, "syslog_transport": "rsyslog", "syslog_reason": reason,
+            "syslog_severity": "warning", "syslog_max_events_per_minute": 60
+        }));
+    }
+    report.coverage.insert("logs".into(), "unavailable".into());
+}
+
+/// Produce an rsyslog snippet for an administrator to install privately. Does not transmit logs.
+pub fn syslog_config(dir: &Path, ca_file: &str) -> Result<String> {
+    let state = read_state(dir)?;
+    let token = state.syslog_token.as_deref().context("backend omitted logs-only credential; explicitly refresh registration")?;
+    if !token.starts_with("lnslog1.") || token.len() > 200 || !token.bytes().all(|c| c.is_ascii_alphanumeric() || c == b'.') {
+        bail!("invalid syslog credential");
+    }
+    if !ca_file.starts_with('/') || !ca_file.bytes().all(|c| c.is_ascii_alphanumeric() || b"/._-".contains(&c)) {
+        bail!("invalid CA bundle path");
+    }
+    Ok(format!(r#"# Managed by Dataplicity Lens. Credentials are logs-only; keep this file private.
+template(name="DataplicityLensFrame" type="string"
+ string="<%pri%>1 %timestamp:::date-rfc3339% %hostname% %app-name% %procid% - [dataplicity@48577 token=\"{token}\"] %msg:1:4096%\n")
+if ($syslogseverity <= 4) then {{
+ action(name="DataplicityLensForward" type="omfwd"
+  target="syslog.us.dvcmgr.net" port="6514" protocol="tcp"
+  StreamDriver="gtls" StreamDriverMode="1" StreamDriverAuthMode="x509/name"
+  StreamDriverPermittedPeers="syslog.us.dvcmgr.net" StreamDriver.CAFile="{ca_file}"
+  template="DataplicityLensFrame" action.resumeRetryCount="-1"
+  action.resumeInterval="60" action.resumeIntervalMax="3600"
+  queue.type="FixedArray" queue.size="1000" queue.timeoutEnqueue="0"
+  queue.saveOnShutdown="off" queue.dequeueBatchSize="1" queue.dequeueSlowDown="1000000")
+}}
+"#))
 }
 
 pub fn status(dir: &Path) -> Result<()> {
@@ -412,6 +476,9 @@ mod tests {
             registration_id: uuid::Uuid::new_v4().to_string(),
             device_hash: Some("a".repeat(64)),
             device_secret: Some("secret-fixture".repeat(4)),
+            syslog_upload: false,
+            syslog_reason: "fixture".into(),
+            syslog_token: None,
             gate: Gate::default(),
         }
     }

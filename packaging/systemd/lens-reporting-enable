@@ -1,23 +1,27 @@
 #!/usr/bin/env bash
-# Explicit administrative setup only. Package installation never calls this script.
+# Explicit local administrative setup. Package hooks never invoke this helper.
 set -euo pipefail
 if [[ $(id -u) != 0 ]]; then
-  echo 'Run this setup command as administrator; the reporting services themselves run without root.' >&2
+  echo 'Run setup as administrator. Lens services themselves run without root.' >&2
   exit 1
 fi
 lens_name=$(hostname -s)
 lens_server_url=https://app-api.dataplicity.com
 lens_refresh=()
+lens_syslog_mode=auto
 while (($#)); do
   case "$1" in
     --name) lens_name=${2:?Missing name}; shift 2;;
     --server-url) lens_server_url=${2:?Missing server URL}; shift 2;;
     --refresh) lens_refresh=(--refresh); shift;;
-    *) echo 'Usage: lens-reporting-enable [--name HOSTNAME] [--server-url HTTPS_ORIGIN] [--refresh]' >&2; exit 2;;
+    --no-syslog-upload) [[ $lens_syslog_mode != force ]] || { echo 'Conflicting syslog options' >&2; exit 2; }; lens_syslog_mode=off; shift;;
+    --syslog-upload) [[ $lens_syslog_mode != off ]] || { echo 'Conflicting syslog options' >&2; exit 2; }; lens_syslog_mode=force; shift;;
+    *) echo 'Usage: lens-reporting-enable [--name HOSTNAME] [--server-url HTTPS_ORIGIN] [--refresh] [--no-syslog-upload | --syslog-upload]' >&2; exit 2;;
   esac
 done
 systemd-sysusers /usr/lib/sysusers.d/lens-reporting.conf
 systemd-tmpfiles --create /usr/lib/tmpfiles.d/lens-reporting.conf
+systemctl stop lens-publisher.service
 if ((${#lens_refresh[@]})) || ! runuser -u lens-publisher -- /usr/bin/lens-publisher status >/dev/null 2>&1; then
   if [[ -t 0 ]]; then
     IFS= read -r -s -p 'Dataplicity organisation code: ' lens_org_code
@@ -25,9 +29,78 @@ if ((${#lens_refresh[@]})) || ! runuser -u lens-publisher -- /usr/bin/lens-publi
   else
     IFS= read -r lens_org_code || [[ -n ${lens_org_code:-} ]]
   fi
-  if ((${#lens_refresh[@]})); then systemctl stop lens-publisher.service; fi
   printf '%s' "$lens_org_code" | runuser -u lens-publisher -- /usr/bin/lens-publisher register --server-url "$lens_server_url" --name "$lens_name" "${lens_refresh[@]}"
   unset lens_org_code
 fi
+# The local daemon forwards logs; Lens only reports this local selection.
+lens_syslog_conf=/etc/rsyslog.d/60-dataplicity-lens.conf
+lens_syslog_enabled=0
+lens_syslog_reason='disabled by --no-syslog-upload'
+lens_other_path=0
+if command -v dataplicity >/dev/null 2>&1 || command -v prelude-agent >/dev/null 2>&1 \
+  || [[ -e /opt/dataplicity/syslog/device-log-token || -d /var/lib/dpagent || -d /etc/dataplicity ]]; then
+  lens_other_path=1
+fi
+# Only inspect active configuration files, exclude our one managed destination.
+for lens_conf in /etc/rsyslog.conf /etc/rsyslog.d/*.conf /etc/syslog-ng/syslog-ng.conf /etc/syslog-ng/conf.d/*.conf; do
+  [[ -f "$lens_conf" && "$lens_conf" != "$lens_syslog_conf" ]] || continue
+  if grep -Eiq 'dataplicity|dvcmgr\.net|device-gateway/logs' "$lens_conf"; then lens_other_path=1; fi
+done
+if [[ -e "$lens_syslog_conf" ]] && ! head -1 "$lens_syslog_conf" | grep -q '^# Managed by Dataplicity Lens\.'; then
+  echo 'Existing Lens-named syslog configuration is not managed by Lens; refusing to overwrite it.' >&2
+  exit 1
+fi
+if [[ $lens_syslog_mode != off ]]; then
+  if [[ $lens_other_path == 1 && $lens_syslog_mode != force ]]; then
+    lens_syslog_reason='existing Agent or Dataplicity forwarding detected; no second forwarding path configured'
+  elif [[ "$lens_server_url" != https://app-api.dataplicity.com ]]; then
+    lens_syslog_reason='custom API origin: configure its local syslog destination explicitly'
+  elif ! command -v rsyslogd >/dev/null 2>&1; then
+    lens_syslog_reason='rsyslog unavailable; install and configure your existing forwarder locally'
+  else
+    lens_ca=''
+    for lens_candidate in /etc/ssl/certs/ca-certificates.crt /etc/pki/tls/certs/ca-bundle.crt; do
+      if [[ -r "$lens_candidate" ]]; then lens_ca=$lens_candidate; break; fi
+    done
+    if [[ -z "$lens_ca" ]]; then
+      lens_syslog_reason='system CA bundle unavailable; forwarding left disabled'
+    else
+      mkdir -p /etc/rsyslog.d
+      lens_config_stage=$(mktemp /etc/rsyslog.d/.dataplicity-lens.XXXXXX)
+      chmod 0600 "$lens_config_stage"
+      trap 'rm -f "${lens_config_stage:-}"' EXIT
+      runuser -u lens-publisher -- /usr/bin/lens-publisher syslog-config --ca-file "$lens_ca" > "$lens_config_stage"
+      # Validation output may contain the inline credential. Never echo it.
+      lens_validation=$(mktemp)
+      chmod 0600 "$lens_validation"
+      if rsyslogd -N1 -f "$lens_config_stage" > "$lens_validation" 2>&1; then
+        mv -f "$lens_config_stage" "$lens_syslog_conf"
+        if systemctl restart rsyslog.service >/dev/null 2>&1; then
+          lens_syslog_enabled=1
+          lens_syslog_reason='rsyslog TLS forwarding configured locally; warning and above; maximum 60 events per minute'
+          if [[ $lens_syslog_mode == force && $lens_other_path == 1 ]]; then
+            lens_syslog_reason='explicit --syslog-upload override despite another Dataplicity path; review duplicate sources'
+          fi
+        else
+          lens_syslog_reason='rsyslog restart failed; forwarding left disabled'
+        fi
+      else
+        lens_syslog_reason='rsyslog TLS configuration validation failed; check the local TLS module installation'
+      fi
+      rm -f "$lens_validation" "$lens_config_stage"
+      trap - EXIT
+    fi
+  fi
+fi
+if [[ $lens_syslog_enabled == 0 ]]; then
+  if [[ -f "$lens_syslog_conf" ]]; then
+    rm -f "$lens_syslog_conf"
+    systemctl restart rsyslog.service >/dev/null 2>&1 || { echo 'Could not stop existing Lens forwarding; resolve rsyslog locally before continuing.' >&2; exit 1; }
+  fi
+  runuser -u lens-publisher -- /usr/bin/lens-publisher configure --no-syslog-upload --reason "$lens_syslog_reason"
+else
+  runuser -u lens-publisher -- /usr/bin/lens-publisher configure --reason "$lens_syslog_reason"
+fi
+printf 'Lens syslog: %s\n' "$lens_syslog_reason"
 systemctl daemon-reload
 systemctl enable --now lens-daemon.service lens-publisher.service
