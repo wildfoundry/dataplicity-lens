@@ -23,6 +23,8 @@ release and disclosure with the reporter.
 Lens reads local operating-system interfaces and does not require a background daemon, account or
 network connection. By default it does not collect or transmit telemetry. Inspection runs with the invoking
 user's permissions.
+Optional AWS host diagnostics use bounded, credential-free link-local metadata requests.
+See [host diagnostics](docs/HOST-DIAGNOSTICS.md) for collection boundaries.
 
 Linux hardware serial/service-tag inspection uses bounded local firmware reads with those same
 permissions. Access-denied values remain unavailable; Lens does not invoke privileged identity tools,

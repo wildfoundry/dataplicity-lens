@@ -1,0 +1,82 @@
+name: Verify published Homebrew release
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: Published Lens version to verify (without v)
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    name: Homebrew lifecycle on ${{ matrix.arch }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: Apple-Silicon
+            runner: macos-15
+          - arch: Intel
+            runner: macos-15-intel
+    runs-on: ${{ matrix.runner }}
+    env:
+      VERSION: ${{ inputs.version }}
+      HOMEBREW_NO_AUTO_UPDATE: "1"
+      HOMEBREW_NO_INSTALL_FROM_API: "1"
+    steps:
+      - name: Install previous release and upgrade to published release
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]
+          brew tap wildfoundry/tap
+          tap_dir="$(brew --repository wildfoundry/tap)"
+          if [[ "$(git -C "$tap_dir" rev-parse --is-shallow-repository)" == true ]]; then
+            git -C "$tap_dir" fetch --unshallow
+          fi
+          formula=Formula/dataplicity-lens.rb
+          current_version="$(awk '/^  version /{gsub(/"/,"",$2);print $2;exit}' "$tap_dir/$formula")"
+          [[ "$current_version" == "$VERSION" ]]
+          previous="$(git -C "$tap_dir" log -2 --format=%H -- "$formula" | tail -1)"
+          [[ -n "$previous" ]]
+          git -C "$tap_dir" show "$previous:$formula" > "$tap_dir/$formula"
+          previous_version="$(awk '/^  version /{gsub(/"/,"",$2);print $2;exit}' "$tap_dir/$formula")"
+          [[ "$previous_version" != "$VERSION" ]]
+          brew trust --formula wildfoundry/tap/dataplicity-lens
+          brew install wildfoundry/tap/dataplicity-lens
+          brew link --overwrite dataplicity-lens
+          lens-top --version | grep -Fx "lens-top $previous_version"
+          git -C "$tap_dir" restore -- "$formula"
+          brew trust --formula wildfoundry/tap/dataplicity-lens
+          brew upgrade wildfoundry/tap/dataplicity-lens
+          brew link --overwrite dataplicity-lens
+          brew test wildfoundry/tap/dataplicity-lens
+          lens-top --version | grep -Fx "lens-top $VERSION"
+          brew uninstall --force dataplicity-lens
+      - name: Fresh install, command tests and uninstall
+        shell: bash
+        run: |
+          set -euo pipefail
+          brew install wildfoundry/tap/dataplicity-lens
+          brew link --overwrite dataplicity-lens
+          brew test wildfoundry/tap/dataplicity-lens
+          for command in lens lens-top lens-services lens-containers lens-logs lens-disk lens-net lens-hardware lens-system lens-health; do
+            "$command" --version | grep -Fx "$command $VERSION"
+            "$command" --demo --json > "$RUNNER_TEMP/$command.json"
+            grep -q '"schema_version": "2"' "$RUNNER_TEMP/$command.json"
+          done
+          brew uninstall --force dataplicity-lens
+          if brew list --formula dataplicity-lens >/dev/null 2>&1; then
+            echo 'Lens remains installed after uninstall' >&2
+            exit 1
+          fi
+          brew untap wildfoundry/tap
+      - name: Clean up after a failed check
+        if: failure()
+        run: |
+          brew uninstall --force dataplicity-lens || true
+          brew untap wildfoundry/tap || true

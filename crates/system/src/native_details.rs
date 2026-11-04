@@ -33,14 +33,18 @@ fn names(path: impl AsRef<Path>) -> Vec<String> {
 
 pub(super) fn storage(devices: &[BlockDevice]) -> BTreeMap<String, StorageDetail> {
     #[cfg(target_os = "linux")]
-    return devices
-        .iter()
-        .filter_map(|device| {
-            let path = Path::new("/sys/class/block").join(&device.name);
-            path.is_dir()
-                .then(|| (device.name.clone(), storage_at(&path)))
-        })
-        .collect();
+    return {
+        let mut details = devices
+            .iter()
+            .filter_map(|device| {
+                let path = Path::new("/sys/class/block").join(&device.name);
+                path.is_dir()
+                    .then(|| (device.name.clone(), storage_at(&path)))
+            })
+            .collect();
+        super::storage_health::collect(devices, &mut details);
+        details
+    };
     #[cfg(not(target_os = "linux"))]
     {
         let _ = devices;
@@ -57,6 +61,7 @@ fn storage_at(path: &Path) -> StorageDetail {
         .collect::<std::result::Result<_, _>>()
         .unwrap_or_default();
     StorageDetail {
+        health: None,
         model: text(path.join("device/model")),
         parent: path
             .join("partition")

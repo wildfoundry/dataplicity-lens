@@ -92,7 +92,7 @@ pub(super) fn render_workloads(
         width.saturating_sub(4)
     };
     let name_width = cell_width.saturating_sub(34).max(8);
-    let content: Vec<_> = workloads
+    let mut content: Vec<_> = workloads
         .iter()
         .take(capacity)
         .map(|workload| {
@@ -108,14 +108,16 @@ pub(super) fn render_workloads(
     writeln!(out)?;
     let colour = terminal_colour_enabled();
     if side_by_side {
+        let mut resource = resources(snapshot, cell_width.saturating_sub(4));
+        let height = content.len().max(resource.len()).min(capacity).max(1);
+        content.resize(height, String::new());
+        resource.truncate(height);
+        resource.resize(height, String::new());
         let left = panel_lines(
             "BUSIEST WORKLOADS  CPU / RSS SUM / PROCS",
             &content,
             cell_width,
         );
-        let resource = resources(snapshot);
-        let mut resource: Vec<_> = resource.into_iter().take(content.len()).collect();
-        resource.resize(content.len(), String::new());
         let right = panel_lines("HOST RESOURCES", &resource, cell_width);
         for (left, right) in left.iter().zip(&right) {
             writeln!(
@@ -157,7 +159,10 @@ pub(super) fn render_workloads(
         }
         if rows >= 60 {
             writeln!(out, "\n  {}", ink("HOST RESOURCES", Ink::Label, colour))?;
-            for line in resources(snapshot).into_iter().take(5) {
+            for line in resources(snapshot, width.saturating_sub(4))
+                .into_iter()
+                .take(8)
+            {
                 writeln!(
                     out,
                     "  {}",
@@ -173,19 +178,44 @@ pub(super) fn render_workloads(
     Ok(())
 }
 
-fn resources(snapshot: &SystemSnapshot) -> Vec<String> {
+fn resource_usage(label: &str, used: u64, total: u64, width: usize) -> String {
+    if total == 0 {
+        return format!("{label:<12} not configured");
+    }
+    let percent = (used as f64 / total as f64 * 100.0).clamp(0.0, 100.0);
+    let values = format!("{} / {}", human_bytes(used), human_bytes(total));
+    let bar_width = width.saturating_sub(21 + values.len()).min(12);
+    let bar = if bar_width >= 4 {
+        let filled = (percent / 100.0 * bar_width as f64).round() as usize;
+        format!(
+            "[{}{}] ",
+            glyphs().blocks[8].to_string().repeat(filled),
+            " ".repeat(bar_width - filled)
+        )
+    } else {
+        String::new()
+    };
+    format!(
+        "{:<12} {:>3.0}% {bar}{values}",
+        truncate_text(label, 12),
+        percent
+    )
+}
+
+fn resources(snapshot: &SystemSnapshot, width: usize) -> Vec<String> {
     let memory = &snapshot.host.memory;
     let mut rows = vec![
+        resource_usage("RAM used", memory.used_bytes, memory.total_bytes, width),
         format!(
-            "RAM {} used / {} total",
-            human_bytes(memory.used_bytes),
-            human_bytes(memory.total_bytes)
+            "{:<12} {} available",
+            "RAM headroom",
+            human_bytes(memory.available_bytes)
         ),
-        format!(
-            "Available {}  |  Swap {} / {}",
-            human_bytes(memory.available_bytes),
-            human_bytes(memory.swap_used_bytes),
-            human_bytes(memory.swap_total_bytes)
+        resource_usage(
+            "Swap used",
+            memory.swap_used_bytes,
+            memory.swap_total_bytes,
+            width,
         ),
     ];
     let mut mounts: Vec<_> = snapshot
@@ -199,11 +229,11 @@ fn resources(snapshot: &SystemSnapshot) -> Vec<String> {
             .then_with(|| a.target.cmp(&b.target))
     });
     for mount in mounts.iter().take(3) {
-        rows.push(format!(
-            "{}  {:.0}% used  |  {} free",
-            mount.target,
-            mount.used_percent,
-            human_bytes(mount.available_bytes)
+        rows.push(resource_usage(
+            &mount.target,
+            mount.used_bytes,
+            mount.total_bytes,
+            width,
         ));
     }
     let vms = snapshot
@@ -213,7 +243,7 @@ fn resources(snapshot: &SystemSnapshot) -> Vec<String> {
         .count();
     if vms > 0 {
         rows.push(format!(
-            "{} VMs  |  {} running",
+            "Instances    {} VMs / {} running",
             vms,
             snapshot
                 .containers
@@ -229,8 +259,8 @@ fn resources(snapshot: &SystemSnapshot) -> Vec<String> {
         .max_by(|a, b| a.temperature_c.total_cmp(&b.temperature_c))
     {
         rows.push(format!(
-            "Hottest sensor: {} {:.0}C",
-            sensor.name, sensor.temperature_c
+            "Hottest      {:.0}C  {}",
+            sensor.temperature_c, sensor.name
         ));
     }
     rows
@@ -573,16 +603,13 @@ pub(super) fn render_details(
             })
             .collect();
     }
-    details.push(OverviewPanel::new(
+    let logs = OverviewPanel::new(
         "LOGS   recent flagged entries",
         snapshot
             .logs
             .iter()
             .rev()
-            .filter(|log| {
-                let text = log.message.to_ascii_lowercase();
-                text.contains("error") || text.contains("fail") || text.contains("warn")
-            })
+            .filter(|log| presentation::flagged(log))
             .map(|log| {
                 format!(
                     "{} {}: {}",
@@ -597,7 +624,7 @@ pub(super) fn render_details(
             })
             .collect(),
         Ink::Attention,
-    ));
+    );
     let reasons = limits(snapshot);
     if !reasons.is_empty() {
         let mut panel = OverviewPanel::new(
@@ -616,7 +643,7 @@ pub(super) fn render_details(
         )?;
         remaining -= 2;
     }
-    let bands = details.len().div_ceil(columns);
+    let bands = details.len().div_ceil(columns) + 1;
     for (index, pair) in details.chunks(columns).enumerate() {
         if remaining < 5 {
             break;
@@ -630,6 +657,10 @@ pub(super) fn render_details(
             .min(allowance);
         draw_panels(pair, cell, height, out)?;
         remaining -= height + 3;
+    }
+    if remaining >= 5 {
+        let height = logs.lines.len().max(1).min(remaining.saturating_sub(3));
+        draw_panels(&[logs], width.saturating_sub(4), height, out)?;
     }
     Ok(())
 }
@@ -752,6 +783,55 @@ pub(super) fn draw_panels(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn resource_summary_aligns_usage_and_keeps_rows_without_workloads() {
+        let mut snapshot = demo_snapshot();
+        snapshot.processes.clear();
+        snapshot.host.memory.used_bytes = 25 * 1024 * 1024 * 1024;
+        snapshot.host.memory.total_bytes = 100 * 1024 * 1024 * 1024;
+        let lines = resources(&snapshot, 64);
+        assert!(lines[0].contains("25%"));
+        assert!(lines[0].contains("25.0GiB / 100.0GiB"));
+        assert!(lines[1].starts_with("RAM headroom"));
+        assert!(resource_usage("Swap used", 0, 0, 64).contains("not configured"));
+        let mut out = Vec::new();
+        render_workloads(&snapshot, 140, 80, &mut out).unwrap();
+        let text = String::from_utf8(out).unwrap();
+        assert!(text.contains("RAM headroom"));
+        assert!(text.contains("Swap used"));
+        assert!(text.lines().all(|line| line.chars().count() <= 140));
+    }
+
+    #[test]
+    fn logs_use_the_full_width_below_inventory() {
+        let mut snapshot = demo_snapshot();
+        let message = format!("ERROR {} end-of-long-entry", "detail ".repeat(16));
+        snapshot.logs = vec![LogEntry {
+            timestamp: "2026-11-01T10:20:30Z".into(),
+            source: "journal".into(),
+            unit: Some("builder.service".into()),
+            priority: None,
+            message,
+            repeated: 1,
+        }];
+        for width in [80, 140, 200] {
+            let mut out = Vec::new();
+            render_details(&snapshot, &WorkloadHistory::default(), width, 160, &mut out).unwrap();
+            let text = String::from_utf8(out).unwrap();
+            let header = text
+                .lines()
+                .find(|line| line.contains("LOGS   recent"))
+                .unwrap();
+            assert_eq!(header.chars().count(), width - 2);
+            assert!(text.find("STORAGE").unwrap() < text.find("LOGS").unwrap());
+            if width >= 200 {
+                assert!(text.contains("end-of-long-entry"));
+            }
+            assert!(text.lines().count() <= 160);
+            assert!(text.lines().all(|line| line.chars().count() <= width));
+        }
+    }
 
     #[test]
     fn panel_hierarchy_keeps_borders_quiet_and_labels_independent_of_colour() {

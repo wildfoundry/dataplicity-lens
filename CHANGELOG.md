@@ -20,6 +20,34 @@ versioning once the first public release is tagged.
 - Record the opt-in, unprivileged collector and separately isolated publisher design for future
   fleet reporting, now implemented as separately activated reporting services.
 
+## [0.3.9] - 2026-11-03
+
+### Added
+- Show CPU model, sockets, physical cores and logical threads in the cockpit header,
+  with readable server service tags/serials alongside the OS details.
+- Optional credential-free EC2/ECS host metadata and local Dell iDRAC, HPE iLO,
+  IBM IMM/BMC and Lenovo management identity/address discovery.
+- Optional SMART/NVMe health and PERC/StorCLI RAID volume/member states in storage details.
+
+## [0.3.8] - 2026-11-01
+
+### Changed
+- Align coloured specialist table headers; use accurate IEC byte units and logical CPU labels.
+- Show selected-item previews beside wide specialist lists, with bounded compact/full-screen details.
+- Add service CPU/RSS/restart trends, instance live readings and CPU allocation gauges, scoped network
+  histories/error deltas, grouped thermal trends, and storage capacity/inode gauges.
+- Add log follow/pause and severity filters, dated windows and bounded new-record activity; share
+  recorded-priority semantics across cockpit, specialist and health findings.
+- Add summary/expanded storage and hardware inventories, human-readable VM allocations and host-RSS
+  labels, process VM names, grouped system status, resolver context and certificate expiry status.
+- Wrap health evidence and separate actionable findings from inspection coverage limitations.
+
+### Fixed
+- Keep VM resource inventory and preview sparklines on single rows when space permits.
+- Align host resource readings with compact usage gauges and explicit memory headroom; retain
+  resource rows when there are fewer workloads to display.
+- Give recent flagged logs a full-width inventory row so longer entries remain readable.
+
 ## [0.3.7] - 2026-10-30
 
 ### Changed

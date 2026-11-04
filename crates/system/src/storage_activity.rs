@@ -109,7 +109,11 @@ impl StorageActivity {
                             out,
                             "  {}",
                             ink(
-                                &format!("{label} peak {}/s", human_bytes(peak)),
+                                &format!(
+                                    "{label} visible peak {}/s | {} samples / ~1s each",
+                                    human_bytes(peak),
+                                    history.len().min(graph_width)
+                                ),
                                 tone,
                                 colour
                             )

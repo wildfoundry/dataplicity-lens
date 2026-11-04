@@ -420,7 +420,7 @@ fn write_json_line<T: Serialize>(
 }
 
 pub fn format_bytes(value: u64) -> String {
-    const UNITS: [&str; 5] = ["B", "KB", "MB", "GB", "TB"];
+    const UNITS: [&str; 5] = ["B", "KiB", "MiB", "GiB", "TiB"];
     let mut amount = value as f64;
     let mut unit = 0usize;
     while amount >= 1024.0 && unit < UNITS.len() - 1 {
@@ -517,6 +517,7 @@ mod tests {
                 os_name: Some("Demo Linux".to_owned()),
                 uptime_seconds: 3_661,
                 cpu_count: 4,
+                cpu: None,
                 cpu_percent: 18.2,
                 load: LoadAverage {
                     one: 0.4,
@@ -575,7 +576,7 @@ mod tests {
         let value = String::from_utf8(bytes).expect("output should be UTF-8");
         insta::assert_snapshot!(value, @r###"
         Dataplicity Lens - demo-host  kernel 6.8.0  uptime 1h01m
-        CPU  18.2%  load 0.40 0.30 0.20  memory  50.0% (512B/1.0KB)  swap   0.0%
+        CPU  18.2%  load 0.40 0.30 0.20  memory  50.0% (512B/1.0KiB)  swap   0.0%
         Processes 0  running 0  sleeping 0  zombies 0  findings 0
 
             PID PROCESS              USER           CPU%   MEM%       RSS       READ      WRITE ST THR  RUNTIME SERVICE/CGROUP
@@ -584,7 +585,7 @@ mod tests {
 
     #[test]
     fn formats_human_units() {
-        assert_eq!(format_bytes(1024), "1.0KB");
+        assert_eq!(format_bytes(1024), "1.0KiB");
         assert_eq!(format_duration(3_661), "1h01m");
     }
 }

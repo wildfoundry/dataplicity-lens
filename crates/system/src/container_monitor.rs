@@ -105,6 +105,16 @@ impl ContainerMonitor {
         }
     }
 
+    pub(crate) fn cpu_percent(&self, container: &Container) -> Option<f64> {
+        self.histories
+            .get(&(container.runtime.clone(), container.id.clone()))?
+            .series[0]
+            .back()
+            .copied()
+            .flatten()
+            .map(|value| value as f64 / 100.0)
+    }
+
     pub(crate) fn render(
         &self,
         container: &Container,
@@ -137,13 +147,18 @@ impl ContainerMonitor {
         }
         line(
             out,
-            "PERFORMANCE   ~2s refresh | session history | Tab: allocations",
+            "PERFORMANCE   ~2s/sample | independent visible scales | Tab: allocations",
         )?;
         let history = self
             .histories
             .get(&(container.runtime.clone(), container.id.clone()));
-        let expanded = rows >= 28;
+        let expanded = rows >= 28 && width >= 100;
         for (index, label) in LABELS.iter().enumerate() {
+            let label = if index == 1 && container.runtime == "libvirt" {
+                "Host RSS"
+            } else {
+                label
+            };
             let series = history.map(|h| &h.series[index]);
             let current = series.and_then(|s| s.back()).copied().flatten();
             let format_value = |n: u64| {
@@ -161,16 +176,16 @@ impl ContainerMonitor {
             let chart_width = if expanded {
                 width.saturating_sub(6)
             } else {
-                width.saturating_sub(46)
+                width.saturating_sub(57)
             };
             let chart = sparkline(series, chart_width);
             if expanded {
                 let peak = series
-                    .and_then(|s| s.iter().flatten().max())
+                    .and_then(|s| s.iter().rev().take(chart_width).flatten().max())
                     .copied()
                     .map(format_value)
                     .unwrap_or_else(|| "-".into());
-                line(out, &format!("{label:<12} {current}   peak {peak}"))?;
+                line(out, &format!("{label:<12} {current}   visible peak {peak}"))?;
                 writeln!(
                     out,
                     "  {}",
@@ -181,7 +196,45 @@ impl ContainerMonitor {
                     )
                 )?;
             } else {
-                line(out, &format!("{label:<11} {current:<25} {chart}"))?;
+                let peak = series
+                    .and_then(|s| s.iter().rev().take(chart_width).flatten().max())
+                    .copied()
+                    .map(format_value)
+                    .unwrap_or_else(|| "-".into());
+                let values = format!("{label:<11} {current:<23} peak {peak:<10}");
+                writeln!(
+                    out,
+                    "  {} {}",
+                    values,
+                    ink(
+                        &chart,
+                        if index < 2 { Ink::Success } else { Ink::Info },
+                        colour
+                    )
+                )?;
+            }
+        }
+        if rows >= 32 {
+            if let Some((cpu, limit)) = self
+                .cpu_percent(container)
+                .zip(
+                    container
+                        .resources
+                        .as_ref()
+                        .and_then(|r| r.cpu_limit.as_deref())
+                        .map(|s| s.strip_suffix(" vCPUs").unwrap_or(s))
+                        .and_then(|s| s.parse::<f64>().ok()),
+                )
+                .filter(|(_, limit)| *limit > 0.0)
+            {
+                line(
+                    out,
+                    &presentation::gauge(
+                        "CPU allocation",
+                        cpu / (limit * 100.0) * 100.0,
+                        width.saturating_sub(4),
+                    ),
+                )?;
             }
         }
         if rows >= 23 {
@@ -213,10 +266,10 @@ impl ContainerMonitor {
                 out,
                 &format!(
                     "Processes: {processes} | {}: {used}",
-                    if container.runtime == "lxd" {
-                        "Root disk used"
-                    } else {
-                        "Writable layer"
+                    match container.runtime.as_str() {
+                        "lxd" => "Root disk used",
+                        "libvirt" => "Host image allocated",
+                        _ => "Writable layer",
                     }
                 ),
             )?;

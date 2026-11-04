@@ -46,7 +46,7 @@ devices.
 | Logs | `lens-logs` | Recent journal, unified log, and local file messages |
 | Storage | `lens-disk` | Block devices, filesystems, mounts, inodes, deleted-open files |
 | Networking | `lens-net` | Interfaces, routes, listeners, live receive/transmit charts |
-| Hardware | `lens-hardware` | Identity, temperatures, firmware, USB / serial inventory |
+| Hardware | `lens-hardware` | Identity, temperatures, firmware, optional cloud/BMC context, USB / serial inventory |
 | System context | `lens-system` | Clock / NTP, resolver, login identities, local certificates |
 | Health checks | `lens-health` | Findings with evidence and suggested follow-ups |
 | AI / accelerator diagnostics | `lens --focus ai` | Agent-owned accelerator, model-store and runtime state |
@@ -116,6 +116,9 @@ Build from source (contributors):
 cargo build --release --locked --workspace
 ./target/release/lens
 ```
+
+Optional [host diagnostics](docs/HOST-DIAGNOSTICS.md) include CPU topology, local EC2/ECS metadata,
+server management-controller addresses and available SMART/NVMe or RAID health.
 
 ## Use
 
@@ -233,8 +236,8 @@ crates/output          Plain, JSON, and JSON Lines contracts
 crates/ui              Shared terminal shell, tables, overlays
 ```
 
-- **Local and private** — no root requirement by default, no network connection, no Dataplicity
-  account, nothing sent off the host
+- **Local and private** — no root requirement by default, no external network connection required, no Dataplicity
+  account or telemetry; optional AWS context uses local link-local metadata
 - **Fast** — bounded history, timed-out OS commands, responsive interactive views over SSH and serial
 - **Safe actions** — inspect first; re-check process identity before signals or service changes
 

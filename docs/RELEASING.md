@@ -19,13 +19,13 @@ To reproduce package assembly after building both targets and generating the `le
 completions:
 
 ```sh
-VERSION=0.3.7 TARGET=x86_64-unknown-linux-gnu PACKAGE_NATIVE=false scripts/package-suite.sh
-VERSION=0.3.7 TARGET=x86_64-unknown-linux-musl DEB_ARCH=amd64 RPM_ARCH=x86_64 \
+VERSION=0.3.9 TARGET=x86_64-unknown-linux-gnu PACKAGE_NATIVE=false scripts/package-suite.sh
+VERSION=0.3.9 TARGET=x86_64-unknown-linux-musl DEB_ARCH=amd64 RPM_ARCH=x86_64 \
   NATIVE_OUTPUT_DIR=dist/x86_64-unknown-linux-gnu scripts/package-suite.sh
 scripts/smoke-suite.sh target/x86_64-unknown-linux-musl/release
 # Raspberry Pi OS 32-bit builds use cross:
 cross build --release --locked --target arm-unknown-linux-musleabihf --workspace
-VERSION=0.3.7 TARGET=arm-unknown-linux-musleabihf DEB_ARCH=armhf RPM_ARCH=armv6hl \
+VERSION=0.3.9 TARGET=arm-unknown-linux-musleabihf DEB_ARCH=armhf RPM_ARCH=armv6hl \
   NATIVE_OUTPUT_DIR=dist/arm-unknown-linux-gnueabihf scripts/package-suite.sh
 scripts/verify-release.sh dist/release
 ```
@@ -48,4 +48,6 @@ Lens repository must provide `HOMEBREW_TAP_TOKEN` owned by `dataplicity-release-
 variables `HOMEBREW_TAP_REPOSITORY` and `HOMEBREW_FORMULA_NAME`. The tap PR is reviewed and merged
 only after its required formula analysis check passes. A tag is not complete until adding
 `wildfoundry/tap`, trusting the formula, installing `dataplicity-lens`, upgrading it and uninstalling
-it pass on both macOS architectures.
+it pass on both macOS architectures. After merging the tap PR, dispatch
+`Verify published Homebrew release` with the version to exercise the previous-release upgrade,
+fresh installation, all ten commands and uninstall on Apple Silicon and Intel.
