@@ -44,15 +44,15 @@ consumers may compute deltas across reports only when identity and counter conti
 ## Registration and upload
 
 `POST /device-gateway/lens/provision/` reuses existing agent organisation-code validation/rotation,
-provisioning throttles, Device records, class assignment and credentials. JSON fields:
+bounded provisioning throttles and independent LensHost records/upload-only credentials. JSON fields:
 `provisioning_key`, `name`, stable v4 `registration_id`, optional `expected_device_hash` for repair.
 The existing response includes `hash_id`, `device_secret` and the echoed `registration_id`.
 Registration retries with that UUID and org produce the same identity, serialized under the org
-lock; no new enrolment database or rotation mechanism is introduced. The publisher never retries
+lock; no Agent Device or class record is created. The publisher never retries
 registration automatically and never sends an org code as a process argument or stores it.
 
 `POST /device-gateway/lens/{device_hash}/reports/` uses the issued `Authorization: ApiKey ...`.
-The URL host is bound to the authenticated device; organisation ownership comes from that record,
+The URL host is bound to the authenticated Lens host; organisation ownership comes from that record,
 not payload fields. Request shape: an object with `protocol_version: 1` and `reports`, an array of one to four
 report objects in the envelope format above, with the newest report first.
 
@@ -62,10 +62,10 @@ are idempotent and do not extend expiry. Expired entries are not persisted. The 
 `Retry-After` on 429/503. The publisher has exactly one retry owner and ignores response bodies
 except during explicit registration; it accepts no commands, URLs, sampling changes or actions.
 
-`GET /api/developer/devices/{device_hash}/lens/?limit=1` reads the latest report using existing
-organisation/role/device-access checks. `limit` is capped at 32 for the rolling window. Responses
-are private/no-store. An empty report list is missing current observations, not proof of health.
-This endpoint supplies the data for Console; it does not add a second presence/history model.
+`GET /api/organisations/{org}/lens/hosts/` lists independent Lens hosts in keyset pages of 25.
+`GET /api/organisations/{org}/lens/hosts/{hash}/` reads up to 32 fresh reports with organisation and
+engineering-reader permission checks. Responses are private/no-store. Empty observations are not
+proof of health. The web UI reads these endpoints without sending any request to a server.
 
 ## Receiver safety
 
@@ -99,4 +99,17 @@ At intervals above 60 seconds the publisher uploads only the newest unexpired re
 backfilling intervening samples. Local collection remains minute-based behind the one-way pipe.
 The original 30-minute expiry and RAM/byte bounds still apply: slow policy must not cause storage
 of stale observations or a catch-up burst. At intervals above 30 minutes central observations expire
-between uploads. Existing presence/history rules remain unchanged.
+between uploads. Lens status describes upload freshness, independently of Agent presence.
+
+
+## Independent Lens identity and optional Syslog
+
+Protocol v1 retains the wire names `hash_id` / `device_secret` for compatibility; these identify a
+free LensHost registration, not an Agent Device. The receiver accepts only Lens upload credentials
+on the reporting endpoint. Registration may additionally return `syslog_token`, a separate logs-only
+credential for a local administrator to configure an existing forwarder. It never authorizes the
+publisher to act as a remote-control channel.
+
+Snapshots carry additive `lens_reporting` metadata describing local syslog selection, reason and
+transport. Raw `logs` / `log_sources` are removed from operational uploads; optional logs travel once
+through the local forwarder to existing Syslog ingestion. Syslog retention is independent.

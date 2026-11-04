@@ -75,7 +75,7 @@ if [[ $lens_syslog_mode != off ]]; then
       chmod 0600 "$lens_validation"
       if rsyslogd -N1 -f "$lens_config_stage" > "$lens_validation" 2>&1; then
         mv -f "$lens_config_stage" "$lens_syslog_conf"
-        if systemctl restart rsyslog.service >/dev/null 2>&1; then
+        if rsyslogd -N1 > "$lens_validation" 2>&1 && systemctl restart rsyslog.service >/dev/null 2>&1; then
           lens_syslog_enabled=1
           lens_syslog_reason='rsyslog TLS forwarding configured locally; warning and above; maximum 60 events per minute'
           if [[ $lens_syslog_mode == force && $lens_other_path == 1 ]]; then

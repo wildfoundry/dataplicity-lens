@@ -46,19 +46,21 @@ process signals, service/container actions, additional privileges or collection 
   time; container identity includes host, runtime and runtime ID. Reused names/PIDs are new
   entities. Keep current, absent-from-complete-sample, unknown and stale states distinct.
 - Process history is sampled, not a promise to capture every short-lived process or exact exit time.
-- All observations, including hardware identity and recent logs, expire 30 minutes after collection
+- All observations, including hardware identity, expire 30 minutes after collection
   throughout the local and central reporting path. Upload/replay does not reset observation age.
   Byte limits can shorten coverage and must be visible. Prioritise current complete state after
   reconnection; discard expired backlog and mark gaps instead of presenting old data as live.
-- Only server registration/name and the existing Dataplicity connectivity/history records persist.
-  Reuse existing connectivity semantics and retention; do not invent a Lens-specific history system.
+- Only the independent Lens registration/name and last accepted upload time persist.
+  Lens status describes report freshness; it is not an Agent connection/session.
   Server records require explicit deletion. Hardware serials are transient observations, not new
   permanent inventory or authentication keys.
 
 ## Registration and protocol requirements
 
 Use a simple organisation enrolment code and the existing agent code rotation conventions. Pairing
-issues individual host credentials. Do not build a second account, connectivity or rotation system.
+issues independent Lens upload-only credentials without creating or linking Agent records. Syslog uses
+separate logs-only credentials and the existing local forwarder. Dataplicity account/code rotation
+conventions remain shared, but machine identities and billing remain independent.
 Registration/credential handling belongs to the publisher, not the hardware collector.
 
 The [v1 reporting protocol](REPORTING_PROTOCOL.md) defines transport with bounded framing and
@@ -70,3 +72,6 @@ allows recovery without requests back into Lens. Capabilities allow future read-
 to appear centrally. Additive fields must be tolerated; breaking meanings/units require a new
 version. Carry the shared Lens model and schema version explicitly; terminal text is not the wire
 contract. Schema-version-2 observations are carried inside the separately versioned v1 envelope.
+
+Operational reporting strips raw log arrays. Optional Syslog follows its existing retention policy,
+not the 30-minute operational window. See FLEET_REPORTING.md for the implemented forwarding contract.

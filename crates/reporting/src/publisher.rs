@@ -234,7 +234,10 @@ pub fn register(dir: &Path, base: &str, name: &str, code: &str, refresh: bool) -
         write_state(dir, &state)?;
         bail!("registration changed existing host identity; refusing replacement");
     }
-    state.syslog_token = json.get("syslog_token").and_then(serde_json::Value::as_str).map(str::to_owned);
+    state.syslog_token = json
+        .get("syslog_token")
+        .and_then(serde_json::Value::as_str)
+        .map(str::to_owned);
     state.device_hash = Some(hash.into());
     state.device_secret = Some(secret.into());
     write_state(dir, &state)?;
@@ -303,6 +306,8 @@ pub fn run(dir: PathBuf, pipe: PathBuf) -> Result<()> {
     let queue = Arc::new(Mutex::new(Ring::default()));
     let reader_stop = stop.clone();
     let reader_queue = queue.clone();
+    let syslog_upload = state.syslog_upload;
+    let syslog_reason = state.syslog_reason.clone();
     let reader = std::thread::spawn(move || -> Result<()> {
         let mut reader = ipc::Reader::open(&pipe)?;
         while !reader_stop.load(Ordering::Relaxed) {
@@ -312,7 +317,8 @@ pub fn run(dir: PathBuf, pipe: PathBuf) -> Result<()> {
                 .lock()
                 .map_err(|_| anyhow::anyhow!("report queue poisoned"))?;
             queue.prune(now, Instant::now());
-            for report in reports {
+            for mut report in reports {
+                prepare_upload(&mut report, syslog_upload, &syslog_reason)?;
                 queue.push(report, now, Instant::now())?;
             }
             drop(queue);
@@ -353,11 +359,7 @@ pub fn run(dir: PathBuf, pipe: PathBuf) -> Result<()> {
             }
             state.gate.reserve_attempt(wall_ms());
             write_state(&dir, &state)?;
-            let mut outgoing = batch.clone();
-            for report in &mut outgoing {
-                prepare_upload(report, state.syslog_upload, &state.syslog_reason);
-            }
-            let body = encode_batch(&outgoing);
+            let body = encode_batch(&batch);
             let outcome = send_upload(
                 &agent,
                 &format!("{}/device-gateway/lens/{hash}/reports/", state.server_url),
@@ -387,7 +389,9 @@ pub fn run(dir: PathBuf, pipe: PathBuf) -> Result<()> {
 /// Local-only configuration. Never accepts remote settings or clears cooldowns.
 
 pub fn configure_syslog(dir: &Path, enabled: bool, reason: &str) -> Result<()> {
-    if reason.len() > 255 { bail!("configuration reason too long"); }
+    if reason.len() > 255 {
+        bail!("configuration reason too long");
+    }
     let _lock = ipc::singleton(&dir.join("publisher.lock"))?;
     let mut state = read_state(dir)?;
     state.syslog_upload = enabled;
@@ -395,30 +399,64 @@ pub fn configure_syslog(dir: &Path, enabled: bool, reason: &str) -> Result<()> {
     write_state(dir, &state)
 }
 
-fn prepare_upload(report: &mut crate::protocol::Report, enabled: bool, reason: &str) {
+fn prepare_upload(report: &mut crate::protocol::Report, enabled: bool, reason: &str) -> Result<()> {
     if let Some(object) = report.snapshot.as_object_mut() {
         // Operational reports never carry raw logs. The existing local syslog daemon owns transport.
         object.insert("logs".into(), serde_json::json!([]));
         object.insert("log_sources".into(), serde_json::json!([]));
-        object.insert("lens_reporting".into(), serde_json::json!({
-            "syslog_upload": enabled, "syslog_transport": "rsyslog", "syslog_reason": reason,
-            "syslog_severity": "warning", "syslog_max_events_per_minute": 60
-        }));
+        object.insert(
+            "lens_reporting".into(),
+            serde_json::json!({
+                "syslog_upload": enabled, "syslog_transport": "rsyslog", "syslog_reason": reason,
+                "syslog_severity": "warning", "syslog_max_events_per_minute": 60
+            }),
+        );
     }
     report.coverage.insert("logs".into(), "unavailable".into());
+    while serde_json::to_vec(report)?.len() > crate::protocol::MAX_REPORT_BYTES {
+        let mut reduced = false;
+        if let Some(object) = report.snapshot.as_object_mut() {
+            for value in object.values_mut() {
+                if let Some(values) = value.as_array_mut().filter(|values| !values.is_empty()) {
+                    values.truncate(values.len() / 2);
+                    reduced = true;
+                }
+            }
+        }
+        if !reduced {
+            bail!("report scalars exceed upload limit");
+        }
+        for coverage in report.coverage.values_mut() {
+            *coverage = "partial".into();
+        }
+    }
+    Ok(())
 }
 
 /// Produce an rsyslog snippet for an administrator to install privately. Does not transmit logs.
 pub fn syslog_config(dir: &Path, ca_file: &str) -> Result<String> {
     let state = read_state(dir)?;
-    let token = state.syslog_token.as_deref().context("backend omitted logs-only credential; explicitly refresh registration")?;
-    if !token.starts_with("lnslog1.") || token.len() > 200 || !token.bytes().all(|c| c.is_ascii_alphanumeric() || c == b'.') {
+    let token = state
+        .syslog_token
+        .as_deref()
+        .context("backend omitted logs-only credential; explicitly refresh registration")?;
+    if !token.starts_with("lnslog1.")
+        || token.len() > 200
+        || !token
+            .bytes()
+            .all(|c| c.is_ascii_alphanumeric() || c == b'.')
+    {
         bail!("invalid syslog credential");
     }
-    if !ca_file.starts_with('/') || !ca_file.bytes().all(|c| c.is_ascii_alphanumeric() || b"/._-".contains(&c)) {
+    if !ca_file.starts_with('/')
+        || !ca_file
+            .bytes()
+            .all(|c| c.is_ascii_alphanumeric() || b"/._-".contains(&c))
+    {
         bail!("invalid CA bundle path");
     }
-    Ok(format!(r#"# Managed by Dataplicity Lens. Credentials are logs-only; keep this file private.
+    Ok(format!(
+        r#"# Managed by Dataplicity Lens. Credentials are logs-only; keep this file private.
 template(name="DataplicityLensFrame" type="string"
  string="<%pri%>1 %timestamp:::date-rfc3339% %hostname% %app-name% %procid% - [dataplicity@48577 token=\"{token}\"] %msg:1:4096%\n")
 if ($syslogseverity <= 4) then {{
@@ -431,7 +469,8 @@ if ($syslogseverity <= 4) then {{
   queue.type="FixedArray" queue.size="1000" queue.timeoutEnqueue="0"
   queue.saveOnShutdown="off" queue.dequeueBatchSize="1" queue.dequeueSlowDown="1000000")
 }}
-"#))
+"#
+    ))
 }
 
 pub fn status(dir: &Path) -> Result<()> {
@@ -470,6 +509,44 @@ mod tests {
             let _ = fs::remove_dir_all(&self.0);
         }
     }
+    #[test]
+    fn operational_uploads_never_carry_a_parallel_log_stream() {
+        let mut report = crate::protocol::fixture(1, 1000);
+        report.snapshot["logs"] = serde_json::json!([{"message":"private system log"}]);
+        report.snapshot["log_sources"] = serde_json::json!([{"id":"journal"}]);
+        prepare_upload(&mut report, false, "existing Agent forwarding").expect("bounded report");
+        assert_eq!(report.snapshot["logs"], serde_json::json!([]));
+        assert_eq!(report.snapshot["lens_reporting"]["syslog_upload"], false);
+        assert_eq!(
+            report.snapshot["lens_reporting"]["syslog_reason"],
+            "existing Agent forwarding"
+        );
+        assert!(
+            !serde_json::to_string(&report)
+                .unwrap()
+                .contains("private system log")
+        );
+    }
+
+    #[test]
+    fn rsyslog_uses_its_own_credential_with_verified_tls_and_a_bounded_memory_queue() {
+        let dir = Directory::new();
+        let mut value = state();
+        let token = format!("lnslog1.{}.{}", "a".repeat(64), "b".repeat(64));
+        value.syslog_token = Some(token.clone());
+        write_state(&dir.0, &value).unwrap();
+        let config = syslog_config(&dir.0, "/etc/ssl/certs/ca-certificates.crt").unwrap();
+        assert!(config.contains(&token));
+        assert!(!config.contains(value.device_secret.as_deref().unwrap()));
+        assert!(config.contains("x509/name"));
+        assert!(config.contains("queue.size=\"1000\""));
+        assert!(config.contains("queue.saveOnShutdown=\"off\""));
+        assert!(syslog_config(&dir.0, "/bad/path\" injection").is_err());
+        value.syslog_token = Some("lnslog1.bad\" injection".into());
+        write_state(&dir.0, &value).unwrap();
+        assert!(syslog_config(&dir.0, "/etc/ssl/certs/ca-certificates.crt").is_err());
+    }
+
     fn state() -> State {
         State {
             server_url: "https://example.invalid".into(),

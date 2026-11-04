@@ -64,8 +64,19 @@ fn main() -> Result<()> {
             }
             lens_reporting::publisher::register(&args.state_dir, &server_url, &name, &code, refresh)
         }
-        Action::Configure { no_syslog_upload, reason } => lens_reporting::publisher::configure_syslog(&args.state_dir, !no_syslog_upload, &reason),
-        Action::SyslogConfig { ca_file } => { print!("{}", lens_reporting::publisher::syslog_config(&args.state_dir, &ca_file)?); Ok(()) },
+        Action::Configure {
+            no_syslog_upload,
+            reason,
+        } => {
+            lens_reporting::publisher::configure_syslog(&args.state_dir, !no_syslog_upload, &reason)
+        }
+        Action::SyslogConfig { ca_file } => {
+            print!(
+                "{}",
+                lens_reporting::publisher::syslog_config(&args.state_dir, &ca_file)?
+            );
+            Ok(())
+        }
         Action::Status => lens_reporting::publisher::status(&args.state_dir),
         Action::Run { pipe } => lens_reporting::publisher::run(args.state_dir, pipe),
     }

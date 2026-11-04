@@ -17,7 +17,7 @@ sudo lens-reporting-enable --name server-01
 The setup helper prompts for the existing Dataplicity organisation code without echoing it or
 putting it in the process arguments. It explicitly creates the service accounts and FIFO, registers
 as the non-root publisher, and only after successful registration enables/starts both services.
-Organisation code ownership and rotation reuse agent provisioning. Code rotation does not replace
+Organisation code ownership and rotation reuse the existing code mechanism, but create an independent free Lens host, never an Agent Device record. Code rotation does not replace
 already issued host credentials. Registration retries reuse the saved registration UUID, so a lost
 response cannot create another server record. No code is stored in the credentials file.
 
@@ -41,9 +41,40 @@ To stop reporting while retaining registration:
 sudo systemctl disable --now lens-daemon.service lens-publisher.service
 ```
 
-Registration, naming, deletion, presence and connectivity history use Dataplicity's existing device
-records and policies. No parallel connectivity history or new offline threshold is introduced.
-Backoff may therefore result in an offline classification under the existing presence rules.
+Lens registration, name and last accepted upload time persist independently of Agent. Revoking Lens
+invalidates its observation and log credentials without touching Agent. Report status is freshness,
+not an inbound connection or proof that the machine is reachable. No hostname/serial matching occurs.
+
+## Optional existing syslog forwarding
+
+Registered setup configures the existing rsyslog daemon, rather than adding a Lens log proxy:
+
+```sh
+sudo lens-reporting-enable --name server-01 --no-syslog-upload
+```
+
+This disables Lens-managed forwarding while leaving operational reporting enabled. In automatic mode,
+Agent installation or a known existing Dataplicity destination causes forwarding to stay off, with a
+visible reason. `--syslog-upload` explicitly overrides this duplicate-path check; review existing
+sources first. Only one managed destination file is maintained. The helper validates the TLS snippet,
+uses root-only file permissions and never prints the logs-only credential. It does not install
+rsyslog or its TLS module; absent/invalid local forwarding leaves reporting active and logs disabled.
+Custom API origins require explicit local configuration of their own syslog destination.
+
+The forwarder uses certificate-validated TLS, warning+ severity, a bounded 1000-event memory queue,
+no disk spool and a paced dequeue (one event/second) with reconnect delay. Operational HTTPS reports
+strip raw logs completely. The FIFO carries local observations; optional Syslog traffic is a separate
+outbound path from the existing local forwarder.
+
+The backend issues a separate random logs-only `lnslog1.…` credential, bound to the independent Lens
+registration. It cannot authenticate Agent access, observation uploads, enrollment or org APIs.
+Syslog derives organisation/host and `origin:lens` from credentials, ignoring caller identity hints.
+Agent log credentials retain their own identities and `origin:agent`; generic forwarding remains
+`origin:syslog`. Website filters use these authoritative sources and the Lens host identifier.
+Refresh rotates the log credential with up to five minutes' overlap; revocation invalidates both.
+Logs follow existing Syslog retention/allowances, not the 30-minute operational observation lifetime.
+The publisher reports whether forwarding was configured and why; it does not fabricate delivery or
+loss counters. rsyslog remains responsible for its own queues, retries and delivery diagnostics.
 
 ## Privilege boundary
 
@@ -121,5 +152,5 @@ is received. No extra policy polling or control path into the collector is creat
 
 An interval change reduces upload frequency and, above one minute, sends just the newest observation.
 Collector cadence remains independent. Buffers/expiry remain at 30 minutes, so intervals above
-30 minutes leave periods with no current central observations. Existing connectivity classification
-is unchanged. Retry-After/backoff can require a delay beyond the four-hour normal-policy maximum.
+30 minutes leave periods with no current central observations. Lens reports freshness independently
+of Agent connectivity. Retry-After/backoff can require a delay beyond the four-hour normal-policy maximum.

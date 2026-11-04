@@ -52,6 +52,13 @@ jobs:
           LENS_BUILT_BY: GitHub Actions
         run: cargo build --workspace --all-features --release --locked
       - run: scripts/smoke-suite.sh target/release
+      - name: Validate generated configuration with rsyslog
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends rsyslog rsyslog-gnutls
+          python3 scripts/test-rsyslog-linux.py target/release/lens-publisher
+      - name: Verify local forwarder setup and duplicate-path protection
+        run: python3 scripts/test-reporting-setup.py
       - name: Verify opt-in Linux reporting and one-way FIFO permissions
         run: |
           sudo systemd-sysusers "$PWD/packaging/systemd/lens-reporting.sysusers"
