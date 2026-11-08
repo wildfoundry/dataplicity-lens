@@ -275,12 +275,15 @@ Set `DP_SHELL=plain` for a plain prompt, or `DP_SHELL=off` before the managed `.
 to keep a personal prompt. Installation adds that line once; recovery does not reinsert a
 line the user later removes.
 
-The current [Dataplicity OS](https://github.com/wildfoundry/dataplicity-os) reference image
-targets Raspberry Pi/Yocto. Its persistent home is on local `dpdata`, not a network share.
-The server shell is a portable component for a future headless OS profile and works now
-on the existing Ubuntu VM base. A dedicated x86 VM image must separately select server
-packages and qualify boot, updates, recovery and identity. Faceplate, splash, cameras and
-Pi boot integration are outside that profile. This work does not reimage a live hypervisor.
+The planned fleet baseline is a custom Ubuntu LTS build that retains Ubuntu identity and
+normal package administration. Keep it separate from the IoT DPOS/Yocto build and release
+track. A versioned manifest defines the common image, versioned packages/defaults maintain
+installed machines, and provisioning supplies each machine's identity and configuration.
+Use approved role profiles for hypervisors, build runners and customer VMs. Include
+Faceplate on display-equipped systems and an explicit headless profile; Ubuntu Faceplate
+packaging and Dell/iDRAC console qualification remain work to complete. The server shell
+already works on the Ubuntu VM base. Installer, boot, updates and recovery must be qualified
+before any live host reimage. Named local access and recovery must work without web access.
 
 ## Software fabric and future VM moves
 
