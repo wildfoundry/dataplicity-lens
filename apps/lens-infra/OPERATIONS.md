@@ -37,6 +37,11 @@ these VMs as unmanaged guests. Extending that runner controller behind a Lens ad
 the selected integration direction. Its runner lifecycle and shared capacity cooperation
 must be qualified before automatic runner scaling is enabled.
 
+The shared `/etc/wildfoundry-runners/boot.lock` must be a root-owned regular file with
+mode `0600`. When integrating an existing controller, tighten permissions on that inode
+in place; do not replace an active lock file. The adapter opens it read-only so it can
+coordinate through Linux flock while the service keeps `/etc` read-only.
+
 ## Qualification order
 
 1. Inventory existing libvirt VMs and host container runtimes using `inventory --direct`.
@@ -275,15 +280,13 @@ Set `DP_SHELL=plain` for a plain prompt, or `DP_SHELL=off` before the managed `.
 to keep a personal prompt. Installation adds that line once; recovery does not reinsert a
 line the user later removes.
 
-The planned fleet baseline is a custom Ubuntu LTS build that retains Ubuntu identity and
-normal package administration. Keep it separate from the IoT DPOS/Yocto build and release
-track. A versioned manifest defines the common image, versioned packages/defaults maintain
-installed machines, and provisioning supplies each machine's identity and configuration.
-Use approved role profiles for hypervisors, build runners and customer VMs. Include
-Faceplate on display-equipped systems and an explicit headless profile; Ubuntu Faceplate
-packaging and Dell/iDRAC console qualification remain work to complete. The server shell
-already works on the Ubuntu VM base. Installer, boot, updates and recovery must be qualified
-before any live host reimage. Named local access and recovery must work without web access.
+The active target is vanilla Ubuntu using standard distribution dependencies and the
+optional infrastructure package. The server shell and Lens/logging profiles are ordinary
+installable components. Custom Ubuntu images, installer changes and Faceplate integration
+are deferred to the separate DAT-858 task; none is a dependency or acceptance gate here.
+Use the existing Ubuntu installation and local configuration on our hosts. Guest templates
+can start from verified standard Ubuntu images with the required workload packages
+provisioned locally. Named local access and recovery must work without web access.
 
 ## Software fabric and future VM moves
 

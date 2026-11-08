@@ -35,7 +35,9 @@ def admission_lock(policy):
         return
     # The adopted and old runner controllers already use this lock. Hold it until
     # a Lens VM is running and visible to their physical-memory admission check.
-    fd = os.open(BOOT_LOCK, os.O_RDWR | getattr(os, "O_NOFOLLOW", 0))
+    # Linux flock does not require a writable descriptor. Keep /etc read-only
+    # under the controller's systemd sandbox while sharing the original inode.
+    fd = os.open(BOOT_LOCK, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
     try:
         st = os.fstat(fd)
         require(st.st_uid == 0 and st.st_mode & 0o077 == 0, "runner boot lock is not trusted")

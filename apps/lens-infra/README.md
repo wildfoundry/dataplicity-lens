@@ -5,6 +5,9 @@ Setup, CI examples, recovery and the qualification plan: [operator runbook](OPER
 
 This is an experimental, separately installed Linux extension. It does not modify the
 reporting collector, publisher or one-way FIFO. No web integration exists or is required.
+The current deployment target is vanilla Ubuntu with normal distribution dependencies,
+the optional controller package and local configuration. Custom OS images, installers
+and Faceplate integration are deferred to a separate task and are not prerequisites.
 Do not enable it on production hosts until the hardware, recovery and security gates in
 the Linear project are qualified.
 
