@@ -327,7 +327,10 @@ class Libvirt:
         ET.SubElement(features, "acpi")
         ET.SubElement(features, "apic")
         if policy.get("migration_pool"):
-            cpu = ET.SubElement(domain, "cpu", {"mode": "custom", "match": "exact", "check": "full"})
+            # Let libvirt expand a named model before selecting its runtime check.
+            # Forcing full on an unexpanded model rejects QEMU's implicit features.
+            # https://libvirt.org/formatdomain.html#cpu-model-and-topology
+            cpu = ET.SubElement(domain, "cpu", {"mode": "custom", "match": "exact"})
             ET.SubElement(cpu, "model", {"fallback": "forbid"}).text = policy["migration_pool"]["cpu_model"]
         else:
             ET.SubElement(domain, "cpu", {"mode": "host-model"})
