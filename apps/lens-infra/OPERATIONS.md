@@ -1,0 +1,196 @@
+# Local qualification and operation
+
+Tracking: [local infrastructure project](https://linear.app/wildfoundry/project/lens-local-infrastructure-control-9b009d4b4cd7).
+This extension is experimental. The deployment target for qualification is disposable
+infrastructure; installation on the live build hosts is a separate, reviewed pilot.
+
+## Contract
+
+The host administrator owns policy, images, networking and credential bindings. CI selects
+an approved environment, network, class, template and replica count. A release name is an
+audit identifier; changing image bytes requires a new pinned template, not just a release
+name. Versioned classes/templates/networks are immutable. Policy revisions increase.
+
+All requests name a host and its exact active policy revision. A configuration digest may
+also be included. A stale request fails locally. The Unix socket authenticates the actual
+local UID. SSH is a transport to that socket, with a dedicated forced-command account and
+an environment-scoped role. There is no TCP management API, outbound controller session,
+Dataplicity database dependency, AWS dependency or change to the reporting diode.
+
+Existing objects are first-class **protected inventory**, with their configured capacity
+charged before new builds. They are not silently adopted. Docker/LXD objects whose capacity
+cannot be measured need explicit `protected_resources."runtime:identity"` reservations in
+administrator policy. Missing inventory samples never release reservations. Removing a
+managed VM retains its disk and charges that storage until a separately reviewed archival
+procedure exists. This version deliberately has no disk purge operation.
+
+An administrator may explicitly list a protected VM's UUID in `parked_resources` after
+stopping its owning controller and gracefully shutting it down. Compute reservations are
+released only while inventory freshly confirms that the VM remains defined and shut off;
+its disk stays charged. A running or missing parked VM blocks new builds and recovery.
+CPU overcommit is separately bounded by administrator policy (`cpu_overcommit_percent`,
+default 100). Memory retains its physical host reserve; CI cannot change either budget.
+
+On our R630s, `wf-runner@SLOT.service` owns recycling. A direct guest shutdown triggers that
+controller's normal discard/rebuild cycle. Use a per-slot hold before shutdown; do not treat
+these VMs as unmanaged guests. Extending that runner controller behind a Lens adapter is
+the selected integration direction. Its runner lifecycle and shared capacity cooperation
+must be qualified before automatic runner scaling is enabled.
+
+## Qualification order
+
+1. Inventory existing libvirt VMs and host container runtimes using `inventory --direct`.
+   Record protected resources in a private state directory. Keep inventory evidence out of
+   public source control. Confirm host hardware, physical memory, disk free space, routes,
+   network names and configured VM reservations. Do not infer free capacity from idle RAM.
+2. Run the safety suite, real HAProxy/Unix peer-identity tests and private network namespace
+   packet tests. Build the separate package and confirm it contains no service-enabling
+   maintainer script. It must not change the existing Lens binary or reporting services.
+3. Prepare an approved self-contained image offline, with Python 3.12+, qemu-guest-agent,
+   nftables, systemd and workload dependencies already installed. OCI images also need
+   Docker; runner images need the pinned runner's distribution dependencies and build tools.
+   Do not put customer secrets or host bootstrap keys into a golden image. Check its digest.
+4. Use `scripts/qualify-infra-vm-linux.py` with unpacked distribution tools and a verified
+   Ubuntu cloud image inside **both** disposable mount and network namespaces. The script
+   refuses the host namespaces. It creates and removes only its own disposable test VMs.
+   Qualify delivery, readiness, ingress, replacement, drain and history with a dummy secret.
+5. Before a live pilot, present the exact host capacity and proposed network/package changes
+   to the operator. The R630 inventory found substantial existing reservations, so this step
+   needs an explicit capacity allocation. No existing container may be deleted. A potentially
+   breaking runner/network change must be communicated before execution.
+6. Qualify host reboot, controller restart during a deployment, artifact-service outage,
+   runner registration/job completion, certificates and real VLAN/cross-host isolation on
+   the agreed pilot. Web management remains outside this local milestone.
+
+## Explicit bootstrap
+
+These commands are a runbook, not an instruction to apply the example to a live host.
+Installing dependencies can start distribution services; review that change first.
+The package is separate and disabled by default, with no automatic post-install start.
+
+```sh
+lens-infra config validate /etc/lens-infra/host.toml
+lens-infra inventory --direct --record /var/lib/lens-infra
+lens-infra network plan /etc/lens-infra/host.toml
+```
+
+After reviewing the concrete host/network changes, the local administrator creates the
+`lens-infra` system group, the storage directory `/var/lib/libvirt/images/lens-infra`, and
+private credential files, then explicitly provisions the declared new networks and policy:
+
+```sh
+sudo lens-infra network apply /etc/lens-infra/host.toml --yes
+sudo lens-infra config apply /etc/lens-infra/host.toml --local-state /var/lib/lens-infra --yes
+sudo systemctl daemon-reload
+sudo systemctl enable --now lens-infra.service
+```
+
+Managed guest VMs are not configured for libvirt autostart. At controller startup, the host
+first verifies approved network ownership and reinstates only its own scoped nftables
+tables, then starts recorded current VMs, delivers ephemeral credentials again and rebuilds
+ingress. Failure to establish that protection prevents VM recovery. Existing VM autostart
+and existing host firewall tables are not rewritten.
+
+HAProxy uses independent systemd units so a controller restart does not stop load balancing.
+For the first implementation, the service frontend binds loopback. An existing locally
+administered edge proxy can expose it; public edge routing and a redundant ingress VM pair
+remain pilot work. Local combined PEM files may terminate TLS; their key remains local.
+
+## CI interface
+
+```sh
+lens-infra deploy plan deploy.toml
+lens-infra deploy prepare deploy.toml
+lens-infra deploy apply deploy.toml --yes
+lens-infra operation status web-build-one
+lens-infra status
+```
+
+`prepare` verifies and snapshots local artifact bytes. `apply` commits an idempotent operation
+and capacity reservation before VM creation. Disconnection of CI does not cancel it. A
+controller restart leaves incomplete work interrupted; use an authenticated explicit
+`operation resume ID --yes` after inspection. Cancellation retains VMs and reservations.
+
+The fixed pipeline creates a replacement, delivers credentials, requires three readiness
+passes, tests the selected protocol, introduces a small canary, observes it, switches
+traffic, observes again, promotes the release and drains old backends. HAProxy never
+replays a failed JSON-RPC POST. Before promotion, failure restores the previous retained
+release. After promotion, old-VM cleanup failures leave the healthy new release active.
+Failed replacement VMs remain charged and available for local inspection.
+
+```sh
+lens-infra service scale scale.toml --plan
+lens-infra service scale scale.toml --yes
+lens-infra service drain selector.toml --plan
+lens-infra service rollback selector.toml --plan
+lens-infra operation cleanup old-operation-id --yes
+```
+
+Service changes require the expected current operation ID, host and policy revision.
+Scaling uses a full replacement with surge reservations, rather than in-place resize.
+Drain makes the desired replica count zero. Rollback creates fresh instances from the
+previous approved template, subject to current policy and health checks. Cleanup refuses
+the active release and all protected resources, and never deletes host containers or disks.
+
+Status exposes host/configuration identifiers, desired/current/previous operations,
+resource state, health samples and secret **generation numbers**. `lens-infra metrics`
+exports Prometheus text through the same authenticated local interface. Audit events include
+actor UID and stages. Values and raw guest/native process output are not returned.
+
+## Workload sources and application shim
+
+OCI references may use ECR, GHCR, Docker Hub or another OCI registry, pinned as
+`registry/repository@sha256:...`. A verified local archive may supply the same image offline;
+declare both `archive_sha256` and its Docker `image_id` (`sha256:...`). Docker archives do not
+reliably preserve a registry reference, so the pinned local image ID is checked after loading.
+A container's optional `registry_secret` names a declared local secret containing Docker
+authentication JSON; it is delivered to a private `/run` Docker config, never to argv.
+Prepare archives on each target before a deployment that must survive registry downtime.
+
+An application and an optional protocol shim are declared as fixed containers in one
+approved VM template. They share guest loopback. The guest firewall exposes only the
+approved service port, so peers cannot bypass the shim through another application port.
+The runtime grants neither host mounts nor privileged host containers. The shim owns
+application-specific readiness/drain behavior; the controller owns rollout and ingress.
+Every exposed profile needs an HTTP 200 health endpoint. WebSocket profiles additionally
+need an upgrade/ping-pong endpoint. JSON-RPC profiles need a harmless health method
+(default `lens.health`) returning `true` or `{"ready":true}`. No business RPC is probed.
+
+## GitHub runner lifecycle
+
+A `github-runner` template supplies a verified local runner archive, GitHub organization or
+repository URL, explicit labels, group and a locally bound registration token. Automatic
+default labels are disabled; declare `self-hosted`, OS and architecture labels explicitly
+if existing workflows should select these machines. It uses a VM, not an
+ECR container requirement. Registration tokens are passed through the upstream runner's
+`ACTIONS_RUNNER_INPUT_TOKEN` environment input and excluded from native process arguments.
+Pinned distributions disable automatic updates: the operator must publish a new template
+before GitHub's runner update deadline.
+
+The registration environment input is defined by the [upstream runner implementation](https://github.com/actions/runner/blob/main/src/Runner.Listener/CommandSettings.cs).
+Ephemeral lifecycle expectations follow [GitHub's runner documentation](https://docs.github.com/en/actions/reference/runners/self-hosted-runners#ephemeral-runners-for-autoscaling).
+
+New runners are ephemeral by default. A successful one-job exit records a durable completion
+marker and will not register again on recovery. Scaling provisions approved capacity; this
+version does not poll GitHub queues or provide a scale-set adapter. Persistent runners are
+an explicit template choice. During replacement or drain, a busy runner or one still
+accepting jobs remains `drain-pending`. An idle snapshot is insufficient for removal.
+After ephemeral completion, or after an operator stops admission locally and the job exits,
+explicit old-operation cleanup can unregister the VM. Existing runner services are never
+stopped or migrated by this implementation. GitHub-side deletion/revocation stays manual.
+
+## Secrets and recovery
+
+The customer creates versioned local credential files. Encrypted bindings use
+`systemd-creds` with the correct credential name and host-local key/TPM policy; a private
+root-owned plaintext file is an explicit alternative. Configuration stores only path,
+generation and allowed environments. Decrypted values travel through the native guest
+agent into `/run/lens/secrets`, outside VM images, controller journals and command arguments.
+Guest root, the host administrator and authorized workload code remain trusted.
+
+Rotate by creating a new local file and increasing its generation in a new policy revision,
+then making a health-gated replacement deployment. Keep previous versioned files while
+rollback/recovery may need them. To add a host, provision its local decryption material and
+approved secret bindings through a customer-controlled channel. Removing a host from
+scheduling does not revoke credentials automatically. Revocation remains a separate manual
+action. This local version does not escrow or distribute customer secrets through Dataplicity.
