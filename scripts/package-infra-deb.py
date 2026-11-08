@@ -11,7 +11,7 @@ import tempfile
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--output", required=True)
-    parser.add_argument("--version", default="0.3.11+infra6")
+    parser.add_argument("--version", default="0.3.11+infra7")
     args = parser.parse_args()
     root = Path(__file__).resolve().parents[1]
     output = Path(args.output).resolve()

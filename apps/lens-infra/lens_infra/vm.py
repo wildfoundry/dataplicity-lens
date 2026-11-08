@@ -57,6 +57,9 @@ def plan(engine, payload, uid):
 
 def submit(engine, payload, uid):
     plan(engine, payload, uid)
+    # Parked build VMs release compute only while freshly observed shut off.
+    # Lifecycle requests may arrive long after the last deployment inventory.
+    engine.inventory()
     return engine.store.reserve_action(engine.policy(), payload, uid)
 
 

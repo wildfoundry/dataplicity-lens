@@ -292,7 +292,8 @@ class Store:
                 require(detail.get("desired_power") == "off", "shut the VM down before an offline backup")
                 c.execute("INSERT INTO backups VALUES(?,?,?,?,?,?,?,?)", (selector["operation_id"], resource["id"], resource["environment"], resource["disk_gib"], "reserved", time.time(), None,
                           json.dumps({"source_request": original, "resource_detail": detail})))
-            self._capacity(c, policy, original, [])
+            if selector["action"] in ("boot", "resize", "backup"):
+                self._capacity(c, policy, original, [])
             now = time.time()
             c.execute("INSERT INTO operations VALUES(?,?,?,?,?,?,?,?,?,?)", (selector["operation_id"], digest(request), json.dumps(request), "accepted", "reserved", uid, now, now, None, None))
             self.audit(c, selector["operation_id"], uid, "vm-action-accepted", {"action": selector["action"], "instance_id": resource["id"]})

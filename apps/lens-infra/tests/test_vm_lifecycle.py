@@ -80,6 +80,27 @@ class VmLifecycleTests(unittest.TestCase):
         self.assertEqual((row["memory_mib"], row["disk_gib"]), (1024, 16))
         self.assertEqual(row["state"], "stopped")
 
+    def test_lifecycle_refreshes_parked_capacity_and_shutdown_still_works_when_full(self):
+        parked = {"id": "wf-runner:06", "name": "build", "kind": "vm", "state": "shut off", "vcpus": 16, "memory_mib": 16384, "disk_gib": 8}
+        self.backend.observed = [parked]
+        self.policy.update(revision=2, parked_resources=["wf-runner:06"])
+        self.store.apply_policy(validate(self.policy), 0)
+        self.engine.inventory()
+        self.build["configuration_revision"] = 2
+        original_selector = self.selector
+        self.selector = lambda action, **extra: original_selector(action, **extra) | {"configuration_revision": 2}
+        with self.store.connection() as connection:
+            connection.execute("UPDATE resources SET observed_at=0 WHERE id='wf-runner:06'")
+        self.action("shutdown")
+        with self.store.connection() as connection:
+            connection.execute("UPDATE resources SET observed_at=0 WHERE id='wf-runner:06'")
+        self.action("resize", new_class="larger-v1")
+        parked["state"] = "running"
+        with self.assertRaisesRegex(Rejected, "parked VM"):
+            vm.submit(self.engine, self.selector("boot"), 1001)
+        # An over-budget observation must never prevent a graceful power-off.
+        self.action("shutdown", operation_id="shutdown-again")
+
     def test_offline_backup_and_restore_create_a_different_powered_off_vm(self):
         with self.assertRaisesRegex(Rejected, "shut down"):
             vm.plan(self.engine, self.selector("backup"), 1001)
