@@ -253,6 +253,18 @@ class Libvirt:
             models = capabilities.findall("cpu/mode[@name='custom']/model")
             require(any(m.text == pool["cpu_model"] and m.get("usable") == "yes" for m in models), "host cannot provide the approved migration CPU model")
 
+    def instance_directory(self, resource):
+        directory = self.storage / resource["id"]
+        for folder in (self.storage, directory):
+            folder.mkdir(parents=True, mode=0o711, exist_ok=True)
+            st = folder.lstat()
+            require(folder.is_dir() and not folder.is_symlink() and st.st_uid == os.geteuid() and st.st_mode & 0o022 == 0,
+                    "managed VM storage directory is not trusted")
+            # mkdir's mode is filtered by UMask=0077 in the installed service.
+            # QEMU needs traversal; individual disks/metadata keep private modes.
+            os.chmod(folder, 0o711)
+        return directory
+
     def create(self, resource, request, policy, start=True):
         # The caller's resource UUID was reserved transactionally before any VM exists.
         t = policy["templates"][request["template"]]
@@ -261,12 +273,11 @@ class Libvirt:
         existing = self.virsh("dumpxml", resource["id"], check=False)
         if existing:
             self.assert_owned(resource)
+            self.instance_directory(resource)
             if start:
                 self.ensure_running(resource)
             return
-        self.storage.mkdir(parents=True, mode=0o711, exist_ok=True)
-        directory = self.storage / resource["id"]
-        directory.mkdir(mode=0o711, exist_ok=True)
+        directory = self.instance_directory(resource)
         disk = directory / "root.qcow2"
         if not disk.exists():
             image = self.artifact(t["image"], t["image_sha256"])
@@ -356,6 +367,7 @@ class Libvirt:
 
     def ensure_running(self, resource):
         self.assert_owned(resource)
+        self.instance_directory(resource)
         state = self.virsh("domstate", resource["id"]).decode().strip()
         if state == "shut off":
             self.virsh("start", resource["id"], timeout=60)

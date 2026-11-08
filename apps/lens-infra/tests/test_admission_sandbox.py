@@ -10,6 +10,26 @@ import unittest
 
 @unittest.skipUnless(sys.platform == "linux" and os.geteuid() == 0, "requires Linux root mount namespaces")
 class AdmissionSandboxTests(unittest.TestCase):
+    def test_private_service_umask_allows_qemu_traversal_without_public_files(self):
+        from lens_infra.backend import Libvirt
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            root.chmod(0o711)
+            backend = Libvirt(root / "state", storage_directory=str(root / "images"))
+            previous = os.umask(0o077)
+            try:
+                instance = backend.instance_directory({"id": "fixture"})
+                disk = instance / "root.qcow2"
+                disk.write_bytes(b"private test disk")
+            finally:
+                os.umask(previous)
+            probe = 'import os,sys;os.setgid(65534);os.setuid(65534);os.stat(sys.argv[1])'
+            result = subprocess.run([sys.executable, "-c", probe, str(disk)], capture_output=True, text=True, timeout=5)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertEqual(disk.stat().st_mode & 0o777, 0o600)
+            result = subprocess.run([sys.executable, "-c", probe.replace("os.stat(sys.argv[1])", "open(sys.argv[1]).read()"), str(disk)], capture_output=True, text=True, timeout=5)
+            self.assertNotEqual(result.returncode, 0)
+
     def test_readonly_lock_mount_still_coordinates_exclusive_admission(self):
         code = '''import errno,fcntl,os,pathlib,subprocess,sys
 from lens_infra import runner_provider
