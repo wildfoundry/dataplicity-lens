@@ -9,7 +9,7 @@ infrastructure; installation on the live build hosts is a separate, reviewed pil
 The host administrator owns policy, images, networking and credential bindings. CI selects
 an approved environment, network, class, template and replica count. A release name is an
 audit identifier; changing image bytes requires a new pinned template, not just a release
-name. Versioned classes/templates/networks are immutable. Policy revisions increase.
+name. Versioned classes/templates/networks/build profiles are immutable. Policy revisions increase.
 
 All requests name a host and its exact active policy revision. A configuration digest may
 also be included. A stale request fails locally. The Unix socket authenticates the actual
@@ -156,6 +156,141 @@ Every exposed profile needs an HTTP 200 health endpoint. WebSocket profiles addi
 need an upgrade/ping-pong endpoint. JSON-RPC profiles need a harmless health method
 (default `lens.health`) returning `true` or `{"ready":true}`. No business RPC is probed.
 
+## Persistent VMs, users and disk recovery
+
+Persistent servers use a different lifecycle from replaceable application services:
+
+```sh
+lens-infra vm create build.toml --plan
+lens-infra vm create build.toml --yes
+lens-infra vm shutdown instance.toml --yes
+lens-infra vm resize resize.toml --plan
+lens-infra vm backup instance.toml --yes
+lens-infra vm backups
+lens-infra vm restore restore.toml --plan
+```
+
+A build selects `operation_id`, `host_id`, `configuration_revision`, `environment`, `name`,
+`class`, `template`, `network` and `release`. `start = false` creates a defined, stopped VM.
+An instance selector names `operation_id`, `host_id`, `configuration_revision` and the exact
+`instance_id`; resize adds `new_class`. The controller derives all storage paths. Persistent
+servers have private ingress and cannot be overwritten by a stateless service deployment.
+
+Shutdown records desired power off before ACPI shutdown; controller recovery respects it.
+Resize requires an explicit shutdown and confirmation that the guest is actually off.
+Disk shrink is rejected. Growth and CPU/memory changes reserve the larger allocation before
+changing the disk or definition; guest filesystem size is observed after the next boot.
+Backup requires the guest off and makes a standalone, checked, hashed disk copy. Backups
+continue to count against storage capacity. Delete requires shutdown and retains the disk.
+Online snapshots, automatic backup schedules and disk purge are not implemented.
+
+A restore selector supplies `operation_id`, `host_id`, `configuration_revision`, `backup_id`,
+`name`, `class` and `network`. Restore requires an environment-scoped `operator` role or local
+root; a CI `deployer` cannot restore disks or boot a restored copy. It creates a new UUID and
+MAC, private and stopped, with a separate explicit boot operation. Disk contents include the
+original home directories and application identity: review identity/credential duplication
+before booting a recovered copy alongside its source. This is recovery, not migration.
+Interactive console/rescue access remains a separately authorized feature to qualify.
+
+An approved template may select a versioned `build_profile`. Its `lens` package requires a
+local path, SHA-256 and exact package version; `logging` requires a local path and SHA-256.
+The guest checks both bytes and package identity, validates rsyslog configuration and starts
+only guest services. Lens reporting is not enrolled automatically. Profiles and images are
+cached locally; Dataplicity web is not involved.
+
+Named human accounts belong in the approved build profile:
+
+```toml
+[[build_profiles.customer-v1.users]]
+name = "alice"
+ssh_keys = ["ssh-ed25519 REPLACE_WITH_ALICES_PUBLIC_KEY"]
+sudo = true
+
+[[build_profiles.customer-v1.users]]
+name = "bob"
+ssh_keys = ["ssh-ed25519 REPLACE_WITH_BOBS_PUBLIC_KEY"]
+sudo = false
+```
+
+Replace the example key text with actual public keys before validation. Each user gets an
+owner-only local `/home/<name>` on the VM's disk and a separate primary group. Administrators
+receive passwordless sudo; ordinary users do not. Root SSH, password SSH and keyboard password
+authentication are disabled. No root password or private user key enters the build request.
+Persistent server builds require at least one administrator public key. The simpler legacy
+`ssh_keys` profile field creates one bootstrap `vmadmin` account; it cannot be combined with
+named users.
+
+Home directories are **not centrally mounted**. They follow that VM's disk backup/restore
+and eventual migration. Later central management can publish user/public-key/role definitions
+without making logins depend on central storage. Shared project/data volumes should be
+explicit resources; this version has no shared-home or arbitrary host-mount interface.
+Disposable runners should keep useful state in deliberate caches/work volumes, rather than
+expecting their home directories to survive normal runner recycling. Build profiles apply
+accounts at creation; fleet account/key reconciliation and revocation are separate work.
+
+### Headless server experience
+
+Set `shell = "dataplicity-server-v1"` in the selected build profile to install the server
+shell and `dp-status` in that guest. A normal prompt has two lines:
+
+```text
+[PRODUCTION] alice@api:5c6a9f5d ~/project
+$
+```
+
+The environment is always text, with an additional red production accent on colour
+terminals. Elevated shells add `ROOT` and use `#`; a failed command adds its exit code.
+Narrow terminals put the working directory on its own line. ASCII terminals and `NO_COLOR`
+work without special fonts. Context comes from a small local data file; prompt rendering
+uses Bash builtins and does not call the network, Git or the controller. Control characters
+in paths are neutralized, and metadata/path strings are never executed as shell code.
+
+The welcome summary reports the applied VM class, instance configuration revision and build
+profile, then fresh local system state, load and root disk use. These are system readings,
+not a claim that every customer application is healthy. `dp-status --json` is available to
+local scripts. Welcome text appears only for an interactive terminal; SSH command mode,
+SCP and CI receive no shell banner. Existing prompt hooks and command exit status survive.
+Set `DP_SHELL=plain` for a plain prompt, or `DP_SHELL=off` before the managed `.bashrc` line
+to keep a personal prompt. Installation adds that line once; recovery does not reinsert a
+line the user later removes.
+
+The current [Dataplicity OS](https://github.com/wildfoundry/dataplicity-os) reference image
+targets Raspberry Pi/Yocto. Its persistent home is on local `dpdata`, not a network share.
+The server shell is a portable component for a future headless OS profile and works now
+on the existing Ubuntu VM base. A dedicated x86 VM image must separately select server
+packages and qualify boot, updates, recovery and identity. Faceplate, splash, cameras and
+Pi boot integration are outside that profile. This work does not reimage a live hypervisor.
+
+## Software fabric and future VM moves
+
+`mode = "vxlan"` networks require a managed `li-` network, unique `vni` and a fabric listing
+each host's stable ID, private transport endpoint and unique `node_id` (1 through 32).
+Declare every management/transport range in `protected_cidrs`. The endpoint must already
+exist on the physical underlay, and peer routes must use it; Lens does not reconfigure the
+physical NICs, switch uplinks or existing runner bridges. Cross-site transport needs an
+encrypted underlay; VXLAN itself does not encrypt customer traffic.
+
+The first fabric uses one explicitly selected `gateway_host` for DHCP/NAT, with a conservative
+MTU of 1350 (configurable 1280 through 1450). Network addresses .1 and .2 through .33 are
+reserved for the gateway and fabric nodes; guest DHCP starts at offset 34. Other hosts use
+owned software bridges connected by VXLAN. The firewall permits only declared transport
+peers, blocks guest access to protected physical networks and UDP 4789, and drops guest VLAN
+tags, DHCP-server traffic and IPv6 router advertisements. Environment isolation remains
+enforced even when a network permits general internet egress.
+
+Apply network changes only with the local executor stopped. Active network definitions
+cannot be removed, and active gateway/MTU changes or member removal require a future
+maintenance/fencing operation. A newly added member requires an explicit reviewed policy
+revision and network reconciliation on the existing hosts. The single gateway is not HA;
+durable IPAM, gateway failover and physical two-host qualification remain acceptance gates.
+
+An optional `migration_pool` pins a pool `name`, compatible `cpu_model` and exact QEMU
+`machine`, for example `Haswell-v4` and `pc-q35-8.2` after checking each member. Guest MAC
+addresses derive from permanent VM UUIDs and DHCP identifies the MAC. These are migration
+foundations; this version has no host-move command. Planned moves must reserve the destination,
+preserve UUID/MAC/disks/metadata, transfer required local secret bindings and fence the source
+before destination boot. Live migration and automatic failover remain separate work.
+
 ## GitHub runner lifecycle
 
 A `github-runner` template supplies a verified local runner archive, GitHub organization or
@@ -176,7 +311,7 @@ version does not poll GitHub queues or provide a scale-set adapter. Persistent r
 an explicit template choice. During replacement or drain, a busy runner or one still
 accepting jobs remains `drain-pending`. An idle snapshot is insufficient for removal.
 After ephemeral completion, or after an operator stops admission locally and the job exits,
-explicit old-operation cleanup can unregister the VM. Existing runner services are never
+explicit old-operation cleanup can unregister the VM. Unadopted runner services are never
 stopped or migrated by this implementation. GitHub-side deletion/revocation stays manual.
 
 ## Secrets and recovery

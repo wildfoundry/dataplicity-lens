@@ -30,6 +30,7 @@ class Store:
                 CREATE TABLE IF NOT EXISTS operations(id TEXT PRIMARY KEY, request_digest TEXT NOT NULL, request TEXT NOT NULL, state TEXT NOT NULL, stage TEXT NOT NULL, actor INTEGER NOT NULL, created_at REAL NOT NULL, updated_at REAL NOT NULL, error TEXT, previous_id TEXT);
                 CREATE TABLE IF NOT EXISTS events(sequence INTEGER PRIMARY KEY AUTOINCREMENT, operation_id TEXT, timestamp REAL NOT NULL, actor INTEGER NOT NULL, event TEXT NOT NULL, detail TEXT NOT NULL);
                 CREATE TABLE IF NOT EXISTS services(id TEXT PRIMARY KEY, current_id TEXT, previous_id TEXT);
+                CREATE TABLE IF NOT EXISTS backups(id TEXT PRIMARY KEY, resource_id TEXT NOT NULL, environment TEXT NOT NULL, disk_gib INTEGER NOT NULL, state TEXT NOT NULL, created_at REAL NOT NULL, sha256 TEXT, detail TEXT NOT NULL);
             """
             for statement in schema.split(";"):
                 if statement.strip():
@@ -91,12 +92,18 @@ class Store:
             if old:
                 before = json.loads(c.execute("SELECT document FROM policies WHERE revision=?", (old[0],)).fetchone()[0])
                 require(before["host_id"] == policy["host_id"], "host identity cannot be changed by a policy update")
-                for section in ("classes", "templates", "networks"):
+                for section in ("classes", "templates", "networks", "build_profiles"):
                     for key in before.get(section, {}).keys() & policy.get(section, {}).keys():
                         require(before[section][key] == policy[section][key], f"{section} definitions are immutable; create a new versioned name")
                 active = c.execute("SELECT 1 FROM resources WHERE owner='lens' AND state!='removed' LIMIT 1").fetchone()
                 if active:
                     require(before.get("networks", {}).keys() <= policy.get("networks", {}).keys(), "active workloads require their network definitions to remain available")
+                    if before.get("fabric"):
+                        old_fabric, new_fabric = before["fabric"], policy.get("fabric", {})
+                        require(all(old_fabric.get(k) == new_fabric.get(k) for k in ("name", "gateway_host", "mtu")), "active overlay gateway and MTU changes require a separate network maintenance operation")
+                        new_members = {m["host_id"]: m for m in new_fabric.get("members", [])}
+                        require(all(new_members.get(m["host_id"]) == m for m in old_fabric["members"]), "drain and fence hosts before removing or changing active fabric members")
+                        require(set(old_fabric["protected_cidrs"]) <= set(new_fabric.get("protected_cidrs", [])), "active fabric management protection cannot be narrowed")
                 for key in before.get("secrets", {}).keys() & policy.get("secrets", {}).keys():
                     a, b = before["secrets"][key], policy["secrets"][key]
                     if a != b:
@@ -166,9 +173,12 @@ class Store:
             # Retained disks remain charged even after a VM is unregistered.
             budget_rows = all_rows if key == "disk_gib" else [row for row in rows if row["id"] not in parked]
             used = sum(max(row[key], overrides.get(row["id"], {}).get(key, 0)) for row in budget_rows)
+            backups = c.execute("SELECT * FROM backups").fetchall() if key == "disk_gib" else []
+            used += sum(row["disk_gib"] for row in backups)
             needed = sum(a[key] for a in allocations)
             require(used + needed <= limits[key], f"host {key} capacity exhausted: reserved={used}, requested={needed}, limit={limits[key]}")
             env_used = sum(row[key] for row in budget_rows if row["environment"] == request["environment"])
+            env_used += sum(row["disk_gib"] for row in backups if row["environment"] == request["environment"])
             require(env_used + needed <= env[key], f"environment {key} quota exhausted")
         env_count = sum(row["environment"] == request["environment"] for row in rows)
         require(env_count + len(allocations) <= env["max_instances"], "environment instance quota exhausted (including rollout surge)")
@@ -191,9 +201,11 @@ class Store:
                 other = json.loads(row[0])
                 require((other["environment"], other["service"]) != (request["environment"], request["service"]), "another operation owns this service")
             template = policy["templates"][request["template"]]
-            if template.get("profile", "private") != "private":
+            if request.get("mode") != "server" and template.get("profile", "private") != "private":
                 others = c.execute("SELECT request FROM operations WHERE state IN ('accepted','running','interrupted') UNION SELECT o.request FROM services s JOIN operations o ON o.id=s.current_id").fetchall()
                 for other in (json.loads(row[0]) for row in others):
+                    if other.get("mode") == "server":
+                        continue
                     if (other["environment"], other["service"]) == (request["environment"], request["service"]):
                         continue
                     require(other.get("listen_port", 8080) != request.get("listen_port", 8080), "listener is already assigned to another service")
@@ -202,6 +214,10 @@ class Store:
             service_id = request["environment"] + "/" + request["service"]
             current = c.execute("SELECT current_id FROM services WHERE id=?", (service_id,)).fetchone()
             previous_id = current[0] if current else None
+            if previous_id:
+                old_request = json.loads(c.execute("SELECT request FROM operations WHERE id=?", (previous_id,)).fetchone()[0])
+                require(old_request.get("mode") != "server", "persistent servers require explicit VM lifecycle operations")
+            require(request.get("mode") != "server" or previous_id is None, "persistent server already exists; use its VM lifecycle controls")
             require(request["instances"] > 0 or previous_id is not None, "only an existing service can be drained to zero")
             if expected_previous is not None:
                 require(previous_id == expected_previous, "active release changed before reservation; review again")
@@ -229,6 +245,69 @@ class Store:
             result["request"] = json.loads(result["request"])
             result["resources"] = [dict(r) | {"detail": json.loads(r["detail"])} for r in c.execute("SELECT * FROM resources WHERE operation_id=?", (operation_id,))]
             return result
+
+    def resource(self, identity):
+        with self.connection() as c:
+            row = c.execute("SELECT * FROM resources WHERE id=?", (identity,)).fetchone()
+            require(row is not None, "unknown VM")
+            return dict(row) | {"detail": json.loads(row["detail"])}
+
+    def backup(self, identity):
+        with self.connection() as c:
+            row = c.execute("SELECT * FROM backups WHERE id=?", (identity,)).fetchone()
+            require(row is not None, "unknown backup")
+            return dict(row) | {"detail": json.loads(row["detail"])}
+
+    def backups(self):
+        with self.connection() as c:
+            return [dict(row) | {"detail": json.loads(row["detail"])} for row in c.execute("SELECT * FROM backups ORDER BY created_at DESC")]
+
+    def backup_ready(self, identity, checksum):
+        with self.connection() as c:
+            c.execute("UPDATE backups SET state='ready',sha256=? WHERE id=?", (checksum, identity))
+
+    def reserve_action(self, policy, selector, uid):
+        with self.connection() as c:
+            active = c.execute("SELECT digest FROM policies ORDER BY revision DESC LIMIT 1").fetchone()
+            require(active and active[0] == digest(policy), "policy changed before reservation")
+            resource = c.execute("SELECT * FROM resources WHERE id=?", (selector["instance_id"],)).fetchone()
+            require(resource and resource["owner"] == "lens" and not resource["protected"] and resource["state"] != "removed", "existing/imported resources are protected")
+            source = c.execute("SELECT request FROM operations WHERE id=?", (resource["operation_id"],)).fetchone()
+            original = json.loads(source[0])
+            request = original | selector | {"kind": "vm-action"}
+            prior = c.execute("SELECT * FROM operations WHERE id=?", (selector["operation_id"],)).fetchone()
+            if prior:
+                require(prior["request_digest"] == digest(request), "operation ID was already used for a different request")
+                return {"id": prior["id"], "state": prior["state"], "duplicate": True}
+            for row in c.execute("SELECT request FROM operations WHERE state IN ('accepted','running','interrupted')"):
+                other = json.loads(row[0])
+                require((other["environment"], other["service"]) != (original["environment"], original["service"]), "another operation owns this VM or service")
+            detail = json.loads(resource["detail"])
+            if selector["action"] == "resize":
+                cls = policy["classes"][selector["new_class"]]
+                require(cls["disk_gib"] >= resource["disk_gib"], "disk shrinking is not supported")
+                require(detail.get("desired_power") == "off", "shut the VM down before resizing")
+                c.execute("UPDATE resources SET vcpus=?,memory_mib=?,disk_gib=? WHERE id=?", (max(cls["vcpus"], resource["vcpus"]), max(cls["memory_mib"], resource["memory_mib"]), cls["disk_gib"], resource["id"]))
+            if selector["action"] == "backup":
+                require(detail.get("desired_power") == "off", "shut the VM down before an offline backup")
+                c.execute("INSERT INTO backups VALUES(?,?,?,?,?,?,?,?)", (selector["operation_id"], resource["id"], resource["environment"], resource["disk_gib"], "reserved", time.time(), None,
+                          json.dumps({"source_request": original, "resource_detail": detail})))
+            self._capacity(c, policy, original, [])
+            now = time.time()
+            c.execute("INSERT INTO operations VALUES(?,?,?,?,?,?,?,?,?,?)", (selector["operation_id"], digest(request), json.dumps(request), "accepted", "reserved", uid, now, now, None, None))
+            self.audit(c, selector["operation_id"], uid, "vm-action-accepted", {"action": selector["action"], "instance_id": resource["id"]})
+            return {"id": selector["operation_id"], "state": "accepted", "duplicate": False}
+
+    def resized(self, identity, cls, class_name, revision):
+        with self.connection() as c:
+            row = c.execute("SELECT detail FROM resources WHERE id=? AND owner='lens' AND protected=0", (identity,)).fetchone()
+            require(row, "VM is protected")
+            detail = json.loads(row[0]) | {"class": class_name, "configuration_revision": revision, "filesystem_growth": "pending-guest"}
+            c.execute("UPDATE resources SET vcpus=?,memory_mib=?,disk_gib=?,detail=? WHERE id=?", (cls["vcpus"], cls["memory_mib"], cls["disk_gib"], json.dumps(detail), identity))
+
+    def detach_service(self, operation_id):
+        with self.connection() as c:
+            c.execute("UPDATE services SET previous_id=current_id,current_id=NULL WHERE current_id=?", (operation_id,))
 
     def resource_state(self, resource_id, state):
         with self.connection() as c:

@@ -120,8 +120,11 @@ def mounted_root(args, scratch):
     env = dict(os.environ, LD_LIBRARY_PATH=libs, LIBVIRT_DRIVER_DIR=str(drivers),
                LIBVIRT_CPU_MAP_DIR="/usr/share/libvirt/cpu_map", LIBVIRT_SCHEMAS_DIR="/usr/share/libvirt/schemas")
     # Re-exec so the loader sees the private library path before importing native bindings.
-    os.execve("/usr/bin/python3", ["python3", str(Path(__file__).resolve()), "--inside", "--tools", str(args.tools),
-                                "--image", str(args.image), "--scratch", str(scratch)], env)
+    argv = ["python3", str(Path(__file__).resolve()), "--inside", "--tools", str(args.tools),
+            "--image", str(args.image), "--scratch", str(scratch)]
+    if args.lens_package:
+        argv += ["--lens-package", str(args.lens_package)]
+    os.execve("/usr/bin/python3", argv, env)
 
 
 def qualify(args):
@@ -137,6 +140,13 @@ def qualify(args):
     log = (args.scratch / "libvirtd.log").open("wb")
     daemon = subprocess.Popen([str(args.tools / "root/usr/sbin/libvirtd"), "-f", "/etc/libvirt/libvirtd.conf", "-p", "/run/libvirt/qualification.pid"], stdout=log, stderr=log)
     class DiagnosedLibvirt(Libvirt):
+        artifact_transfers = 0
+
+        def guest_stream(self, resource, destination, reader):
+            if destination.startswith('/var/cache/lens/artifacts/'):
+                self.artifact_transfers += 1
+            return super().guest_stream(resource, destination, reader)
+
         def guest_exec(self, resource, argv, **kwargs):
             try:
                 return super().guest_exec(resource, argv, **kwargs)
@@ -166,20 +176,37 @@ def qualify(args):
             except Exception:
                 time.sleep(.2)
         print("private libvirt ready", flush=True)
-        guest_packages = [next(args.tools.glob(pattern)) for pattern in ("qemu-guest-agent_*.deb", "liburing2_*.deb", "ubuntu-virt_*.deb")]
+        guest_packages = [next(args.tools.glob(pattern)) for pattern in ("qemu-guest-agent_*.deb", "liburing2_*.deb", "ubuntu-virt_*.deb", "ubuntu-helper-virt-hwe_*.deb")]
         fixture_http = 'from http.server import BaseHTTPRequestHandler,HTTPServer\nclass H(BaseHTTPRequestHandler):\n def log_message(self,*a):pass\n def do_GET(self):\n  b=b"lens-local-qualified";self.send_response(200);self.send_header("Content-Length",str(len(b)));self.end_headers();self.wfile.write(b)\nHTTPServer(("0.0.0.0",8080),H).serve_forever()\n'
         fixture_unit = '[Unit]\nAfter=network.target\n[Service]\nExecStart=/usr/bin/python3 -I /opt/lens-qualification/fixture_endpoint.py\nRestart=on-failure\n[Install]\nWantedBy=multi-user.target\n'
         secret = Path("/etc/lens-infra-qualification-secret")
         secret.write_bytes(b"qualification-sentinel-not-a-customer-secret")
         secret.chmod(0o600)
         p = {"schema_version": 1, "revision": 1, "host_id": "qualification-host",
-             "capacity": {"vcpus": 4, "memory_mib": 4096, "disk_gib": 64, "host_reserve_mib": 1024},
+             "capacity": {"vcpus": 6, "memory_mib": 4096, "disk_gib": 64, "host_reserve_mib": 1024},
              "classes": {"small-v1": {"vcpus": 1, "memory_mib": 1024, "disk_gib": 8}},
              "networks": {"app": {"environment": "qualification", "libvirt_network": "li-qualification", "cidr": "10.253.242.0/24", "mode": "isolated", "managed": True}},
-             "environments": {"qualification": {"networks": ["app"], "classes": ["small-v1"], "templates": ["http-v1"], "max_instances": 4, "vcpus": 4, "memory_mib": 4096, "disk_gib": 64}},
+             "environments": {"qualification": {"networks": ["app"], "classes": ["small-v1"], "templates": ["http-v1"], "max_instances": 4, "vcpus": 6, "memory_mib": 4096, "disk_gib": 64}},
              "templates": {"http-v1": {"kind": "appliance", "image": str(args.image), "image_sha256": file_digest(args.image), "profile": "fast-web", "port": 8080, "listen_port": 18081,
                                        "health_path": "/health", "startup_seconds": 180, "drain_seconds": 1, "secrets": ["fixture"]}},
              "secrets": {"fixture": {"path": str(secret), "encrypted": False, "generation": 1, "environments": ["qualification"]}}}
+        key = Path('/var/lib/lens-infra/qualification_ed25519')
+        command('/usr/bin/ssh-keygen', '-q', '-t', 'ed25519', '-N', '', '-f', str(key))
+        public_key = Path(str(key)+'.pub').read_text().strip()
+        p['build_profiles'] = {'agents-v1': {'shell': 'dataplicity-server-v1', 'users': [
+            {'name': 'vmadmin', 'ssh_keys': [public_key], 'sudo': True},
+            {'name': 'observer', 'ssh_keys': [public_key], 'sudo': False}]}}
+        p['templates']['http-v1']['build_profile'] = 'agents-v1'
+        p['classes']['larger-v1'] = {'vcpus': 2, 'memory_mib': 1536, 'disk_gib': 12}
+        p['environments']['qualification']['classes'].append('larger-v1')
+        p['templates']['server-v1'] = p['templates']['http-v1'] | {'profile': 'private'}
+        p['environments']['qualification']['templates'].append('server-v1')
+        if args.lens_package:
+            logging = args.scratch / "approved-logging.conf"
+            logging.write_text('if $programname == "lens-build-qualification" then action(type="omfile" file="/var/log/lens-build-profile.log")\n')
+            p["build_profiles"]["agents-v1"].update({"lens": {"path": str(args.lens_package), "sha256": file_digest(args.lens_package), "version": "0.3.11"},
+                                                        "logging": {"path": str(logging), "sha256": file_digest(logging)}})
+            p["templates"]["http-v1"]["build_profile"] = "agents-v1"
         validate(p)
         provision(p, backend, apply=True)
         print("isolated environment network ready", flush=True)
@@ -203,9 +230,9 @@ def qualify(args):
                     for package in guest_packages:
                         user_data["write_files"].append({"path": "/opt/lens-qualification/" + package.name, "encoding": "b64", "permissions": "0600", "content": base64.b64encode(package.read_bytes()).decode()})
                     user_data["runcmd"] = [["dpkg", "-i", *["/opt/lens-qualification/" + package.name for package in guest_packages]], ["systemctl", "daemon-reload"],
-                                            ["systemctl", "start", "qemu-guest-agent.service"], ["systemctl", "enable", "--now", "lens-qualification-http.service"]]
+                                            ["systemctl", "start", "qemu-guest-agent.service"], ["systemctl", "enable", "--now", "lens-qualification-http.service"], *user_data.get("runcmd", [])]
                     path.write_text("#cloud-config\n" + json.dumps(user_data))
-                    run(["/usr/bin/cloud-localds", str(directory / "seed.iso"), str(path), str(directory / "meta-data")])
+                    run(["/usr/bin/cloud-localds", "--network-config", str(directory / "network-data"), str(directory / "seed.iso"), str(path), str(directory / "meta-data")])
                 return super().virsh(*argv, **kwargs)
 
         bootstrap = ImageBootstrap("/var/lib/lens-infra")
@@ -216,13 +243,25 @@ def qualify(args):
         print("qualification bootstrap VM started", flush=True)
         bootstrap.wait_agent(resource, 180)
         print("native guest agent ready", flush=True)
-        bootstrap.guest_exec(resource, ["/usr/bin/cloud-init", "status", "--wait"], timeout=180)
+        try:
+            bootstrap.guest_exec(resource, ["/usr/bin/cloud-init", "status", "--wait"], timeout=180)
+        except Exception:
+            diagnostic = bootstrap.guest_exec(resource, ["/usr/bin/python3", "-I", "-c", 'import subprocess,json; from pathlib import Path; p=subprocess.run(["/usr/bin/cloud-init","status","--long","--format=json"],capture_output=True); print(json.dumps({"code":p.returncode,"stdout":p.stdout.decode(),"stderr":p.stderr.decode()})); print(Path("/var/log/cloud-init.log").read_text()[-32000:])'])
+            (args.scratch / "cloud-init-diagnostic.txt").write_bytes(diagnostic)
+            raise
+        bootstrap.guest_exec(resource, ["/usr/sbin/userdel", "--remove", "vmadmin"])
+        bootstrap.guest_exec(resource, ["/usr/sbin/userdel", "--remove", "observer"])
+        bootstrap.guest_exec(resource, ["/usr/sbin/groupdel", "lensu-vmadmin"])
+        bootstrap.guest_exec(resource, ["/usr/sbin/groupdel", "lensu-observer"])
+        bootstrap.guest_exec(resource, ["/usr/bin/cloud-init", "clean", "--logs", "--machine-id", "--seed"])
         bootstrap.remove(resource)
         golden = args.scratch / "approved-base.qcow2"
         run(["/usr/bin/qemu-img", "convert", "-O", "qcow2", str(bootstrap.storage / resource["id"] / "root.qcow2"), str(golden)], timeout=180)
         print("offline approved image prepared", flush=True)
         p["templates"]["http-v1"]["image"] = str(golden)
         p["templates"]["http-v1"]["image_sha256"] = file_digest(golden)
+        p["templates"]["server-v1"]["image"] = str(golden)
+        p["templates"]["server-v1"]["image_sha256"] = file_digest(golden)
         store = Store("/var/lib/lens-infra")
         store.apply_policy(validate(p), 0)
         proxy = Ingress(store.root, binary=str(args.tools.parent / "haproxy"), supervised=False)
@@ -232,7 +271,7 @@ def qualify(args):
         engine.execute(req["operation_id"])
         result = store.operation(req["operation_id"])
         if result["state"] != "succeeded":
-            diagnostic = 'import subprocess,json; commands=[["systemctl","show","lens-qualification-http.service","--property=ActiveState","--property=ExecMainStatus"],["ss","-ltnp"],["ip","-j","address"],["nft","list","ruleset"],["journalctl","-u","lens-qualification-http.service","-n","20","--no-pager"]]; print(json.dumps([{"command":a,"output":subprocess.run(a,capture_output=True).stdout.decode()} for a in commands]))'
+            diagnostic = 'import subprocess,json; commands=[["cloud-init","status","--long","--format=json"],["tail","-n","100","/var/log/cloud-init-output.log"],["systemctl","show","lens-qualification-http.service","--property=ActiveState","--property=ExecMainStatus"],["ss","-ltnp"],["ip","-j","address"],["nft","list","ruleset"],["journalctl","-u","lens-qualification-http.service","-n","20","--no-pager"]]; print(json.dumps([{"command":a,"output":subprocess.run(a,capture_output=True).stdout.decode()} for a in commands]))'
             for instance in result["resources"]:
                 try:
                     data = backend.guest_exec(instance, ["/usr/bin/python3", "-c", diagnostic])
@@ -247,6 +286,18 @@ def qualify(args):
         with urllib.request.urlopen("http://127.0.0.1:18081/health", timeout=5) as response:
             assert response.read() == b"lens-local-qualified"
         print("real local VM, secret delivery and ingress qualified", flush=True)
+        if args.lens_package:
+            instance = result["resources"][0]
+            version = backend.guest_exec(instance, ["/usr/bin/lens", "--version"]).decode().strip()
+            assert "0.3.11" in version
+            backend.guest_exec(instance, ["/usr/bin/logger", "-t", "lens-build-qualification", "approved-profile-delivered"])
+            for _ in range(10):
+                log_data = backend.guest_exec(instance, ["/usr/bin/python3", "-I", "-c", 'import pathlib; p=pathlib.Path("/var/log/lens-build-profile.log"); print(p.read_text() if p.exists() else "")'])
+                if b"approved-profile-delivered" in log_data:
+                    break
+                time.sleep(1)
+            assert b"approved-profile-delivered" in log_data
+            print("versioned Lens and logging build profile qualified", flush=True)
         req2 = req | {"operation_id": "qualification-deploy-two", "release": "release-two"}
         engine.submit(req2, 0)
         engine.execute(req2["operation_id"])
@@ -254,8 +305,79 @@ def qualify(args):
         if result2["state"] != "succeeded":
             raise RuntimeError("replacement deployment failed: " + str(result2["error"]))
         assert store.operation(req["operation_id"])["resources"][0]["state"] == "removed"
+        from lens_infra import vm
+        server_request = vm.create_request({'operation_id': 'qualification-server', 'configuration_revision': 1, 'host_id': p['host_id'],
+                                           'environment': 'qualification', 'name': 'persistent-server', 'class': 'small-v1', 'template': 'server-v1', 'network': 'app', 'release': 'server-one'})
+        engine.submit(server_request, 0)
+        engine.execute(server_request['operation_id'])
+        server = store.operation(server_request['operation_id'])
+        assert server['state'] == 'succeeded', server['error']
+        instance = server['resources'][0]
+        address = instance['detail']['address']
+        ssh = ['/usr/bin/ssh', '-i', str(key), '-o', 'BatchMode=yes', '-o', 'StrictHostKeyChecking=accept-new', '-o', 'UserKnownHostsFile=/var/lib/lens-infra/qualification-known-hosts', '-l', 'vmadmin', address]
+        assert command(*ssh, 'sudo -n id -u').strip() == b'0'
+        import shlex
+        home_check = 'import os,pathlib; p=pathlib.Path.home(); assert p==pathlib.Path("/home/vmadmin"); assert p.stat().st_uid==os.getuid(); assert p.stat().st_dev==pathlib.Path("/").stat().st_dev; (p/"home-marker").write_text("preserved-private-home")'
+        command(*ssh, shlex.join(['/usr/bin/python3', '-I', '-c', home_check]))
+        observer_ssh = ssh[:-2] + ['observer', address]
+        assert command(*observer_ssh, '/usr/bin/id -un').strip() == b'observer'
+        denied = subprocess.run([*observer_ssh, 'sudo -n id -u'], capture_output=True, timeout=10)
+        assert denied.returncode != 0, 'ordinary named user obtained administrator privileges'
+        denied = subprocess.run([*observer_ssh, '/usr/bin/test -r /home/vmadmin/home-marker'], capture_output=True, timeout=10)
+        assert denied.returncode != 0, 'ordinary user could read another user home'
+        config = backend.guest_exec(instance, ['/usr/sbin/sshd', '-T']).decode()
+        assert 'permitrootlogin no' in config and 'passwordauthentication no' in config
+        shell = subprocess.run([*ssh, '-tt', 'env NO_COLOR=1 bash --login -i'], input=b'false\nprintf "COMMAND_STATUS=%s\\n" "$?"\nexit\n', capture_output=True, timeout=15)
+        assert shell.returncode == 0, 'interactive SSH shell failed'
+        assert b'[QUALIFICATION]' in shell.stdout and b'@persistent-server:' in shell.stdout and b'exit 1' in shell.stdout and b'COMMAND_STATUS=1' in shell.stdout, shell.stdout[-3000:]
+        root_shell = subprocess.run([*ssh, '-tt', 'sudo -n env NO_COLOR=1 bash --login -i'], input=b'true\nexit\n', capture_output=True, timeout=15)
+        assert b'ROOT]' in root_shell.stdout, 'elevated shell was not unmistakable'
+        status = json.loads(command(*ssh, 'dp-status --json'))
+        assert status['environment'] == 'qualification' and status['class'] == 'small-v1'
+        print('real interactive SSH prompt, root distinction and local status qualified', flush=True)
+        backend.guest_exec(instance, ['/usr/bin/python3', '-I', '-c', 'from pathlib import Path;Path("/var/lib/lens-backup-marker").write_text("preserved-customer-data")'])
+        def action(kind, suffix, **extra):
+            selector = {'operation_id': 'qualification-'+suffix, 'configuration_revision': 1, 'host_id': p['host_id'], 'instance_id': instance['id'], 'action': kind, **extra}
+            vm.submit(engine, selector, 0)
+            engine.execute(selector['operation_id'])
+            result = store.operation(selector['operation_id'])
+            assert result['state'] == 'succeeded', result['error']
+        action('shutdown', 'server-stop')
+        action('resize', 'server-resize', new_class='larger-v1')
+        action('backup', 'server-backup')
+        restore = vm.restore_request(engine, {'operation_id': 'qualification-restore', 'configuration_revision': 1, 'host_id': p['host_id'],
+                                              'backup_id': 'qualification-server-backup', 'name': 'restored-server', 'class': 'larger-v1', 'network': 'app'}, 0)
+        engine.submit(restore, 0)
+        engine.execute(restore['operation_id'])
+        restored = store.operation(restore['operation_id'])
+        assert restored['state'] == 'succeeded', restored['error']
+        instance2 = restored['resources'][0]
+        assert instance2['id'] != instance['id'] and instance2['state'] == 'stopped'
+        selector = {'operation_id': 'qualification-restore-boot', 'configuration_revision': 1, 'host_id': p['host_id'], 'instance_id': instance2['id'], 'action': 'boot'}
+        transfers_before_restore = backend.artifact_transfers
+        vm.submit(engine, selector, 0)
+        engine.execute(selector['operation_id'])
+        boot_result = store.operation(selector['operation_id'])
+        assert boot_result['state'] == 'succeeded', boot_result['error']
+        assert backend.artifact_transfers == transfers_before_restore, 'verified restored artifact cache was retransmitted'
+        marker = backend.guest_exec(instance2, ['/usr/bin/python3', '-I', '-c', 'from pathlib import Path;print(Path("/var/lib/lens-backup-marker").read_text())'])
+        assert b'preserved-customer-data' in marker
+        home_data = backend.guest_exec(instance2, ['/usr/bin/python3', '-I', '-c', 'from pathlib import Path;print(Path("/home/vmadmin/home-marker").read_text())'])
+        assert b'preserved-private-home' in home_data
+        import xml.etree.ElementTree as ET
+        definition = ET.fromstring(backend.virsh('dumpxml', instance2['id']))
+        assert definition.find('memory').text == str(1536 * 1024)
+        assert definition.find('vcpu').text == '2'
+        assert store.resource(instance2['id'])['disk_gib'] == 12
+        assert store.resource(instance2['id'])['detail']['guest_root_bytes'] >= 10 * 2**30
+        print('real administrator SSH/sudo, offline resize, backup and restore qualified', flush=True)
         assert b"qualification-sentinel-not-a-customer-secret" not in Path(store.path).read_bytes()
         evidence = {"qualified": True, "runtime": "real-kvm-libvirt", "scope": "private-mount-and-network-namespaces", "checks": ["offline-image-preparation", "approved-class", "real-guest-agent", "local-credential-delivery", "readiness", "real-ingress", "replacement", "draining", "persistent-operation-history", "plaintext-absent-from-journal"]}
+        evidence['checks'] += ['administrator-SSH-with-sudo', 'ordinary-named-user-without-sudo', 'private-local-home-preserved-by-backup', 'root-and-password-SSH-disabled', 'offline-class-and-disk-growth', 'offline-disk-backup', 'restore-to-new-stopped-VM', 'restored-data-survives-boot']
+        evidence['checks'] += ['interactive-SSH-server-prompt', 'failed-command-status-preserved', 'distinct-root-prompt', 'noninteractive-local-status-JSON']
+        evidence['checks'] += ['actual-resized-vCPU-and-memory', 'guest-filesystem-grew', 'verified-guest-artifact-cache-reused']
+        if args.lens_package:
+            evidence["checks"] += ["pinned-Lens-build-package", "versioned-logging-config", "actual-guest-log-delivery"]
         (args.scratch / "evidence.json").write_text(json.dumps(evidence, indent=2))
         print(json.dumps(evidence), flush=True)
     finally:
@@ -280,6 +402,7 @@ def main():
     parser.add_argument("--tools", required=True, type=Path)
     parser.add_argument("--image", required=True, type=Path)
     parser.add_argument("--scratch", type=Path)
+    parser.add_argument("--lens-package", type=Path)
     parser.add_argument("--inside", action="store_true")
     args = parser.parse_args()
     if sys.platform != "linux" or os.geteuid() != 0:

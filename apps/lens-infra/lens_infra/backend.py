@@ -99,6 +99,12 @@ def parse_domain(xml, state="unknown"):
     return result
 
 
+def mac_address(identity):
+    # A locally administered unicast MAC follows the VM UUID across placement.
+    value = hashlib.sha256(uuid.UUID(identity).bytes).digest()[:5]
+    return "02:" + ":".join(f"{part:02x}" for part in value)
+
+
 class Libvirt:
     def __init__(self, directory, uri="qemu:///system", storage_directory="/var/lib/libvirt/images/lens-infra"):
         require(uri == "qemu:///system" or uri.startswith("qemu+unix:///system?socket=/"), "only local libvirt connections are supported")
@@ -145,7 +151,7 @@ class Libvirt:
         from .runner_provider import canonical_inventory
         return canonical_inventory(policy, resources)
 
-    def prepare(self, template):
+    def prepare(self, template, profile=None):
         image = self.artifact(template["image"], template["image_sha256"])
         info = json.loads(run(["/usr/bin/qemu-img", "info", "--output=json", "--backing-chain", str(image)]))
         require(len(info) == 1 and not info[0].get("backing-filename"), "approved VM images must be self-contained without backing files")
@@ -157,6 +163,10 @@ class Libvirt:
         for container in template.get("containers", []):
             if container.get("archive"):
                 self.artifact(container["archive"], container["archive_sha256"])
+        for component in ("lens", "logging"):
+            artifact = (profile or {}).get(component)
+            if artifact:
+                self.artifact(artifact["path"], artifact["sha256"])
         require(shutil.which("qemu-img") and shutil.which("cloud-localds"), "qemu-img and cloud-localds are required")
         return {"vm_image": "verified", "artifacts": "verified"}
 
@@ -189,7 +199,7 @@ class Libvirt:
                     pending.unlink()
         return destination
 
-    def verify_network(self, network):
+    def verify_network(self, network, policy=None):
         data = self.virsh("net-dumpxml", network["libvirt_network"], check=False)
         require(data is not None, "network is absent; a local administrator must provision it first")
         x = ET.fromstring(data)
@@ -205,8 +215,15 @@ class Libvirt:
             require(bridge is not None and bridge.get("name") == network["bridge"], "VLAN bridge mismatch")
             tag = x.find("vlan/tag")
             require(tag is not None and tag.get("id") == str(network["vlan"]), "VLAN tag mismatch")
+        elif network["mode"] == "vxlan":
+            require(policy and policy.get("fabric"), "VXLAN verification requires its fabric policy")
+            forward = x.find("forward")
+            gateway = policy["host_id"] == policy["fabric"]["gateway_host"]
+            require(forward is not None and forward.get("mode") == ("nat" if gateway else "bridge"), "overlay gateway/bridge mode mismatch")
+            mtu = x.find("mtu")
+            require(mtu is not None and mtu.get("size") == str(policy["fabric"].get("mtu", 1350)), "overlay network MTU mismatch")
         subnet = ipaddress.ip_network(network["cidr"])
-        if network["mode"] != "vlan":
+        if network["mode"] != "vlan" and not (network["mode"] == "vxlan" and policy["host_id"] != policy["fabric"]["gateway_host"]):
             ip = x.find("ip")
             require(ip is not None, "network address unavailable")
             prefix = ip.get("netmask", ip.get("prefix"))
@@ -216,6 +233,9 @@ class Libvirt:
     def assert_isolation(self, policy):
         from .network import verify_firewall
         verify_firewall(policy)
+        from .overlay import verify
+        for key in policy["networks"]:
+            verify(policy, key)
 
     def check_host_capacity(self, policy, resources):
         total = int(next(line.split()[1] for line in Path("/proc/meminfo").read_text().splitlines() if line.startswith("MemTotal:"))) // 1024
@@ -227,16 +247,22 @@ class Libvirt:
         require(sum(r["memory_mib"] for r in resources) + reserve <= available, "insufficient currently available memory for the approved build and host reserve")
         storage = self.storage if self.storage.exists() else self.storage.parent
         require(shutil.disk_usage(storage).free >= (sum(r["disk_gib"] for r in resources) + 2) * 2**30, "insufficient physical free storage including build overhead")
+        pool = policy.get("migration_pool")
+        if pool:
+            capabilities = ET.fromstring(self.virsh("domcapabilities", "--virttype", "kvm", "--arch", "x86_64", "--machine", pool["machine"]))
+            models = capabilities.findall("cpu/mode[@name='custom']/model")
+            require(any(m.text == pool["cpu_model"] and m.get("usable") == "yes" for m in models), "host cannot provide the approved migration CPU model")
 
-    def create(self, resource, request, policy):
+    def create(self, resource, request, policy, start=True):
         # The caller's resource UUID was reserved transactionally before any VM exists.
         t = policy["templates"][request["template"]]
         net = policy["networks"][request["network"]]
-        self.verify_network(net)
+        self.verify_network(net, policy)
         existing = self.virsh("dumpxml", resource["id"], check=False)
         if existing:
             self.assert_owned(resource)
-            self.ensure_running(resource)
+            if start:
+                self.ensure_running(resource)
             return
         self.storage.mkdir(parents=True, mode=0o711, exist_ok=True)
         directory = self.storage / resource["id"]
@@ -250,11 +276,32 @@ class Libvirt:
         user_data = directory / "user-data"
         user_data.write_text("#cloud-config\n" + json.dumps({"preserve_hostname": False, "hostname": resource["name"],
             "ssh_pwauth": False, "disable_root": True,
-            "write_files": [{"path": "/etc/lens-release.json", "permissions": "0644", "content": json.dumps({"release": request["release"], "configuration_revision": policy["revision"]})}]}))
+            "write_files": [{"path": "/etc/lens-release.json", "permissions": "0644", "content": json.dumps({"release": request["release"], "configuration_revision": policy["revision"],
+                "host_id": policy["host_id"], "environment": request["environment"], "network": request["network"], "class": request["class"], "template": request["template"], "build_profile": t.get("build_profile")})}]}))
         metadata = directory / "meta-data"
         metadata.write_text(json.dumps({"instance-id": resource["id"], "local-hostname": resource["name"]}))
+        profile = policy.get("build_profiles", {}).get(t.get("build_profile"), {})
+        users = profile.get("users", [])
+        if profile.get("ssh_keys"):
+            users = [{"name": "vmadmin", "ssh_keys": profile["ssh_keys"], "sudo": True}]
+        if users:
+            config = json.loads(user_data.read_text().split("\n", 1)[1])
+            if not request.get("restore_backup"):
+                config["groups"] = ["lensu-" + u["name"] for u in users]
+            config["users"] = [{"name": u["name"], "primary_group": "lensu-" + u["name"], **({"groups": ["sudo"]} if u.get("sudo") else {}),
+                                "homedir": "/home/" + u["name"], "shell": "/bin/bash", "lock_passwd": True,
+                                "sudo": ["ALL=(ALL) NOPASSWD:ALL"] if u.get("sudo") else None, "ssh_authorized_keys": u["ssh_keys"]} for u in users]
+            config["write_files"].append({"path": "/etc/ssh/sshd_config.d/10-lens-admin.conf", "permissions": "0644",
+                                           "content": "PermitRootLogin no\nPasswordAuthentication no\nKbdInteractiveAuthentication no\n"})
+            config["runcmd"] = [["/usr/bin/chmod", "0700", "/home/" + u["name"]] for u in users]
+            config["runcmd"].append(["/usr/bin/systemctl", "try-reload-or-restart", "ssh.service"])
+            user_data.write_text("#cloud-config\n" + json.dumps(config))
         seed = directory / "seed.iso"
-        run(["/usr/bin/cloud-localds", str(seed), str(user_data), str(metadata)])
+        mac = mac_address(resource["id"])
+        network_data = directory / "network-data"
+        network_data.write_text(json.dumps({"version": 2, "ethernets": {"lens-primary": {"match": {"macaddress": mac},
+            "dhcp4": True, "dhcp6": False, "accept-ra": False, "dhcp-identifier": "mac", "mtu": policy.get("fabric", {}).get("mtu", 1350) if net["mode"] == "vxlan" else 1500}}}))
+        run(["/usr/bin/cloud-localds", "--network-config", str(network_data), str(seed), str(user_data), str(metadata)])
         domain = ET.Element("domain", {"type": "kvm"})
         for key, value in [("name", resource["name"]), ("uuid", resource["id"])]:
             ET.SubElement(domain, key).text = value
@@ -263,12 +310,16 @@ class Libvirt:
         md = ET.SubElement(domain, "metadata")
         ET.SubElement(md, f"{{{NS}}}instance", {"operation": request["operation_id"], "host": policy["host_id"], "environment": request["environment"], "service": request["service"]})
         os_node = ET.SubElement(domain, "os")
-        ET.SubElement(os_node, "type", {"arch": "x86_64", "machine": "q35"}).text = "hvm"
+        ET.SubElement(os_node, "type", {"arch": "x86_64", "machine": policy.get("migration_pool", {}).get("machine", "q35")}).text = "hvm"
         ET.SubElement(os_node, "boot", {"dev": "hd"})
         features = ET.SubElement(domain, "features")
         ET.SubElement(features, "acpi")
         ET.SubElement(features, "apic")
-        ET.SubElement(domain, "cpu", {"mode": "host-model"})
+        if policy.get("migration_pool"):
+            cpu = ET.SubElement(domain, "cpu", {"mode": "custom", "match": "exact", "check": "full"})
+            ET.SubElement(cpu, "model", {"fallback": "forbid"}).text = policy["migration_pool"]["cpu_model"]
+        else:
+            ET.SubElement(domain, "cpu", {"mode": "host-model"})
         # qemu is unprivileged and the dedicated storage tree is accessible via its security driver.
         devices = ET.SubElement(domain, "devices")
         for source, target, kind in [(disk, "vda", "disk"), (seed, "sda", "cdrom")]:
@@ -279,6 +330,7 @@ class Libvirt:
             if kind == "cdrom":
                 ET.SubElement(d, "readonly")
         nic = ET.SubElement(devices, "interface", {"type": "network"})
+        ET.SubElement(nic, "mac", {"address": mac})
         ET.SubElement(nic, "source", {"network": net["libvirt_network"]})
         ET.SubElement(nic, "model", {"type": "virtio"})
         ET.SubElement(nic, "rom", {"enabled": "no"})
@@ -291,7 +343,8 @@ class Libvirt:
         definition.write_bytes(ET.tostring(domain))
         self.virsh("define", str(definition))
         self.assert_owned(resource)
-        self.virsh("start", resource["id"], timeout=60)
+        if start:
+            self.virsh("start", resource["id"], timeout=60)
 
     def assert_owned(self, resource):
         require(resource.get("owner", "lens") == "lens" and not resource.get("protected"), "existing resources are protected")
@@ -309,6 +362,64 @@ class Libvirt:
         else:
             require(state == "running", "managed VM needs explicit recovery from its current state")
 
+    def shutdown(self, resource, seconds=120):
+        self.assert_owned(resource)
+        if self.virsh("domstate", resource["id"]).decode().strip() == "shut off":
+            return
+        self.virsh("shutdown", resource["id"])
+        deadline = time.monotonic() + seconds
+        while time.monotonic() < deadline:
+            if self.virsh("domstate", resource["id"]).decode().strip() == "shut off":
+                return
+            time.sleep(1)
+        raise Rejected("graceful shutdown timed out; no force was attempted")
+
+    def require_stopped(self, resource):
+        self.assert_owned(resource)
+        require(self.virsh("domstate", resource["id"]).decode().strip() == "shut off", "VM must be shut down for this disk operation")
+
+    def resize(self, resource, cls):
+        self.require_stopped(resource)
+        disk = self.storage / resource["id"] / "root.qcow2"
+        info = json.loads(run(["/usr/bin/qemu-img", "info", "--output=json", str(disk)]))
+        require(cls["disk_gib"] * 2**30 >= info["virtual-size"], "disk shrinking is not supported")
+        if cls["disk_gib"] * 2**30 > info["virtual-size"]:
+            run(["/usr/bin/qemu-img", "resize", str(disk), str(cls["disk_gib"]) + "G"])
+        xml = ET.fromstring(self.virsh("dumpxml", resource["id"], "--inactive"))
+        xml.find("memory").set("unit", "MiB")
+        xml.find("memory").text = str(cls["memory_mib"])
+        current = xml.find("currentMemory")
+        if current is not None:
+            current.set("unit", "MiB")
+            current.text = str(cls["memory_mib"])
+        xml.find("vcpu").text = str(cls["vcpus"])
+        cpu = xml.find("cpu")
+        if cpu is not None and cpu.find("topology") is not None:
+            cpu.remove(cpu.find("topology"))
+        if xml.find("vcpus") is not None:
+            xml.remove(xml.find("vcpus"))
+        path = self.storage / resource["id"] / "resize.xml"
+        path.write_bytes(ET.tostring(xml))
+        self.virsh("define", str(path))
+        self.assert_owned(resource)
+
+    def backup(self, resource, destination):
+        self.require_stopped(resource)
+        destination = Path(destination)
+        destination.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+        require(not destination.exists(), "backup destination already exists; inspect the interrupted operation")
+        require(shutil.disk_usage(destination.parent).free >= (resource["disk_gib"] + 2) * 2**30, "insufficient free storage for a complete backup")
+        source = self.storage / resource["id"] / "root.qcow2"
+        pending = destination.with_suffix(".pending")
+        require(not pending.exists(), "interrupted backup remains; inspect it locally before retrying")
+        run(["/usr/bin/qemu-img", "convert", "-f", "qcow2", "-O", "qcow2", str(source), str(pending)], timeout=1800)
+        os.chmod(pending, 0o600)
+        run(["/usr/bin/qemu-img", "check", str(pending)], timeout=1800)
+        with pending.open("rb") as f:
+            os.fsync(f.fileno())
+        os.replace(pending, destination)
+        return file_digest(destination)
+
     def guest(self, resource, command):
         self.assert_owned(resource)
         result = native_agent(self.uri, resource["id"], json.dumps(command))
@@ -321,6 +432,17 @@ class Libvirt:
 
     def guest_artifact(self, resource, destination, source, checksum):
         artifact = self.artifact(source, checksum)
+        # Reuse verified guest-local bytes on reboot/restore instead of retransmitting
+        # a large package. This cache never holds decrypted credentials.
+        cached = self.guest_exec(resource, ["/usr/bin/python3", "-I", "-c",
+            'import hashlib,pathlib,sys; p=pathlib.Path(sys.argv[1]); ok=False\n'
+            'try:\n'
+            ' if p.is_file() and not p.is_symlink():\n'
+            '  with p.open("rb") as f: ok=hashlib.file_digest(f,"sha256").hexdigest()==sys.argv[2]\n'
+            'except OSError: pass\n'
+            'print("verified" if ok else "missing")', destination, checksum])
+        if cached.strip() == b"verified":
+            return
         with artifact.open("rb") as f:
             self.guest_stream(resource, destination, f)
 
@@ -328,7 +450,9 @@ class Libvirt:
         require(destination.startswith(("/run/lens/", "/opt/lens/", "/var/cache/lens/artifacts/")), "invalid guest delivery path")
         handle = self.guest(resource, {"execute": "guest-file-open", "arguments": {"path": destination, "mode": "wb"}})
         try:
-            while chunk := reader.read(256 * 1024):
+            # Keep JSON frames small enough for guest-agent/virtio channel buffers.
+            # A timed-out write is never retried, because its completion is unknown.
+            while chunk := reader.read(8 * 1024):
                 result = self.guest(resource, {"execute": "guest-file-write", "arguments": {"handle": handle, "buf-b64": base64.b64encode(chunk).decode()}})
                 require(result.get("count") == len(chunk), "guest credential/artifact delivery was incomplete")
         finally:
@@ -393,5 +517,5 @@ def allocations(policy, request):
     for index in range(request["instances"]):
         identity = str(uuid.uuid5(uuid.NAMESPACE_URL, "/".join([policy["host_id"], request["operation_id"], str(index)])))
         result.append({"id": identity, "name": "li-" + identity.replace("-", "")[:24], "owner": "lens", "protected": 0,
-                       "operation_id": request["operation_id"], **cls})
+                       "operation_id": request["operation_id"], "mac": mac_address(identity), **cls})
     return result

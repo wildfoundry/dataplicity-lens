@@ -53,11 +53,14 @@ class Backend:
         self.removed = []
         self.files = {}
         self.fail = False
+        self.power = {}
+        self.booted = []
+        self.resized = []
 
     def inventory(self, policy=None):
         return self.observed
 
-    def verify_network(self, network):
+    def verify_network(self, network, policy=None):
         return {"verified": True}
 
     def assert_isolation(self, policy):
@@ -66,25 +69,56 @@ class Backend:
     def check_host_capacity(self, policy, resources):
         pass
 
-    def prepare(self, template):
+    def prepare(self, template, profile=None):
         return {"verified": True}
 
-    def create(self, resource, request, policy):
+    def create(self, resource, request, policy, start=True):
         if self.fail:
             raise Rejected("fixture VM failure")
         self.created.append(resource["id"])
+        self.power[resource["id"]] = start
 
     def wait_agent(self, *args):
         pass
 
-    def ensure_running(self, *args):
-        pass
+    def ensure_running(self, resource):
+        self.power[resource["id"]] = True
+        self.booted.append(resource["id"])
+
+    def assert_owned(self, resource):
+        if resource["owner"] != "lens" or resource["protected"]:
+            raise Rejected("protected")
+
+    def shutdown(self, resource):
+        self.assert_owned(resource)
+        self.power[resource["id"]] = False
+
+    def require_stopped(self, resource):
+        self.assert_owned(resource)
+        if self.power.get(resource["id"], False):
+            raise Rejected("VM must be shut down")
+
+    def resize(self, resource, cls):
+        self.require_stopped(resource)
+        self.resized.append((resource["id"], cls))
+
+    def backup(self, resource, destination):
+        self.require_stopped(resource)
+        destination.parent.mkdir(parents=True)
+        destination.write_bytes(b"offline-disk-fixture")
+        return hashlib.sha256(destination.read_bytes()).hexdigest()
 
     def guest_exec(self, *args, **kwargs):
         return b'{"healthy":true,"busy":false}'
 
     def guest_file(self, resource, destination, data):
         self.files[(resource["id"], destination)] = data
+
+    def guest_artifact(self, resource, destination, source, checksum):
+        data = Path(source).read_bytes()
+        if hashlib.sha256(data).hexdigest() != checksum:
+            raise Rejected("artifact digest mismatch")
+        self.guest_file(resource, destination, data)
 
     def address(self, *args):
         return "10.253.240.10"
@@ -495,6 +529,32 @@ class InfrastructureTests(unittest.TestCase):
         with patch.object(backend, "virsh", return_value=xml.replace("/test/root.qcow2", "/another/root.qcow2").encode()):
             with self.assertRaisesRegex(Rejected, "storage binding"):
                 backend.assert_owned(resource)
+
+    def test_versioned_build_profile_is_planned_and_delivered_from_local_artifacts(self):
+        package = self.root / "lens.deb"
+        package.write_bytes(b"verified-package-fixture")
+        logging = self.root / "logging.conf"
+        logging.write_bytes(b"# approved logging fixture\n")
+        p = copy.deepcopy(self.policy)
+        p["revision"] = 2
+        p["build_profiles"] = {"agents-v1": {"lens": {"path": str(package), "sha256": hashlib.sha256(package.read_bytes()).hexdigest(), "version": "0.3.11"}, "logging": {"path": str(logging), "sha256": hashlib.sha256(logging.read_bytes()).hexdigest()}}}
+        p["templates"]["agents-web-v1"] = p["templates"]["web-v1"] | {"build_profile": "agents-v1"}
+        p["environments"]["production"]["templates"].append("agents-web-v1")
+        self.store.apply_policy(validate(p), 0)
+        req = request(configuration_revision=2, template="agents-web-v1")
+        plan = self.engine.plan(req, 1001)
+        self.assertEqual(plan["build_profile"]["lens_version"], "0.3.11")
+        self.engine.submit(req, 1001)
+        with patch.object(self.engine, "health", return_value=True), patch("lens_infra.engine.time.sleep"):
+            self.engine.execute("deploy-one")
+        self.assertEqual(self.store.operation("deploy-one")["state"], "succeeded")
+        manifest = next(json.loads(v) for (_, path), v in self.backend.files.items() if path == "/run/lens/manifest.json")
+        self.assertEqual(manifest["build_profile"]["name"], "agents-v1")
+        self.assertEqual(manifest["build_profile"]["lens"]["path"], "/var/cache/lens/artifacts/lens.deb")
+        p["revision"] = 3
+        p["build_profiles"]["agents-v1"]["lens"]["version"] = "0.3.12"
+        with self.assertRaisesRegex(Rejected, "immutable"):
+            self.store.apply_policy(p, 0)
 
 
 if __name__ == "__main__":

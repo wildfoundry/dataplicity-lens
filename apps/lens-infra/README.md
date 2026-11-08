@@ -25,9 +25,15 @@ the Linear project are qualified.
 - Plan/apply scaling, drain and fresh-build rollback guarded by the expected current release.
 - Local health observation, canary ingress and protocol checks, with independent ingress supervision.
 - Locally administered environment network creation and scoped nftables rules.
+- Persistent VM builds, graceful power controls, offline class/disk growth and disk backup/restore.
+- Versioned Lens/logging build artifacts and named SSH users with private local home directories.
+- Explicit software VXLAN fabric membership and pinned CPU/machine compatibility pools.
+- An opt-in adapter for the existing custom Wildfoundry runner controller, with durable per-slot hold/resume.
 
-Existing resources are inventory-only: the extension does not resize, stop, delete or
-reconfigure them. It has no operation to delete host containers. VM destruction checks
+Existing resources remain protected inventory unless a local administrator explicitly
+adopts a supported runner slot. The runner adapter has its own job-aware hold/resume path;
+ordinary VM controls cannot resize or delete those runners. There is no operation to delete
+host containers. VM destruction checks
 the persistent reservation, UUID and Lens ownership metadata before acting. Retained disks
 are kept for recovery and must continue to count against storage capacity.
 
@@ -75,9 +81,10 @@ for local operation and are not prerequisites for the first qualification slice.
 
 ## Qualification still required before production use
 
-This extension is not yet a complete production scheduler or a replacement for existing
-runner management. Hardware reboot/failure qualification, real GitHub registration/job
-completion, certificate rotation, VLAN/cross-host isolation, redundant ingress, multi-host
+This extension is not yet a complete production scheduler. The selected runner controller
+is adopted incrementally, without replacing other active slots. Hardware reboot/failure
+qualification, real GitHub registration/job completion, certificate rotation, physical
+cross-host isolation, redundant ingress, multi-host
 coordination and the internal pilot must meet their Linear acceptance gates. A unit-test
 fake backend is never evidence of real VM qualification. Review the runbook for the exact
 boundaries: loopback ingress, explicit host placement, replacement scaling and retained disks.

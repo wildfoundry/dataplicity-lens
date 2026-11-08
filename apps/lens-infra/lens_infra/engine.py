@@ -33,24 +33,44 @@ class Engine:
         self.store.observe(observed)
         return self.store.inventory()
 
+    def template(self, policy, request):
+        template = copy.deepcopy(policy["templates"][request["template"]])
+        if request.get("mode") == "server":
+            template["profile"] = "private"
+        if request.get("restore_backup"):
+            backup = self.store.backup(request["restore_backup"])
+            require(backup["state"] == "ready" and backup["environment"] == request["environment"], "backup is not ready or belongs to another environment")
+            require(backup["detail"]["source_request"]["template"] == request["template"], "restore requires the original approved template")
+            require(policy["classes"][request["class"]]["disk_gib"] >= backup["disk_gib"], "restore class is too small for the backup disk")
+            template.update(image=str(self.store.root / "backups" / backup["id"] / "root.qcow2"), image_sha256=backup["sha256"], image_format="qcow2")
+        return template
+
     def plan(self, request, uid):
         p = self.policy()
         deployment(p, request)
         authorize(p, uid, "deploy", request["environment"])
+        if request.get("restore_backup"):
+            authorize(p, uid, "recover", request["environment"])
+        self.template(p, request)
         self.inventory()
         self.backend.assert_isolation(p)
         resources = allocations(p, request)
         self.backend.check_host_capacity(p, resources)
         self.store.check_capacity(p, request, resources)
-        self.backend.verify_network(p["networks"][request["network"]])
+        self.backend.verify_network(p["networks"][request["network"]], p)
+        t = self.template(p, request)
+        profile = p.get("build_profiles", {}).get(t.get("build_profile"), {})
         return {"configuration_revision": p["revision"], "request": request, "resources": resources,
-                "strategy": "replacement", "secrets": p["templates"][request["template"]].get("secrets", [])}
+                "strategy": "vm-create" if request.get("mode") == "server" else "replacement", "secrets": t.get("secrets", []),
+                "migration_pool": p.get("migration_pool"),
+                "build_profile": {"name": t.get("build_profile"), "lens_version": profile.get("lens", {}).get("version"), "logging_sha256": profile.get("logging", {}).get("sha256")}}
 
     def prepare(self, request, uid):
         plan = self.plan(request, uid)
         p = self.policy()
-        template = p["templates"][request["template"]]
-        artifacts = self.backend.prepare(template)
+        template = self.template(p, request)
+        profile = p.get("build_profiles", {}).get(template.get("build_profile"))
+        artifacts = self.backend.prepare(template, profile)
         for secret in template.get("secrets", []):
             # Check availability without decrypting merely to plan.
             binding = p["secrets"][secret]
@@ -77,6 +97,8 @@ class Engine:
         p = self.policy()
         deployment(p, request)
         authorize(p, uid, "deploy", request["environment"])
+        if request.get("restore_backup"):
+            authorize(p, uid, "recover", request["environment"])
         # Idempotent replays must not fail because the original operation reserved capacity.
         try:
             existing = self.store.operation(request["operation_id"])
@@ -113,7 +135,7 @@ class Engine:
         return self.plan(request, uid) if plan else self.submit(request, uid, expected_previous=selector["from_operation_id"])
 
     def deliver(self, resource, request, policy):
-        t = policy["templates"][request["template"]]
+        t = self.template(policy, request)
         self.backend.guest_exec(resource, ["/usr/bin/install", "-d", "-m", "0700", "/run/lens", "/run/lens/secrets", "/var/cache/lens/artifacts", "/opt/lens"])
         generations = {}
         for secret in t.get("secrets", []):
@@ -130,8 +152,24 @@ class Engine:
             generations[secret] = binding["generation"]
         manifest = {"schema_version": 1, "release": request["release"], "kind": t["kind"],
                     "configuration_revision": policy["revision"], "service": request["service"],
-                    "instance": resource["name"], "containers": copy.deepcopy(t.get("containers", [])), "secret_generations": generations,
+                    "instance": resource["name"], "instance_id": resource["id"], "containers": copy.deepcopy(t.get("containers", [])), "secret_generations": generations,
                     "runner": copy.deepcopy(t.get("runner")), "allowed_port": t.get("port")}
+        manifest.update(host_id=policy["host_id"], environment=request["environment"], network=request["network"],
+                        **{"class": resource["detail"].get("class", request["class"])},
+                        instance_configuration_revision=resource["detail"].get("configuration_revision", policy["revision"]))
+        if t.get("build_profile"):
+            profile = copy.deepcopy(policy["build_profiles"][t["build_profile"]])
+            for component, artifact in profile.items():
+                if component in ("ssh_keys", "users", "shell"):
+                    continue
+                destination = "/var/cache/lens/artifacts/" + ("lens.deb" if component == "lens" else "logging.conf")
+                self.backend.guest_artifact(resource, destination, artifact["path"], artifact["sha256"])
+                artifact["path"] = destination
+            manifest["build_profile"] = profile | {"name": t["build_profile"]}
+            manifest["ssh_enabled"] = bool(profile.get("ssh_keys") or profile.get("users"))
+            if profile.get("shell"):
+                for asset in ("server-shell.bash", "server_status.py"):
+                    self.backend.guest_file(resource, "/opt/lens/" + asset, Path(__file__).with_name(asset).read_bytes())
         for container in manifest["containers"]:
             if container.get("archive"):
                 destination = "/var/cache/lens/artifacts/" + container["name"] + ".tar"
@@ -219,9 +257,13 @@ class Engine:
         operation = self.store.operation(operation_id)
         if operation["state"] in ("succeeded", "failed", "cancelled"):
             return
+        if operation["request"].get("kind") == "vm-action":
+            from .vm import execute
+            return execute(self, operation)
         request = operation["request"]
         p = self.store.policy_at(request["configuration_revision"])
-        t = p["templates"][request["template"]]
+        t = self.template(p, request)
+        p["templates"][request["template"]] = t
         resources = operation["resources"]
         published = False
         promoted = False
@@ -236,13 +278,19 @@ class Engine:
                 with admission_lock(p):
                     self.inventory()
                     self.store.check_capacity(p, request, [])
-                    self.backend.create(resource, request, p)
+                    self.backend.create(resource, request, p, start=request.get("start", True))
+                if request.get("mode") == "server" and not request.get("start", True):
+                    self.store.resource_detail(resource["id"], resource["detail"] | {"desired_power": "off", "template": request["template"], "release": request["release"], "build_profile": t.get("build_profile")})
+                    self.store.resource_state(resource["id"], "stopped")
+                    continue
                 self.store.resource_state(resource["id"], "starting")
                 self.backend.wait_agent(resource, t.get("startup_seconds", 180))
+                self.backend.guest_exec(resource, ["/usr/bin/cloud-init", "status", "--wait"], timeout=t.get("startup_seconds", 180))
                 generations = self.deliver(resource, request, p)
                 address = self.backend.address(resource, p["networks"][request["network"]])
                 detail = resource["detail"] | {"address": address, "secret_generations": generations,
-                                               "release": request["release"], "template": request["template"]}
+                                               "release": request["release"], "template": request["template"], "build_profile": t.get("build_profile"), "migration_pool": p.get("migration_pool")}
+                detail["provisioned"] = True
                 self.store.resource_detail(resource["id"], detail)
                 self.wait_ready(resource, address, t)
                 self.store.resource_state(resource["id"], "ready")
@@ -345,10 +393,12 @@ class Engine:
             request = operation["request"]
             self.store.check_capacity(current, request, [])
             p = self.store.policy_at(request["configuration_revision"])
-            t = p["templates"][request["template"]]
+            t = self.template(p, request)
             backends = []
             for resource in operation["resources"]:
                 if resource["state"] == "removed":
+                    continue
+                if resource["detail"].get("desired_power") == "off":
                     continue
                 self.backend.ensure_running(resource)
                 self.backend.wait_agent(resource, t.get("startup_seconds", 180))
@@ -373,11 +423,13 @@ class Engine:
             operation = self.store.operation(operation_id)
             req = operation["request"]
             p = self.store.policy_at(req["configuration_revision"])
-            template = p["templates"][req["template"]]
+            template = self.template(p, req)
             healthy = []
             changed = False
             for resource in operation["resources"]:
                 if resource["state"] == "removed":
+                    continue
+                if resource["detail"].get("desired_power") == "off":
                     continue
                 detail = resource["detail"]
                 address = detail.get("address")

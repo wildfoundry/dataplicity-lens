@@ -8,6 +8,7 @@ import json
 import re
 import tomllib
 import uuid
+import base64
 from pathlib import Path
 
 
@@ -52,6 +53,18 @@ def sha256(value):
     return value
 
 
+def public_key(value):
+    require(isinstance(value, str) and len(value) <= 16384 and "\n" not in value, "invalid SSH public key")
+    fields = value.split()
+    require(len(fields) >= 2 and fields[0] in ("ssh-ed25519", "ssh-rsa", "ecdsa-sha2-nistp256"), "unsupported SSH public key format")
+    try:
+        blob = base64.b64decode(fields[1], validate=True)
+        length = int.from_bytes(blob[:4], "big")
+        require(blob[4:4 + length].decode() == fields[0] and len(blob) > 4 + length + 16, "SSH public key does not match its declared type")
+    except (ValueError, UnicodeError):
+        raise Rejected("invalid SSH public key encoding") from None
+
+
 def load(path):
     raw = Path(path).read_bytes()
     require(len(raw) <= 1024 * 1024, "policy exceeds size limit")
@@ -60,10 +73,36 @@ def load(path):
 
 def validate(p):
     keys(p, ["schema_version", "revision", "host_id", "capacity", "classes", "networks",
-             "environments", "templates", "principals", "secrets", "certificates", "protected_resources", "parked_resources", "runner_controller"], "policy")
+             "environments", "templates", "principals", "secrets", "certificates", "protected_resources", "parked_resources", "runner_controller", "build_profiles", "migration_pool", "fabric"], "policy")
     require(p.get("schema_version") == 1, "unsupported policy schema")
     integer(p.get("revision"), 1, 2**53, "policy revision")
     name(p.get("host_id"))
+    if p.get("fabric"):
+        fabric = p["fabric"]
+        keys(fabric, ["name", "members", "gateway_host", "mtu", "protected_cidrs"], "VXLAN fabric")
+        name(fabric.get("name"))
+        integer(fabric.get("mtu", 1350), 1280, 1450, "overlay MTU")
+        require(isinstance(fabric.get("members"), list) and 2 <= len(fabric["members"]) <= 32, "VXLAN fabric requires 2 through 32 explicit members")
+        hosts, endpoints, nodes = set(), set(), set()
+        require(isinstance(fabric.get("protected_cidrs"), list) and fabric["protected_cidrs"], "fabric management/transport networks must be explicitly protected")
+        protected = [ipaddress.ip_network(v, strict=True) for v in fabric["protected_cidrs"]]
+        require(all(v.version == 4 for v in protected), "v1 protected fabric networks must be IPv4")
+        for member in fabric["members"]:
+            keys(member, ["host_id", "endpoint", "node_id"], "fabric member")
+            name(member.get("host_id"))
+            address = ipaddress.ip_address(member.get("endpoint", ""))
+            require(address.version == 4 and address.is_private and not address.is_multicast and not address.is_loopback and not address.is_unspecified, "fabric endpoints must be private unicast IPv4 addresses; use an encrypted underlay between sites")
+            require(any(address in subnet for subnet in protected), "fabric endpoint must belong to a protected management/transport network")
+            integer(member.get("node_id"), 1, 32, "fabric node ID")
+            require(member["host_id"] not in hosts and str(address) not in endpoints and member["node_id"] not in nodes, "fabric identities, endpoints and node IDs must be unique")
+            hosts.add(member["host_id"]); endpoints.add(str(address)); nodes.add(member["node_id"])
+        require(p["host_id"] in hosts and fabric.get("gateway_host") in hosts, "host and gateway must be explicit fabric members")
+    if p.get("migration_pool"):
+        pool = p["migration_pool"]
+        keys(pool, ["name", "cpu_model", "machine"], "migration pool")
+        name(pool.get("name"))
+        require(isinstance(pool.get("cpu_model"), str) and re.fullmatch(r"[A-Za-z0-9_.-]{1,64}", pool["cpu_model"]), "invalid migration CPU model")
+        require(isinstance(pool.get("machine"), str) and re.fullmatch(r"pc-q35-[0-9]+\.[0-9]+", pool["machine"]), "migration pools require a pinned q35 machine version")
     c = p.get("capacity", {})
     keys(c, ["vcpus", "memory_mib", "disk_gib", "host_reserve_mib", "cpu_overcommit_percent"], "capacity")
     for key, low in [("vcpus", 1), ("memory_mib", 128), ("disk_gib", 1)]:
@@ -97,18 +136,19 @@ def validate(p):
     libvirt_names = set()
     used_subnets = []
     used_bridges = set()
+    used_vnis = set()
     for n, net in nets.items():
         name(n)
-        keys(net, ["environment", "libvirt_network", "cidr", "mode", "bridge", "vlan", "managed", "egress"], "network")
+        keys(net, ["environment", "libvirt_network", "cidr", "mode", "bridge", "vlan", "managed", "egress", "vni"], "network")
         name(net.get("environment"))
         name(net.get("libvirt_network"))
         require(net["libvirt_network"] not in libvirt_names, "a network cannot belong to two environments")
         libvirt_names.add(net["libvirt_network"])
         subnet = ipaddress.ip_network(net.get("cidr", ""), strict=True)
-        require(subnet.version == 4 and 24 <= subnet.prefixlen <= 28, "v1 networks require an IPv4 /24 through /28")
+        require(subnet.version == 4 and 16 <= subnet.prefixlen <= 28, "v1 networks require an IPv4 /16 through /28")
         require(not any(subnet.overlaps(other) for other in used_subnets), "environment network ranges must not overlap")
         used_subnets.append(subnet)
-        require(net.get("mode") in ("isolated", "nat", "vlan"), "invalid network mode")
+        require(net.get("mode") in ("isolated", "nat", "vlan", "vxlan"), "invalid network mode")
         require(type(net.get("managed", False)) is bool, "managed must be boolean")
         if "bridge" in net:
             require(re.fullmatch(r"[a-zA-Z][a-zA-Z0-9_.-]{0,14}", net["bridge"]), "invalid bridge")
@@ -118,6 +158,17 @@ def validate(p):
             require(ipaddress.ip_network(destination, strict=True).version == 4, "v1 egress destinations must be IPv4 networks")
         if net.get("managed"):
             require(net["libvirt_network"].startswith("li-"), "managed networks must use the li- namespace")
+            require("bridge" not in net, "managed bridge names are derived by the controller")
+        if net["mode"] == "vxlan":
+            require(net.get("managed") and p.get("fabric"), "VXLAN networks require managed bridges and an explicit fabric")
+            require(subnet.prefixlen <= 26, "VXLAN subnets reserve addresses for fabric nodes and require /26 or larger")
+            integer(net.get("vni"), 1, 16777215, "VXLAN network ID")
+            require(net["vni"] not in used_vnis, "VXLAN network IDs must be distinct")
+            used_vnis.add(net["vni"])
+            require(max(m["node_id"] for m in p["fabric"]["members"]) + 3 < subnet.num_addresses, "subnet is too small for fabric nodes and guest addresses")
+            require(not any(subnet.overlaps(ipaddress.ip_network(v)) for v in p["fabric"]["protected_cidrs"]), "guest networks must not overlap protected fabric networks")
+        else:
+            require("vni" not in net, "VNI is only valid for VXLAN networks")
         if net["mode"] == "vlan":
             integer(net.get("vlan"), 1, 4094, "VLAN")
             require(re.fullmatch(r"[a-zA-Z][a-zA-Z0-9_.-]{0,14}", net.get("bridge", "")), "invalid bridge")
@@ -133,11 +184,42 @@ def validate(p):
         for k in ["memory_mib", "vcpus", "disk_gib"]:
             integer(env.get(k), 1, c[k], k)
     templates = p.get("templates", {})
+    for n, profile in p.get("build_profiles", {}).items():
+        name(n)
+        keys(profile, ["lens", "logging", "ssh_keys", "users", "shell"], "build profile")
+        if "shell" in profile:
+            require(profile["shell"] == "dataplicity-server-v1", "unknown server shell profile")
+        require(profile, "build profile must select agents or administrator SSH keys")
+        require(isinstance(profile.get("ssh_keys", []), list), "administrator SSH keys must be a list")
+        for key in profile.get("ssh_keys", []):
+            public_key(key)
+        require(not (profile.get("ssh_keys") and profile.get("users")), "choose named users or one bootstrap account, not both")
+        require(isinstance(profile.get("users", []), list), "build users must be a list")
+        usernames = set()
+        for user in profile.get("users", []):
+            keys(user, ["name", "ssh_keys", "sudo"], "build user")
+            require(isinstance(user.get("name"), str) and re.fullmatch(r"[a-z][a-z0-9_-]{0,24}", user["name"]), "invalid administrator username")
+            require(user["name"] not in ("root", "nobody", "daemon", "syslog", "sshd", "runner") and user["name"] not in usernames, "reserved or duplicate build user")
+            usernames.add(user["name"])
+            require(type(user.get("sudo", False)) is bool, "sudo membership must be explicit boolean")
+            require(isinstance(user.get("ssh_keys"), list) and user["ssh_keys"], "named users require SSH public keys")
+            for key in user["ssh_keys"]:
+                public_key(key)
+        for component, artifact in profile.items():
+            if component in ("ssh_keys", "users", "shell"):
+                continue
+            keys(artifact, ["path", "sha256", "version"] if component == "lens" else ["path", "sha256"], "build artifact")
+            absolute(artifact.get("path"), "build artifact")
+            sha256(artifact.get("sha256"))
+            if component == "lens":
+                require(isinstance(artifact.get("version"), str) and re.fullmatch(r"[0-9][0-9A-Za-z.+~-]{0,63}", artifact["version"]), "Lens package version is required")
     for n, t in templates.items():
         name(n)
         keys(t, ["kind", "image", "image_sha256", "image_format", "secrets", "profile", "port",
                  "health_path", "startup_seconds", "drain_seconds", "containers", "runner", "certificate", "listen_port",
-                 "websocket_path", "rpc_path", "rpc_health_method", "observe_seconds", "canary_percent"], "template")
+                 "websocket_path", "rpc_path", "rpc_health_method", "observe_seconds", "canary_percent", "build_profile"], "template")
+        if t.get("build_profile"):
+            require(t["build_profile"] in p.get("build_profiles", {}), "unknown build profile")
         require(t.get("kind") in ("oci", "github-runner", "appliance"), "unsupported workload kind")
         absolute(t.get("image"), "VM image")
         sha256(t.get("image_sha256"))
@@ -208,7 +290,7 @@ def validate(p):
     for principal in p.get("principals", []):
         keys(principal, ["uid", "role", "environments"], "principal")
         integer(principal.get("uid"), 0, 2**32 - 2, "principal uid")
-        require(principal.get("role") in ("reader", "deployer", "admin"), "invalid role")
+        require(principal.get("role") in ("reader", "deployer", "operator", "admin"), "invalid role")
         require(principal.get("role") != "admin" or principal["uid"] == 0, "administrator authority belongs to the local root identity")
         require(all(e in p.get("environments", {}) for e in principal.get("environments", [])), "unknown principal environment")
     return p
@@ -224,14 +306,25 @@ def authorize(p, uid, action, environment=None):
             return
         if action == "read" and (environment is None or environment in principal.get("environments", [])):
             return
-        if action == "deploy" and principal["role"] == "deployer" and environment in principal.get("environments", []):
+        if action == "deploy" and principal["role"] in ("deployer", "operator") and environment in principal.get("environments", []):
+            return
+        if action == "recover" and principal["role"] == "operator" and environment in principal.get("environments", []):
             return
     raise Rejected("local identity is not authorised for this operation")
 
 
 def deployment(p, request):
     keys(request, ["operation_id", "configuration_revision", "configuration_digest", "host_id", "environment", "service", "class", "template",
-                   "network", "instances", "hostname", "listen_port", "release"], "deployment request")
+                   "network", "instances", "hostname", "listen_port", "release", "mode", "restore_backup", "start"], "deployment request")
+    require(request.get("mode", "service") in ("service", "server"), "invalid workload mode")
+    if request.get("mode") == "server":
+        require(request.get("instances") == 1, "persistent servers have one instance; use explicit VM lifecycle operations")
+    if "start" in request:
+        require(type(request["start"]) is bool and request.get("mode") == "server", "initial power state is only available for a persistent server")
+    if request.get("restore_backup"):
+        name(request["restore_backup"])
+        require(request.get("mode") == "server", "backups restore to a new private server")
+        require(request.get("start") is False, "restored servers remain shut down until explicitly booted")
     for k in ["operation_id", "environment", "service", "class", "template", "network", "release"]:
         name(request.get(k))
     require(request.get("configuration_revision") == p["revision"], "requested configuration revision is not active locally")
@@ -245,6 +338,9 @@ def deployment(p, request):
     require(request["network"] in e["networks"], "network is not owned by this environment")
     integer(request.get("instances"), 0, e["max_instances"], "instance count")
     t = p["templates"][request["template"]]
+    if request.get("mode") == "server":
+        profile = p.get("build_profiles", {}).get(t.get("build_profile"), {})
+        require(profile.get("ssh_keys") or any(u.get("sudo") for u in profile.get("users", [])), "persistent server builds require administrator SSH keys in an approved build profile")
     for s in t.get("secrets", []):
         require(request["environment"] in p["secrets"][s]["environments"], "secret is not available to this environment")
     if t.get("certificate"):
@@ -253,6 +349,6 @@ def deployment(p, request):
         require(re.fullmatch(r"[a-z0-9][a-z0-9.-]{0,251}[a-z0-9]", request["hostname"]), "invalid hostname")
     if "listen_port" in request:
         integer(request["listen_port"], 1024, 65535, "listener port")
-    if t.get("profile", "private") != "private":
+    if request.get("mode") != "server" and t.get("profile", "private") != "private":
         require(request.get("listen_port", 8080) == t.get("listen_port", 8080), "listener port is fixed by the approved template")
     return request

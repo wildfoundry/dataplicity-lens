@@ -41,6 +41,13 @@ def main(argv=None):
         if action == "apply":
             p.add_argument("--yes", action="store_true")
     operation = sub.add_parser("operation").add_subparsers(dest="action", required=True)
+    vm = sub.add_parser("vm").add_subparsers(dest="action", required=True)
+    for action in ("create", "restore", "boot", "shutdown", "resize", "backup", "delete"):
+        p = vm.add_parser(action)
+        p.add_argument("file", help="TOML VM build or exact instance selector")
+        p.add_argument("--plan", action="store_true")
+        p.add_argument("--yes", action="store_true")
+    vm.add_parser("backups")
     for action in ("status", "resume", "cancel", "cleanup"):
         p = operation.add_parser(action)
         p.add_argument("operation_id")
@@ -100,7 +107,18 @@ def main(argv=None):
         policy = load(args.file)
         if args.action == "apply":
             require(args.yes and os.geteuid() == 0, "network changes require local administrator authority and --yes")
-        result = provision(policy, Libvirt("/var/lib/lens-infra"), apply=args.action == "apply")
+        if args.action == "apply":
+            store = Store("/var/lib/lens-infra")
+            with store.exclusive():
+                current = store.policy()
+                if current:
+                    for key, definition in current["networks"].items():
+                        require(policy["networks"].get(key) == definition, "keep existing network definitions when applying host networking")
+                    if current.get("fabric"):
+                        require(policy.get("fabric") == current["fabric"], "apply fabric membership through a reviewed configuration revision before reconciling networking")
+                result = provision(policy, Libvirt("/var/lib/lens-infra"), apply=True)
+        else:
+            result = provision(policy, Libvirt("/var/lib/lens-infra"), apply=False)
     elif args.command == "config":
         policy = load(args.file)
         if args.action == "validate":
@@ -125,6 +143,20 @@ def main(argv=None):
             payload = tomllib.load(f)
         require(args.plan or args.yes, "service changes require --yes or --plan")
         result = request(args.socket, {"method": "service." + args.action + (".plan" if args.plan else ""), "payload": payload})
+    elif args.command == "vm":
+        if args.action == "backups":
+            result = request(args.socket, {"method": "vm.backups"})
+        else:
+            require(args.plan or args.yes, "VM operations require --yes or --plan")
+            with Path(args.file).open("rb") as f:
+                payload = tomllib.load(f)
+            if args.action in ("create", "restore"):
+                method = "vm." + args.action + (".plan" if args.plan else "")
+            else:
+                require("action" not in payload, "VM action is selected by the command")
+                payload["action"] = args.action
+                method = "vm.action.plan" if args.plan else "vm.action.apply"
+            result = request(args.socket, {"method": method, "payload": payload})
     elif args.command == "runner":
         if args.action == "status":
             payload = {"slot": args.slot}

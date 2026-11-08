@@ -93,6 +93,30 @@ class Server:
             return runner_state.status(payload["slot"])
         if method == "deploy.prepare":
             return self.engine.prepare(payload, uid)
+        if method in ("vm.create", "vm.create.plan", "vm.restore", "vm.restore.plan"):
+            from .vm import create_request, restore_request
+            request = restore_request(self.engine, payload, uid) if method.startswith("vm.restore") else create_request(payload)
+            if method.endswith(".plan"):
+                return self.engine.plan(request, uid)
+            result = self.engine.submit(request, uid)
+            if not result["duplicate"]:
+                self.jobs.put(result["id"])
+            return result
+        if method in ("vm.action.plan", "vm.action.apply"):
+            from .vm import plan, submit
+            if method.endswith(".plan"):
+                return plan(self.engine, payload, uid)
+            result = submit(self.engine, payload, uid)
+            if not result["duplicate"]:
+                self.jobs.put(result["id"])
+            return result
+        if method == "vm.backups":
+            authorize(p, uid, "read")
+            result = self.engine.store.backups()
+            if uid != 0:
+                allowed = {e for principal in p.get("principals", []) if principal["uid"] == uid for e in principal.get("environments", [])}
+                result = [b for b in result if b["environment"] in allowed]
+            return result
         if method == "deploy.apply":
             result = self.engine.submit(payload, uid)
             if not result["duplicate"]:

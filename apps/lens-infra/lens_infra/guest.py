@@ -38,6 +38,8 @@ def firewall_rules(m, existing=False):
     rules += "icmpv6 type { nd-neighbor-solicit, nd-neighbor-advert, nd-router-advert } accept\n"
     if m.get("allowed_port"):
         rules += "tcp dport " + str(int(m["allowed_port"])) + " accept\n"
+    if m.get("ssh_enabled"):
+        rules += "tcp dport 22 accept\n"
     rules += "}\n}\n"
     return rules
 
@@ -54,9 +56,113 @@ def firewall(m):
     command(["/usr/sbin/nft", "-f", str(path)])
 
 
+def verified(artifact):
+    path = Path(artifact["path"])
+    with path.open("rb") as f:
+        if hashlib.file_digest(f, "sha256").hexdigest() != artifact["sha256"]:
+            raise RuntimeError("build artifact digest mismatch")
+    return path
+
+
+def apply_build_profile(profile):
+    applied = {"name": profile["name"]}
+    if profile.get("lens"):
+        artifact = profile["lens"]
+        package = verified(artifact)
+        name = subprocess.check_output(["/usr/bin/dpkg-deb", "--field", str(package), "Package"], stderr=subprocess.DEVNULL).decode().strip()
+        version = subprocess.check_output(["/usr/bin/dpkg-deb", "--field", str(package), "Version"], stderr=subprocess.DEVNULL).decode().strip()
+        if name != "dataplicity-lens" or version != artifact["version"]:
+            raise RuntimeError("unexpected Lens build package")
+        installed = subprocess.run(["/usr/bin/dpkg-query", "-W", "-f=${Version}", "dataplicity-lens"], stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
+        if installed.returncode or installed.stdout.decode() != version:
+            command(["/usr/bin/dpkg", "--install", str(package)])
+        applied["lens_version"] = version
+    if profile.get("logging"):
+        artifact = profile["logging"]
+        source = verified(artifact)
+        target = Path("/etc/rsyslog.d/50-lens-managed.conf")
+        previous = target.read_bytes() if target.exists() else None
+        data = source.read_bytes()
+        if data != previous:
+            pending = target.with_suffix(".pending")
+            pending.write_bytes(data)
+            pending.chmod(0o600)
+            os.replace(pending, target)
+            try:
+                command(["/usr/sbin/rsyslogd", "-N1"])
+            except Exception:
+                if previous is None:
+                    target.unlink()
+                else:
+                    target.write_bytes(previous)
+                raise
+            command(["/usr/bin/systemctl", "restart", "rsyslog.service"])
+        applied["logging_sha256"] = artifact["sha256"]
+    return applied
+
+
+def install_server_shell(profile, metadata):
+    """Install only in the selected guest, preserving later user customization."""
+    import pwd
+    import shutil
+    import stat
+    context = Path("/etc/dataplicity")
+    context.mkdir(mode=0o755, exist_ok=True)
+    for source, destination, mode in (("/opt/lens/server-shell.bash", context / "server-shell.bash", 0o644),
+                                      ("/opt/lens/server_status.py", Path("/usr/local/bin/dp-status"), 0o755)):
+        pending = destination.with_suffix(".lens-pending")
+        shutil.copyfile(source, pending)
+        pending.chmod(mode)
+        os.replace(pending, destination)
+    values = {"environment": metadata["environment"], "vm": metadata["service"], "identity": metadata["instance_id"],
+              "configuration_revision": metadata["instance_configuration_revision"]}
+    # This file is parsed as data by Bash. It never contains executable input.
+    pending = context / "server-context.pending"
+    pending.write_text("".join(str(key) + "=" + str(value) + "\n" for key, value in values.items()))
+    pending.chmod(0o644)
+    os.replace(pending, context / "server-context")
+    state = Path("/var/lib/lens/server-shell.json")
+    state.parent.mkdir(mode=0o700, exist_ok=True)
+    installed = json.loads(state.read_text()) if state.exists() else []
+    users = [u["name"] for u in profile.get("users", [])]
+    if profile.get("ssh_keys"):
+        users.append("vmadmin")
+    line = '\n# Dataplicity server shell: set DP_SHELL=off above this line to opt out.\n[ ! -r /etc/dataplicity/server-shell.bash ] || . /etc/dataplicity/server-shell.bash\n'
+    for name in ["root", *users]:
+        if name in installed:
+            continue
+        user = pwd.getpwnam(name)
+        home = Path("/root" if name == "root" else "/home/" + name)
+        if Path(user.pw_dir) != home or home.is_symlink():
+            raise RuntimeError("unexpected home directory for server shell account")
+        fd = os.open(home / ".bashrc", os.O_RDWR | os.O_APPEND | os.O_CREAT | os.O_NOFOLLOW, 0o644)
+        with os.fdopen(fd, "a+") as f:
+            info = os.fstat(f.fileno())
+            if not stat.S_ISREG(info.st_mode) or info.st_uid not in (0, user.pw_uid):
+                raise RuntimeError("unexpected shell startup file ownership")
+            f.seek(0)
+            startup = f.read(2 * 1024 * 1024 + 1)
+            if len(startup) > 2 * 1024 * 1024:
+                raise RuntimeError("shell startup file exceeds size limit")
+            if line not in startup:
+                f.write(line)
+            f.flush()
+            os.fchown(f.fileno(), user.pw_uid, user.pw_gid)
+            os.fsync(f.fileno())
+        installed.append(name)
+        pending = state.with_suffix(".pending")
+        with pending.open("w") as f:
+            os.fchmod(f.fileno(), 0o600)
+            f.write(json.dumps(installed))
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(pending, state)
+
+
 def apply():
     m = manifest()
     firewall(m)
+    profile = apply_build_profile(m["build_profile"]) if m.get("build_profile") else None
     if m["kind"] == "oci":
         for container in m["containers"]:
             name = "lens-" + container["name"]
@@ -126,7 +232,16 @@ def apply():
              "[Service]\nUser=lens-runner\nWorkingDirectory=/opt/actions-runner\nExecStart=/opt/actions-runner/lens-runner.sh\nRestart=on-failure\nRestartSec=15\nKillMode=process\nTimeoutStopSec=infinity\nStandardOutput=null\nStandardError=null\n[Install]\nWantedBy=multi-user.target\n")
     elif m["kind"] != "appliance":
         raise RuntimeError("unsupported workload")
-    Path("/run/lens/applied.json").write_text(json.dumps({k: m[k] for k in ("release", "configuration_revision", "secret_generations")}))
+    applied = {k: m[k] for k in ("release", "configuration_revision", "secret_generations")}
+    if profile:
+        applied["build_profile"] = profile
+    for key in ("host_id", "environment", "network", "class", "instance_configuration_revision", "instance", "instance_id", "service"):
+        if key in m:
+            applied[key] = m[key]
+    Path("/run/lens/applied.json").write_text(json.dumps(applied))
+    Path("/etc/lens-instance.json").write_text(json.dumps(applied))
+    if m.get("build_profile", {}).get("shell"):
+        install_server_shell(m["build_profile"], applied)
 
 
 def status():

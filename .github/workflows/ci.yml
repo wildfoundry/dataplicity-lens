@@ -132,11 +132,13 @@ jobs:
       - name: Install qualification tools on the disposable CI runner
         run: |
           sudo apt-get update
-          sudo apt-get install -y --no-install-recommends haproxy nftables iproute2
+          sudo apt-get install -y --no-install-recommends haproxy nftables iproute2 iputils-ping
       - name: Test authority, protected inventory, durable operations and real ingress
         run: sudo env PYTHONPATH=apps/lens-infra HAPROXY_BIN=/usr/sbin/haproxy python3 -m unittest discover -s apps/lens-infra/tests -v
       - name: Verify real environment isolation in a separate network namespace
         run: sudo unshare --net env PYTHONPATH=apps/lens-infra python3 scripts/test-infra-network-linux.py
+      - name: Verify software VXLAN traffic and isolation between private test hosts
+        run: sudo unshare --net env PYTHONPATH=apps/lens-infra python3 scripts/test-infra-overlay-linux.py
       - name: Build the separate disabled-by-default package
         run: |
           python3 scripts/package-infra-deb.py --output /tmp/dataplicity-lens-infra.deb
