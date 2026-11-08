@@ -62,6 +62,27 @@ must be qualified before automatic runner scaling is enabled.
    runner registration/job completion, certificates and real VLAN/cross-host isolation on
    the agreed pilot. Web management remains outside this local milestone.
 
+## Recorded qualification
+
+On 2026-11-08, the Linux suite passed 82 unit/integration/real-PTY checks. Real packet tests
+passed the 10 local isolation checks and the nested-host VXLAN checks, including two VNIs,
+the 1350-byte MTU boundary, environment/management denial, unapproved transport peers and
+guest DHCP-server spoofing. Link verification reads the kernel's read-only rtnetlink API:
+older Ubuntu iproute2 builds can emit invalid detailed VXLAN JSON against newer kernels.
+
+The real KVM/libvirt slice on an Ubuntu 26.04 ASUS test host passed creation/replacement,
+local dummy-secret delivery, HAProxy, Lens/logging installation, named-user SSH and sudo
+separation, private-home permissions, interactive/root prompts, offline CPU/RAM/disk growth,
+backup, new-UUID stopped restore and restored boot. Actual CPU/RAM definitions and guest
+filesystem growth were checked; customer/home marker files survived, and verified guest
+artifacts were reused. This was inside disposable mount/network namespaces, not an R730
+qualification. The separate package was audited for root ownership, directory permissions,
+required shell assets and absence of service-enabling maintainer scripts.
+
+These results do not close the physical R630 network, real GitHub job, reboot/failure,
+certificate rotation, redundant ingress, independent rescue, IPAM/failover or fenced
+migration gates. Keep the Linear project open through the internal pilot.
+
 ## Explicit bootstrap
 
 These commands are a runbook, not an instruction to apply the example to a live host.

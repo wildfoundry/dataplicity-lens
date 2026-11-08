@@ -3,6 +3,8 @@
 import hashlib
 import ipaddress
 import json
+import socket
+import struct
 
 from .backend import run
 from .policy import require
@@ -20,9 +22,65 @@ def alias(policy, key):
     return "lens-infra:" + policy["host_id"] + ":" + key
 
 
+def attributes(data):
+    result, offset = {}, 0
+    while offset + 4 <= len(data):
+        length, kind = struct.unpack_from("=HH", data, offset)
+        require(4 <= length <= len(data) - offset, "invalid kernel link attribute")
+        result[kind & 0x3fff] = data[offset + 4:offset + length]
+        offset += (length + 3) & ~3
+    return result
+
+
+def links():
+    """Read RTM_GETLINK, avoiding old iproute2 VXLAN JSON/kernel ABI bugs.
+
+    Linux UAPI: include/uapi/linux/{rtnetlink,if_link}.h. This socket only
+    requests a dump; all mutations still use the narrow, explicit ip commands.
+    """
+    result = []
+    with socket.socket(socket.AF_NETLINK, socket.SOCK_RAW, socket.NETLINK_ROUTE) as channel:
+        channel.settimeout(3)
+        channel.bind((0, 0))
+        payload = struct.pack("=BxhiII", socket.AF_UNSPEC, 0, 0, 0, 0)
+        channel.sendto(struct.pack("=IHHII", 16 + len(payload), 18, 0x301, 1, 0) + payload, (0, 0))
+        while True:
+            data, _, flags, sender = channel.recvmsg(256 * 1024)
+            require(sender[0] == 0 and not flags & socket.MSG_TRUNC, "incomplete kernel link response")
+            offset = 0
+            while offset + 16 <= len(data):
+                length, kind, flags, sequence, _ = struct.unpack_from("=IHHII", data, offset)
+                require(16 <= length <= len(data) - offset and sequence == 1, "invalid kernel link response")
+                require(not flags & 0x10, "network state changed during verification; retry")
+                body = data[offset + 16:offset + length]
+                offset += (length + 3) & ~3
+                if kind == 3:  # NLMSG_DONE
+                    require(len(body) < 4 or struct.unpack_from("=i", body)[0] == 0, "kernel link dump failed")
+                    return result
+                if kind == 2:  # NLMSG_ERROR
+                    require(len(body) >= 4 and struct.unpack_from("=i", body)[0] == 0, "kernel rejected link query")
+                    continue
+                if kind != 16:  # RTM_NEWLINK
+                    continue
+                require(len(body) >= 16 and len(result) < 4096, "invalid or excessive kernel link inventory")
+                _, _, index, state, _ = struct.unpack_from("=BxhiII", body)
+                values = attributes(body[16:])
+                string = lambda value: value.rstrip(b"\0").decode(errors="replace")
+                info = attributes(values.get(18, b""))  # IFLA_LINKINFO
+                info_kind, details = string(info.get(1, b"")), {}
+                if info_kind == "vxlan":
+                    vxlan = attributes(info.get(2, b""))
+                    if 1 in vxlan: details["id"] = struct.unpack("=I", vxlan[1])[0]
+                    if 4 in vxlan: details["local"] = socket.inet_ntop(socket.AF_INET, vxlan[4])
+                    if 15 in vxlan: details["dstport"] = struct.unpack("!H", vxlan[15])[0]
+                result.append({"ifname": string(values.get(3, b"")), "ifindex": index,
+                    "ifalias": string(values.get(20, b"")), "mtu": struct.unpack("=I", values[4])[0],
+                    "flags": ["UP"] if state & 1 else [],
+                    "linkinfo": {"info_kind": info_kind, "info_data": details}})
+
+
 def link(name):
-    result = run(["/usr/sbin/ip", "-d", "-j", "link", "show", "dev", name], check=False)
-    return json.loads(result)[0] if result else None
+    return next((value for value in links() if value["ifname"] == name), None)
 
 
 def preflight(policy):
@@ -36,8 +94,7 @@ def preflight(policy):
             continue
         routes = json.loads(run(["/usr/sbin/ip", "-j", "route", "get", peer["endpoint"]]))
         require(routes and routes[0].get("prefsrc", routes[0].get("src")) == local["endpoint"], "peer route does not use the approved fabric endpoint")
-    links = json.loads(run(["/usr/sbin/ip", "-d", "-j", "link", "show"]))
-    for item in links:
+    for item in links():
         if item.get("linkinfo", {}).get("info_kind") == "vxlan":
             require(item.get("ifalias", "").startswith("lens-infra:" + policy["host_id"] + ":"), "unmanaged VXLAN links exist; do not take over their transport firewall")
 
