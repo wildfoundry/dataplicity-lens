@@ -34,7 +34,7 @@ class VmLifecycleTests(unittest.TestCase):
         self.store.apply_policy(validate(self.policy), 0)
         self.backend, self.proxy = Backend(), Proxy()
         self.engine = Engine(self.store, self.backend, self.proxy)
-        self.build = {"operation_id": "server-one", "host_id": "test-host", "configuration_revision": 1, "environment": "production", "name": "customer-one", "class": "small-v1", "template": "web-v1", "network": "app", "release": "one"}
+        self.build = {"operation_id": "server-one", "host_id": "test-host", "configuration_revision": 1, "environment": "production", "name": "customer-one", "image": "base-v1", "class": "small-v1", "template": "web-v1", "network": "app", "release": "one"}
         self.engine.submit(vm.create_request(self.build), 1001)
         with patch("lens_infra.engine.time.sleep"):
             self.engine.execute("server-one")
@@ -69,12 +69,13 @@ class VmLifecycleTests(unittest.TestCase):
         self.assertFalse(self.backend.booted)
         self.assertEqual(self.store.resource(self.resource["id"])["detail"]["desired_power"], "off")
 
-    def test_resize_requires_shutdown_and_never_shrinks_disk(self):
+    def test_resize_requires_shutdown_and_supports_approved_smaller_class(self):
         with self.assertRaisesRegex(Rejected, "shut down"):
             vm.plan(self.engine, self.selector("resize", new_class="larger-v1"), 1001)
         self.action("shutdown")
-        with self.assertRaisesRegex(Rejected, "shrinking"):
-            vm.plan(self.engine, self.selector("resize", new_class="too-small-v1"), 1001)
+        planned = vm.plan(self.engine, self.selector("resize", new_class="too-small-v1"), 1001)
+        self.assertEqual(planned["resize_backup_retention_days"], 7)
+        self.assertTrue(planned["filesystem_compatibility_checked_on_apply"])
         self.action("resize", new_class="larger-v1")
         row = self.store.resource(self.resource["id"])
         self.assertEqual((row["memory_mib"], row["disk_gib"]), (1024, 16))

@@ -98,6 +98,12 @@ def apply_build_profile(profile):
                 raise
             command(["/usr/bin/systemctl", "restart", "rsyslog.service"])
         applied["logging_sha256"] = artifact["sha256"]
+    if profile.get('files') or profile.get('run_once'):
+        deadline = 60 + sum(item.get('timeout_seconds', 300) + 5 for item in profile.get('run_once', []))
+        result = subprocess.run(['/usr/bin/python3', '-I', '/opt/lens/bootstrap.py'], capture_output=True, timeout=deadline)
+        if result.returncode:
+            raise RuntimeError('build customization failed; inspect guest bootstrap state')
+        applied['bootstrap'] = json.loads(result.stdout)
     return applied
 
 
@@ -244,6 +250,64 @@ def apply():
         install_server_shell(m["build_profile"], applied)
 
 
+def metrics():
+    import math
+    m = manifest()
+    ticks = [int(x) for x in Path('/proc/stat').read_text().splitlines()[0].split()[1:9]]
+    memory = {line.split(':', 1)[0]: int(line.split()[1]) * 1024 for line in Path('/proc/meminfo').read_text().splitlines() if line.startswith(('MemTotal:', 'MemAvailable:'))}
+    total = sum(ticks)
+    idle = ticks[3] + ticks[4]
+    samples = {'vm': {'cpu_ticks': total - idle, 'total_ticks': total,
+                      'boot_id': Path('/proc/sys/kernel/random/boot_id').read_text().strip(),
+                      'memory_percent': 100 * (memory['MemTotal'] - memory['MemAvailable']) / memory['MemTotal']}}
+    if m['kind'] == 'oci':
+        # Reuse Lens's container/runtime collection. Project only resource data;
+        # no environment, command output, credentials or logs are returned.
+        try:
+            result = subprocess.run(['/usr/bin/lens-containers', '--json', '--fields', 'containers'], capture_output=True, timeout=15)
+            if result.returncode:
+                raise RuntimeError('container metrics unavailable')
+            data = json.loads(result.stdout)
+            rows = {r['name']: r for r in data.get('containers', []) if r.get('runtime') == 'docker'}
+            for container in m['containers']:
+                row = rows.get('lens-' + container['name'], {})
+                resources = row.get('resources') or {}
+                values = {}
+                if row.get('state') != 'running':
+                    samples[container['name']] = {'reason': 'container_not_running_or_not_reported'}
+                    continue
+                def size(value):
+                    if not isinstance(value, str):
+                        return None
+                    units = {'B': 1, 'KB': 1000, 'MB': 1000**2, 'GB': 1000**3, 'KiB': 1024, 'MiB': 1024**2, 'GiB': 1024**3}
+                    parts = value.split()
+                    if len(parts) != 2 or parts[1] not in units:
+                        return None
+                    try:
+                        return float(parts[0]) * units[parts[1]]
+                    except ValueError:
+                        return None
+                try:
+                    cpu = float(resources.get('cpu_usage_percent', '').rstrip('%'))
+                    budget = os.cpu_count() or 1
+                    limit = resources.get('cpu_limit', '') or ''
+                    if limit.endswith(' vCPUs'):
+                        budget = float(limit.split()[0])
+                    if math.isfinite(cpu) and cpu >= 0 and budget > 0:
+                        values['cpu_percent'] = cpu / budget
+                except (ValueError, AttributeError):
+                    pass
+                used = resources.get('memory_usage_bytes')
+                limit = size(resources.get('memory_limit')) or memory['MemTotal']
+                if isinstance(used, int) and used >= 0 and limit > 0:
+                    values['memory_percent'] = used / limit * 100
+                samples[container['name']] = values
+        except Exception:
+            for container in m['containers']:
+                samples[container['name']] = {'reason': 'container_metrics_unavailable'}
+    return {'samples': samples}
+
+
 def status():
     m = manifest()
     if m["kind"] == "github-runner":
@@ -274,6 +338,8 @@ if __name__ == "__main__":
             print('{"applied":true}')
         elif sys.argv[1:] == ["status"]:
             print(json.dumps(status()))
+        elif sys.argv[1:] == ["metrics"]:
+            print(json.dumps(metrics()))
         else:
             raise RuntimeError("invalid operation")
     except Exception:

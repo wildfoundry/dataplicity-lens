@@ -73,10 +73,40 @@ def load(path):
 
 def validate(p):
     keys(p, ["schema_version", "revision", "host_id", "capacity", "classes", "networks",
-             "environments", "templates", "principals", "secrets", "certificates", "protected_resources", "parked_resources", "runner_controller", "build_profiles", "migration_pool", "fabric"], "policy")
+             "environments", "templates", "principals", "secrets", "certificates", "protected_resources", "parked_resources", "runner_controller", "build_profiles", "migration_pool", "fabric", "monitoring", "images"], "policy")
     require(p.get("schema_version") == 1, "unsupported policy schema")
     integer(p.get("revision"), 1, 2**53, "policy revision")
     name(p.get("host_id"))
+    if p.get("monitoring"):
+        import math
+        monitoring = p["monitoring"]
+        keys(monitoring, ["sample_interval_seconds", "stale_after_seconds", "rules"], "monitoring")
+        interval = integer(monitoring.get("sample_interval_seconds", 10), 5, 60, "monitoring interval")
+        integer(monitoring.get("stale_after_seconds", 30), interval * 2, 600, "monitoring stale window")
+        require(isinstance(monitoring.get("rules", []), list) and len(monitoring.get("rules", [])) <= 128, "monitoring rules must be a bounded list")
+        names = set()
+        for rule in monitoring.get("rules", []):
+            keys(rule, ["name", "environment", "service", "container", "metric", "above", "clear_below", "for_seconds", "clear_for_seconds", "port", "path", "timeout_seconds", "expected_status"], "monitoring rule")
+            for field in ("name", "environment", "service"):
+                name(rule.get(field))
+            name(rule.get("container", "vm"))
+            require(rule["name"] not in names, "monitoring rule names must be unique")
+            names.add(rule["name"])
+            require(rule["environment"] in p.get("environments", {}), "unknown monitoring environment")
+            require(rule.get("metric") in ("cpu_percent", "memory_percent", "endpoint_failure"), "unknown monitoring metric")
+            for field, value in (("above", rule.get("above")), ("clear_below", rule.get("clear_below", rule.get("above")))):
+                require(type(value) in (int, float) and math.isfinite(value) and 0 <= value <= 100, "invalid monitoring threshold")
+            require(rule.get("clear_below", rule["above"]) <= rule["above"], "recovery threshold must not exceed alert threshold")
+            integer(rule.get("for_seconds", 60), interval, 86400, "alert duration")
+            integer(rule.get("clear_for_seconds", 30), interval, 86400, "alert recovery duration")
+            if rule["metric"] == "endpoint_failure":
+                integer(rule.get("port"), 1, 65535, "probe port")
+                integer(rule.get("timeout_seconds", 2), 1, 10, "probe timeout")
+                integer(rule.get("expected_status", 200), 100, 599, "expected probe status")
+                require(rule["above"] < 1, "endpoint failure threshold must be below one")
+                require(re.fullmatch(r"/[a-zA-Z0-9/_?.=-]*", rule.get("path", "/")), "invalid probe path")
+            else:
+                require(not any(k in rule for k in ("port", "path", "timeout_seconds", "expected_status")), "endpoint probe settings require endpoint_failure metric")
     if p.get("fabric"):
         fabric = p["fabric"]
         keys(fabric, ["name", "members", "gateway_host", "mtu", "protected_cidrs"], "VXLAN fabric")
@@ -175,7 +205,7 @@ def validate(p):
             require(not net.get("managed"), "VLAN bridges must be provisioned by a local administrator")
     for n, env in p.get("environments", {}).items():
         name(n)
-        keys(env, ["networks", "classes", "templates", "max_instances", "memory_mib", "vcpus", "disk_gib"], "environment")
+        keys(env, ["networks", "classes", "templates", "max_instances", "memory_mib", "vcpus", "disk_gib", "images"], "environment")
         for v in env.get("networks", []):
             require(v in nets and nets[v]["environment"] == n, "environment network ownership mismatch")
         require(env.get("networks"), "environment needs a network")
@@ -183,10 +213,21 @@ def validate(p):
         integer(env.get("max_instances"), 1, 10000, "instance limit")
         for k in ["memory_mib", "vcpus", "disk_gib"]:
             integer(env.get(k), 1, c[k], k)
+    images = p.get("images", {})
+    for image_id, image in images.items():
+        name(image_id)
+        keys(image, ["path", "sha256", "format", "os_family", "capabilities"], "image")
+        absolute(image.get("path"), "image path")
+        sha256(image.get("sha256"))
+        require(image.get("format", "qcow2") in ("qcow2", "raw"), "unsupported image format")
+        require(image.get("os_family") in ("debian", "linux"), "unsupported image OS family")
+        require(isinstance(image.get("capabilities"), list) and all(v in ("cloud-init", "qemu-guest-agent", "python3", "nftables", "systemd", "docker", "runner-runtime", "bash") for v in image["capabilities"]), "unsupported image capabilities")
+    for environment in p.get("environments", {}).values():
+        require(all(v in images for v in environment.get("images", [])), "unknown approved environment image")
     templates = p.get("templates", {})
     for n, profile in p.get("build_profiles", {}).items():
         name(n)
-        keys(profile, ["lens", "logging", "ssh_keys", "users", "shell"], "build profile")
+        keys(profile, ["lens", "logging", "ssh_keys", "users", "shell", "files", "run_once"], "build profile")
         if "shell" in profile:
             require(profile["shell"] == "dataplicity-server-v1", "unknown server shell profile")
         require(profile, "build profile must select agents or administrator SSH keys")
@@ -205,8 +246,31 @@ def validate(p):
             require(isinstance(user.get("ssh_keys"), list) and user["ssh_keys"], "named users require SSH public keys")
             for key in user["ssh_keys"]:
                 public_key(key)
+        for kind in ("files", "run_once"):
+            items = profile.get(kind, [])
+            require(isinstance(items, list) and len(items) <= 32, "bootstrap entries must be a bounded list")
+            names = set()
+            for item in items:
+                allowed = ["name", "path", "sha256", "destination", "mode", "owner", "group"] if kind == "files" else ["name", "path", "sha256", "interpreter", "timeout_seconds"]
+                keys(item, allowed, "bootstrap " + kind)
+                name(item.get("name"))
+                require(item["name"] not in names, "bootstrap names must be unique")
+                names.add(item["name"])
+                absolute(item.get("path"), "bootstrap artifact")
+                sha256(item.get("sha256"))
+                if kind == "files":
+                    absolute(item.get("destination"), "injection destination")
+                    forbidden = ("/proc", "/sys", "/dev", "/run/lens", "/opt/lens", "/var/lib/lens", "/var/cache/lens")
+                    require(not any(item["destination"] == x or item["destination"].startswith(x + "/") for x in forbidden), "injection destination is reserved")
+                    require(re.fullmatch(r"0[0-7]{3}", item.get("mode", "0644")), "file mode must have four octal digits")
+                    require(int(item.get("mode", "0644"), 8) & 0o022 == 0, "injected files cannot be group/world writable")
+                    for field in ("owner", "group"):
+                        require(re.fullmatch(r"[a-z_][a-z0-9_-]{0,31}", item.get(field, "root")), "invalid guest file ownership")
+                else:
+                    require(item.get("interpreter", "/bin/sh") in ("/bin/sh", "/bin/bash", "/usr/bin/python3"), "unsupported bootstrap interpreter")
+                    integer(item.get("timeout_seconds", 300), 1, 3600, "bootstrap timeout")
         for component, artifact in profile.items():
-            if component in ("ssh_keys", "users", "shell"):
+            if component in ("ssh_keys", "users", "shell", "files", "run_once"):
                 continue
             keys(artifact, ["path", "sha256", "version"] if component == "lens" else ["path", "sha256"], "build artifact")
             absolute(artifact.get("path"), "build artifact")
@@ -221,8 +285,12 @@ def validate(p):
         if t.get("build_profile"):
             require(t["build_profile"] in p.get("build_profiles", {}), "unknown build profile")
         require(t.get("kind") in ("oci", "github-runner", "appliance"), "unsupported workload kind")
-        absolute(t.get("image"), "VM image")
-        sha256(t.get("image_sha256"))
+        if t.get("image"):
+            absolute(t.get("image"), "VM image")
+            sha256(t.get("image_sha256"))
+        else:
+            require(images, "template requires an approved image catalogue")
+            require("image_sha256" not in t and "image_format" not in t, "image checksums/formats belong to the image catalogue")
         require(t.get("image_format", "qcow2") in ("qcow2", "raw"), "invalid image format")
         require(t.get("profile", "private") in ("private", "fast-web", "websocket", "jsonrpc"), "invalid endpoint profile")
         integer(t.get("startup_seconds", 180), 5, 1800, "startup deadline")
@@ -315,7 +383,7 @@ def authorize(p, uid, action, environment=None):
 
 def deployment(p, request):
     keys(request, ["operation_id", "configuration_revision", "configuration_digest", "host_id", "environment", "service", "class", "template",
-                   "network", "instances", "hostname", "listen_port", "release", "mode", "restore_backup", "start"], "deployment request")
+                   "network", "instances", "hostname", "listen_port", "release", "mode", "restore_backup", "start", "image"], "deployment request")
     require(request.get("mode", "service") in ("service", "server"), "invalid workload mode")
     if request.get("mode") == "server":
         require(request.get("instances") == 1, "persistent servers have one instance; use explicit VM lifecycle operations")
@@ -338,6 +406,18 @@ def deployment(p, request):
     require(request["network"] in e["networks"], "network is not owned by this environment")
     integer(request.get("instances"), 0, e["max_instances"], "instance count")
     t = p["templates"][request["template"]]
+    if request.get("image"):
+        image_id = name(request["image"])
+        require(image_id in p.get("images", {}) and image_id in e.get("images", []), "image is not approved for this environment")
+        image = p["images"][image_id]
+        required = {"cloud-init", "qemu-guest-agent", "python3", "nftables", "systemd"}
+        if t["kind"] == "oci":
+            required.add("docker")
+        if t["kind"] == "github-runner":
+            required.add("runner-runtime")
+        require(required <= set(image["capabilities"]), "image lacks required workload capabilities")
+        profile = p.get("build_profiles", {}).get(t.get("build_profile"), {})
+        require(not (profile.get("lens") or profile.get("logging")) or image["os_family"] == "debian", "selected build profile requires a Debian-family image")
     if request.get("mode") == "server":
         profile = p.get("build_profiles", {}).get(t.get("build_profile"), {})
         require(profile.get("ssh_keys") or any(u.get("sudo") for u in profile.get("users", [])), "persistent server builds require administrator SSH keys in an approved build profile")

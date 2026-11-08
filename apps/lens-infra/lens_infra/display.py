@@ -151,9 +151,9 @@ class View:
 
 
 def state_role(state):
-    if state in ("ready", "succeeded", "running", "held"):
+    if state in ("ready", "succeeded", "running", "held", "available"):
         return "good"
-    if state in ("failed", "unhealthy"):
+    if state in ("failed", "unhealthy", "firing"):
         return "bad"
     return "warn"
 
@@ -185,6 +185,44 @@ def render(command, action, result, *, planned=False, stream=None, **options):
         removed = sum(r.get("state") == "removed" for r in rows)
         if removed:
             v.line(f"{removed} retired definition(s); retained disks still consume storage.", "muted")
+    elif command == "images":
+        v.line("Approved local VM images · no cloud connection required", "info")
+        v.line("Choose a name with lens-infra vm create BUILD.toml --image NAME --plan.", "muted")
+        v.table(["Image", "Environment", "OS family", "Format", "Capabilities"], [
+            [r["image"], r["environment"], r["os_family"], r["format"], ", ".join(r["capabilities"])] for r in result.get("images", [])])
+    elif command in ("alerts", "thresholds"):
+        v.line("LOCAL · observation and query only", "info")
+        v.line("Notifications off · automatic actions off", "muted")
+        if command == "thresholds":
+            v.fields([("Sample interval", str(result.get("sample_interval_seconds")) + " s"), ("Stale after", str(result.get("stale_after_seconds")) + " s")])
+            v.section("Threshold rules")
+            v.table(["Rule", "Service", "Target", "Metric", "Above", "For"], [
+                [r["name"], r["environment"] + "/" + r["service"], r.get("container", "vm"), r["metric"], r["above"], str(r.get("for_seconds", 60)) + " s"] for r in result.get("rules", [])])
+            for rule in result.get("rules", []):
+                if rule["metric"] == "endpoint_failure":
+                    v.fields([("Probe", rule["name"] + ": HTTP port " + str(rule["port"]) + rule.get("path", "/")), ("Timeout", str(rule.get("timeout_seconds", 2)) + " s")])
+        else:
+            v.section("Alert state")
+            v.table(["Rule", "Service", "Target", "State", "Value", "Reason"], [
+                [r["rule_id"], r["environment"] + "/" + r["service"], r.get("container", "vm"), r["status"],
+                 f"{r['value']:.1f}" if r.get("value") is not None else None, r.get("reason")] for r in result.get("alerts", [])], state_column=3)
+            v.line("Thresholds: lens-infra thresholds", "muted")
+    elif command == "classes":
+        v.fields([("Environment", result.get("environment")), ("Network", result.get("network")),
+                  ("Template", result.get("template")), ("New instances", result.get("instances"))])
+        v.section("Instance classes")
+        v.table(["Class", "CPU", "Memory", "Disk", "Build now"], [
+            [r["class"], r["vcpus"], memory(r["memory_mib"]), str(r["disk_gib"]) + " GiB",
+             "available" if r["available"] else "unavailable"] for r in result.get("classes", [])], state_column=4)
+        for row in result.get("classes", []):
+            if row["reasons"]:
+                v.section(row["class"] + " · unavailable")
+                for reason in row["reasons"]:
+                    v.line(reason["message"], "warn")
+                    if "shortfall" in reason:
+                        unit = reason["resource"]
+                        v.line(f"  needs {reason['required']} {unit}; {reason['available']} available; short {reason['shortfall']}")
+        v.line(result.get("notice", ""), "muted")
     elif command == "inventory":
         v.resources(result)
         v.line("Protected resources cannot be changed through generic VM controls.", "muted")
@@ -218,7 +256,7 @@ def render(command, action, result, *, planned=False, stream=None, **options):
                   ("Instance", req.get("instance_id", result.get("instance_id"))),
                   ("Environment", req.get("environment", result.get("environment"))), ("Service / VM", req.get("service", req.get("name"))),
                   ("Action", req.get("action", result.get("action", result.get("strategy")))), ("Class", req.get("new_class", req.get("class"))),
-                  ("Template", req.get("template")), ("Network", req.get("network")), ("Release", req.get("release"))])
+                  ("Image", req.get("image")), ("Template", req.get("template")), ("Network", req.get("network")), ("Release", req.get("release"))])
         if result.get("error"):
             v.section("Needs attention")
             v.line(result["error"], "bad")
@@ -233,6 +271,10 @@ def render(command, action, result, *, planned=False, stream=None, **options):
             v.line("Requires an explicitly shut down VM before applying.", "warn")
         if result.get("disks_retained"):
             v.line("Disk retained; storage remains reserved.", "warn")
+        if result.get("resize_backup_retention_days"):
+            v.line("A checked local backup is required first and retained for seven days.", "info")
+        if result.get("filesystem_compatibility_checked_on_apply"):
+            v.line("Filesystem compatibility and fit are checked before disk cutover.", "muted")
         if result.get("backup_consistency"):
             v.fields([("Backup consistency", result["backup_consistency"])])
         if req.get("operation_id") and "state" not in result:

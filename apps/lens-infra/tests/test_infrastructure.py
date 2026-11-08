@@ -37,6 +37,8 @@ def policy(root):
          "secrets": {"db": {"path": str(secret), "encrypted": False, "generation": 1, "environments": ["production"]}},
          "principals": [{"uid": 1001, "role": "deployer", "environments": ["production"]},
                         {"uid": 1002, "role": "reader", "environments": ["production"]}]}
+    p["images"] = {"base-v1": {"path": str(image), "sha256": hashlib.sha256(image.read_bytes()).hexdigest(), "os_family": "debian", "capabilities": ["cloud-init", "qemu-guest-agent", "python3", "nftables", "systemd", "docker", "runner-runtime", "bash"]}}
+    p["environments"]["production"]["images"] = ["base-v1"]
     return validate(p)
 
 

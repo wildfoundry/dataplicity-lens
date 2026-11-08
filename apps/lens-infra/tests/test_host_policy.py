@@ -34,7 +34,7 @@ class HostPolicyTests(unittest.TestCase):
         validate(self.p)
         build = vm.create_request({"operation_id": "server-one", "configuration_revision": 1,
             "host_id": "test-host", "environment": "production", "name": "customer-one",
-            "class": "small-v1", "template": "web-v1", "network": "app", "release": "one"})
+            "class": "small-v1", "template": "web-v1", "network": "app", "release": "one", "image": "base-v1"})
         deployment(self.p, build)
         self.p["build_profiles"]["people-v1"]["users"][0]["sudo"] = False
         with self.assertRaisesRegex(Rejected, "administrator SSH keys"):

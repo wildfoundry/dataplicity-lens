@@ -35,6 +35,9 @@ class Engine:
 
     def template(self, policy, request):
         template = copy.deepcopy(policy["templates"][request["template"]])
+        if request.get("image"):
+            image = policy["images"][request["image"]]
+            template.update(image=image["path"], image_sha256=image["sha256"], image_format=image.get("format", "qcow2"))
         if request.get("mode") == "server":
             template["profile"] = "private"
         if request.get("restore_backup"):
@@ -164,11 +167,18 @@ class Engine:
         if t.get("build_profile"):
             profile = copy.deepcopy(policy["build_profiles"][t["build_profile"]])
             for component, artifact in profile.items():
-                if component in ("ssh_keys", "users", "shell"):
+                if component in ("ssh_keys", "users", "shell", "files", "run_once"):
                     continue
                 destination = "/var/cache/lens/artifacts/" + ("lens.deb" if component == "lens" else "logging.conf")
                 self.backend.guest_artifact(resource, destination, artifact["path"], artifact["sha256"])
                 artifact["path"] = destination
+            for kind in ("files", "run_once"):
+                for item in profile.get(kind, []):
+                    destination = "/var/cache/lens/artifacts/bootstrap-" + item["sha256"]
+                    self.backend.guest_artifact(resource, destination, item["path"], item["sha256"])
+                    item["path"] = destination
+            if profile.get("files") or profile.get("run_once"):
+                self.backend.guest_file(resource, "/opt/lens/bootstrap.py", Path(__file__).with_name("bootstrap.py").read_bytes())
             manifest["build_profile"] = profile | {"name": t["build_profile"]}
             manifest["ssh_enabled"] = bool(profile.get("ssh_keys") or profile.get("users"))
             if profile.get("shell"):
@@ -187,7 +197,12 @@ class Engine:
         helper = Path(__file__).with_name("guest.py").read_bytes()
         self.backend.guest_file(resource, "/opt/lens/workload.py", helper)
         self.backend.guest_file(resource, "/run/lens/manifest.json", json.dumps(manifest).encode())
-        self.backend.guest_exec(resource, ["/usr/bin/python3", "/opt/lens/workload.py", "apply"], timeout=300)
+        # Leave enough time for each administrator-approved bootstrap deadline,
+        # including its bounded termination grace. Guest-side scripts enforce
+        # their own limit; an outer fixed five minutes could orphan a valid step.
+        bootstrap_seconds = sum(item.get("timeout_seconds", 300) + 5
+                                for item in manifest.get("build_profile", {}).get("run_once", []))
+        self.backend.guest_exec(resource, ["/usr/bin/python3", "/opt/lens/workload.py", "apply"], timeout=300 + bootstrap_seconds)
         return generations
 
     def health(self, address, template):

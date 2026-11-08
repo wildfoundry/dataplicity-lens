@@ -7,7 +7,9 @@ from .policy import Rejected, authorize, keys, name, require
 
 
 def create_request(payload):
-    keys(payload, ["operation_id", "configuration_revision", "host_id", "environment", "name", "class", "template", "network", "release", "start"], "VM build")
+    keys(payload, ["operation_id", "configuration_revision", "host_id", "environment", "name", "class", "template", "network", "release", "start", "image"], "VM build")
+    require(payload.get("image"), "VM creation requires an explicit approved image (--image)")
+    name(payload["image"])
     request = dict(payload)
     request["service"] = request.pop("name")
     request.update(instances=1, mode="server")
@@ -47,12 +49,14 @@ def plan(engine, payload, uid):
     if payload["action"] == "resize":
         cls = payload.get("new_class")
         require(cls in policy["environments"][resource["environment"]]["classes"], "class is not available in this environment")
-        require(policy["classes"][cls]["disk_gib"] >= resource["disk_gib"], "disk shrinking is not supported")
+
     else:
         require("new_class" not in payload, "new class is only valid for a resize")
     return {"request": payload, "instance_id": resource["id"], "environment": resource["environment"], "action": payload["action"],
             "planned_shutdown_required": payload["action"] in ("resize", "backup", "delete"),
-            "disks_retained": payload["action"] == "delete", "backup_consistency": "offline" if payload["action"] == "backup" else None}
+            "disks_retained": payload["action"] == "delete", "backup_consistency": "offline" if payload["action"] in ("backup", "resize") else None,
+            "resize_backup_retention_days": 7 if payload["action"] == "resize" else None,
+            "filesystem_compatibility_checked_on_apply": payload["action"] == "resize"}
 
 
 def submit(engine, payload, uid):
@@ -119,7 +123,10 @@ def execute(engine, operation):
             engine.store.resource_state(identity, "ready")
             republish(engine, source)
         elif request["action"] == "resize":
+            from .resize import protect
             cls = p["classes"][request["new_class"]]
+            protect(engine, operation, resource)
+            engine.store.transition(operation["id"], "resize-disk")
             engine.backend.resize(resource, cls)
             engine.store.resized(identity, cls, request["new_class"], p["revision"])
             engine.store.resource_state(identity, "stopped")
@@ -137,4 +144,12 @@ def execute(engine, operation):
         engine.store.transition(operation["id"], "complete", "succeeded")
     except Exception as exc:
         error = str(exc) if isinstance(exc, Rejected) else "local VM operation failed; inspect administrator diagnostics"
-        engine.store.transition(operation["id"], "failed", "failed", error)
+        stage = "resize_failure" if request["action"] == "resize" else "failed"
+        if stage == "resize_failure" and not error.startswith("resize_failure:"):
+            error = "resize_failure: " + error
+        engine.store.transition(operation["id"], stage, "failed", error)
+    finally:
+        if request["action"] == "resize":
+            present = getattr(engine.backend, "resize_workspace_present", lambda _resource: False)(resource)
+            if not present:
+                engine.store.resize_workspace_released(operation["id"])

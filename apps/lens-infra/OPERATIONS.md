@@ -7,9 +7,11 @@ infrastructure; installation on the live build hosts is a separate, reviewed pil
 ## Contract
 
 The host administrator owns policy, images, networking and credential bindings. CI selects
-an approved environment, network, class, template and replica count. A release name is an
-audit identifier; changing image bytes requires a new pinned template, not just a release
-name. Versioned classes/templates/networks/build profiles are immutable. Policy revisions increase.
+an approved environment, network, class, template and replica count. New persistent VM builds
+also require an explicitly selected local image name. A release name is an audit identifier;
+changing image bytes requires a new pinned image definition (or a new legacy template), not
+just a release name. Versioned images/classes/templates/networks/build profiles are immutable.
+Policy revisions increase.
 
 All requests name a host and its exact active policy revision. A configuration digest may
 also be included. A stale request fails locally. The Unix socket authenticates the actual
@@ -69,6 +71,22 @@ coordinate through Linux flock while the service keeps `/etc` read-only.
    the agreed pilot. Web management remains outside this local milestone.
 
 ## Recorded qualification
+
+The latest source passed **131 Linux tests** on 2026-11-08, including real HAProxy,
+Unix peer identity, terminal rendering, transactional admission, resize protection,
+passive alert windows/scoping and concurrent bootstrap recovery. A separate real
+KVM/libvirt build-only fixture in disposable mount/network namespaces passed explicit
+local OS selection, pinned file injection/modes, run-once before readiness, no repeat
+on delivery recovery, named-user SSH/sudo and Lens/logging. That fixture preceded the
+additional bootstrap lock; its concurrency behavior is covered by the Linux regression
+test. This fixture explicitly excludes resize, backup/restore and host reboot.
+
+The separate disk-tool fixture also booted a verified 8-to-6-GiB shrunk Ubuntu disk,
+preserved file checksums/boot identities and rejected a too-small target and an unsupported
+ext3 filesystem without changing its source. Installed-systemd/live-VM resize qualification
+remains outstanding. Package `0.3.11+infra10` was built and checked for the absence of
+maintainer scripts, **not installed on the live R630s**. They retain `infra9` and policy
+revision 1; catalogue/CI migration and functional upgrade qualification are still required.
 
 On 2026-11-08, the Linux suite passed 86 unit/integration/real-PTY checks. Real packet tests
 passed the 10 local isolation checks and the nested-host VXLAN checks, including two VNIs,
@@ -229,8 +247,10 @@ need an upgrade/ping-pong endpoint. JSON-RPC profiles need a harmless health met
 Persistent servers use a different lifecycle from replaceable application services:
 
 ```sh
-lens-infra vm create build.toml --plan
-lens-infra vm create build.toml --yes
+lens-infra images
+lens-infra classes --environment lab --template server-v1 --image ubuntu-server-v1
+lens-infra vm create build.toml --image ubuntu-server-v1 --plan
+lens-infra vm create build.toml --image ubuntu-server-v1 --yes
 lens-infra vm shutdown instance.toml --yes
 lens-infra vm resize resize.toml --plan
 lens-infra vm backup instance.toml --yes
@@ -239,15 +259,28 @@ lens-infra vm restore restore.toml --plan
 ```
 
 A build selects `operation_id`, `host_id`, `configuration_revision`, `environment`, `name`,
-`class`, `template`, `network` and `release`. `start = false` creates a defined, stopped VM.
+`class`, `template`, `network` and `release`. CLI creation requires `--image NAME`; the
+`vm.create` API requires the equivalent `image` field. This selects an administrator-approved
+local cached OS disk, not a path, download URL, OCI image or cloud resource. Run `images` on
+the host to discover its actual approved names; `ubuntu-server-v1` above is only an example.
+`start = false` creates a defined, stopped VM.
 An instance selector names `operation_id`, `host_id`, `configuration_revision` and the exact
 `instance_id`; resize adds `new_class`. The controller derives all storage paths. Persistent
 servers have private ingress and cannot be overwritten by a stateless service deployment.
 
 Shutdown records desired power off before ACPI shutdown; controller recovery respects it.
 Resize requires an explicit shutdown and confirmation that the guest is actually off.
-Disk shrink is rejected. Growth and CPU/memory changes reserve the larger allocation before
-changing the disk or definition; guest filesystem size is observed after the next boot.
+Every resize first creates and verifies a local offline backup retained for seven days.
+The reservation includes that backup and a working disk copy; insufficient capacity stops
+the operation before mutation. The source VM disk remains untouched while a standalone
+candidate is checked. Shrink is supported only for the qualified GPT/ext4 layout with
+preserved boot partitions and enough space for the contents. Unsupported filesystems/layouts,
+insufficient room and failed checks return `resize_failure`. The disk worker requires the
+distribution's `python3-guestfs` and guestfs tools; this new path must be qualified before
+upgrading an installed pilot. Growth and CPU/memory changes also check compatibility and
+reserve the larger allocation before changing the disk or definition; guest filesystem
+size is observed after the next boot. Only expired controller-created pre-resize backups
+are eligible for retention cleanup; manual backups remain until explicitly managed.
 Backup requires the guest off and makes a standalone, checked, hashed disk copy. Backups
 continue to count against storage capacity. Delete requires shutdown and retains the disk.
 Online snapshots, automatic backup schedules and disk purge are not implemented.
@@ -265,6 +298,68 @@ local path, SHA-256 and exact package version; `logging` requires a local path a
 The guest checks both bytes and package identity, validates rsyslog configuration and starts
 only guest services. Lens reporting is not enrolled automatically. Profiles and images are
 cached locally; Dataplicity web is not involved.
+
+### Local image catalogue and bootstrap
+
+The administrator registers approved image names and grants them to environments:
+
+```toml
+[images.ubuntu-server-v1]
+path = "/srv/lens-images/ubuntu-server-v1.qcow2"
+sha256 = "REPLACE_WITH_VERIFIED_SHA256"
+format = "qcow2"
+os_family = "debian"
+capabilities = ["cloud-init", "qemu-guest-agent", "python3", "systemd", "nftables", "bash"]
+
+# Add images = ["ubuntu-server-v1"] to the existing environment table.
+# A plain server template needs no HTTP health endpoint or application container:
+[templates.server-v1]
+kind = "appliance"
+profile = "private"
+build_profile = "customer-v1"
+```
+
+The build profile must supply administrator SSH access. Other approved Linux images may be
+used when they satisfy the workload capabilities; the current Lens/logging package installer
+requires a Debian-family image. CI selects approved objects and cannot import arbitrary host
+files or replace the catalogue. Existing VM/history definitions retain their original pinned
+images. Before upgrading an older controller, add a new policy revision with the catalogue,
+update CI create payloads and operator examples, and test the new selectors. Do not rewrite
+historical operations or silently select an OS for old scripts.
+
+Profiles can also contain pinned non-secret configuration files and bootstrap scripts:
+
+```toml
+[[build_profiles.customer-v1.files]]
+name = "app-settings-v1"
+path = "/srv/lens-artifacts/app-settings.conf"
+sha256 = "REPLACE_WITH_VERIFIED_SHA256"
+destination = "/etc/example/app.conf"
+owner = "root"
+group = "root"
+mode = "0640"
+
+[[build_profiles.customer-v1.run_once]]
+name = "initialise-app-v1"
+path = "/srv/lens-artifacts/initialise-app.sh"
+sha256 = "REPLACE_WITH_VERIFIED_SHA256"
+interpreter = "/bin/sh"
+timeout_seconds = 300
+```
+
+Scripts run as root **inside the guest** before workload readiness. Files are installed
+atomically with explicit ownership and permissions; recovery checks the existing file
+instead of overwriting a user's edits. Run-once progress is persisted in the guest before
+execution. Success is skipped on later recovery/boot; failure or an interrupted attempt
+blocks readiness and needs operator recovery, since arbitrary script effects cannot be
+made exactly-once across a crash. Use a new step name for new script bytes. Each newly built
+VM runs its own bootstrap; a restored disk carries its original completion records.
+
+Completion records are under `/var/lib/lens/bootstrap`; root-private script output remains
+in `/var/log/lens-bootstrap`. Only a sanitized failure reaches the host. Use local secret
+bindings for credentials; do not put secrets in these shared file/script artifacts, golden
+images or Dataplicity policy. These capabilities are administrator-approved build profiles,
+not a general remote shell surface for CI.
 
 Named human accounts belong in the approved build profile:
 

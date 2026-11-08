@@ -167,6 +167,9 @@ class Libvirt:
             artifact = (profile or {}).get(component)
             if artifact:
                 self.artifact(artifact["path"], artifact["sha256"])
+        for kind in ("files", "run_once"):
+            for item in (profile or {}).get(kind, []):
+                self.artifact(item["path"], item["sha256"])
         require(shutil.which("qemu-img") and shutil.which("cloud-localds"), "qemu-img and cloud-localds are required")
         return {"vm_image": "verified", "artifacts": "verified"}
 
@@ -237,16 +240,27 @@ class Libvirt:
         for key in policy["networks"]:
             verify(policy, key)
 
-    def check_host_capacity(self, policy, resources):
-        total = int(next(line.split()[1] for line in Path("/proc/meminfo").read_text().splitlines() if line.startswith("MemTotal:"))) // 1024
-        available = int(next(line.split()[1] for line in Path("/proc/meminfo").read_text().splitlines() if line.startswith("MemAvailable:"))) // 1024
+    def host_capacity_report(self, policy, resources):
+        memory = {line.split(":", 1)[0]: int(line.split()[1]) // 1024 for line in Path("/proc/meminfo").read_text().splitlines() if line.startswith(("MemTotal:", "MemAvailable:"))}
         capacity = policy["capacity"]
         reserve = capacity.get("host_reserve_mib", 1024)
-        require(capacity["memory_mib"] + reserve <= total, "configured guest budget leaves insufficient physical host memory reserve")
-        require(capacity["vcpus"] <= (os.cpu_count() or 1) * capacity.get("cpu_overcommit_percent", 100) // 100, "configured vCPU budget exceeds the administrator's explicit CPU overcommit limit")
-        require(sum(r["memory_mib"] for r in resources) + reserve <= available, "insufficient currently available memory for the approved build and host reserve")
         storage = self.storage if self.storage.exists() else self.storage.parent
-        require(shutil.disk_usage(storage).free >= (sum(r["disk_gib"] for r in resources) + 2) * 2**30, "insufficient physical free storage including build overhead")
+        checks, reasons = [], []
+        def check(code, resource, required, available, message):
+            item = {"scope": "physical_host", "resource": resource, "required": required,
+                    "available": max(0, available), "shortfall": max(0, required - available)}
+            checks.append(item)
+            if required > available:
+                reasons.append({"code": code, "message": message, **item})
+        check("host_memory_configuration_invalid", "memory_mib", capacity["memory_mib"] + reserve, memory["MemTotal"], "configured guest budget leaves insufficient physical host memory reserve")
+        check("host_cpu_configuration_invalid", "vcpus", capacity["vcpus"], (os.cpu_count() or 1) * capacity.get("cpu_overcommit_percent", 100) // 100, "configured vCPU budget exceeds the administrator's explicit CPU overcommit limit")
+        check("host_memory_available_exhausted", "memory_mib", sum(r["memory_mib"] for r in resources), memory["MemAvailable"] - reserve, "insufficient currently available memory for the approved build and host reserve")
+        check("host_disk_available_exhausted", "disk_gib", sum(r["disk_gib"] for r in resources) + 2, shutil.disk_usage(storage).free // 2**30, "insufficient physical free storage including build overhead")
+        return {"checks": checks, "reasons": reasons}
+
+    def check_host_capacity(self, policy, resources):
+        result = self.host_capacity_report(policy, resources)
+        require(not result["reasons"], result["reasons"][0]["message"] if result["reasons"] else "host capacity unavailable")
         pool = policy.get("migration_pool")
         if pool:
             capabilities = ET.fromstring(self.virsh("domcapabilities", "--virttype", "kvm", "--arch", "x86_64", "--machine", pool["machine"]))
@@ -395,12 +409,18 @@ class Libvirt:
 
     def resize(self, resource, cls):
         self.require_stopped(resource)
-        disk = self.storage / resource["id"] / "root.qcow2"
+        directory = self.instance_directory(resource)
+        disk = directory / "root.qcow2"
+        require(disk.is_file() and not disk.is_symlink(), "resize_failure: managed disk is not trusted")
+        candidate = directory / ".resize-working.qcow2"
+        require(not candidate.exists() and not candidate.is_symlink(), "resize_failure: interrupted working copy requires inspection")
         info = json.loads(run(["/usr/bin/qemu-img", "info", "--output=json", str(disk)]))
-        require(cls["disk_gib"] * 2**30 >= info["virtual-size"], "disk shrinking is not supported")
-        if cls["disk_gib"] * 2**30 > info["virtual-size"]:
-            run(["/usr/bin/qemu-img", "resize", str(disk), str(cls["disk_gib"]) + "G"])
-        xml = ET.fromstring(self.virsh("dumpxml", resource["id"], "--inactive"))
+        target = cls["disk_gib"] * 2**30
+        require(shutil.disk_usage(directory).free >= (info["virtual-size"] + target + 2 * 2**30), "resize_failure: insufficient temporary disk capacity")
+        available = int(next(line.split()[1] for line in Path("/proc/meminfo").read_text().splitlines() if line.startswith("MemAvailable:"))) // 1024
+        require(available >= 2048, "resize_failure: insufficient memory for isolated filesystem checks")
+        previous = self.virsh("dumpxml", resource["id"], "--inactive")
+        xml = ET.fromstring(previous)
         xml.find("memory").set("unit", "MiB")
         xml.find("memory").text = str(cls["memory_mib"])
         current = xml.find("currentMemory")
@@ -413,10 +433,56 @@ class Libvirt:
             cpu.remove(cpu.find("topology"))
         if xml.find("vcpus") is not None:
             xml.remove(xml.find("vcpus"))
-        path = self.storage / resource["id"] / "resize.xml"
-        path.write_bytes(ET.tostring(xml))
-        self.virsh("define", str(path))
-        self.assert_owned(resource)
+        definition = directory / "resize.xml"
+        original_definition = directory / "pre-resize.xml"
+        original_definition.write_bytes(previous)
+        definition.write_bytes(ET.tostring(xml))
+        work = Path(tempfile.mkdtemp(prefix=".resize-tools-", dir=directory))
+        defined = False
+        try:
+            run(["/usr/bin/qemu-img", "convert", "-f", "qcow2", "-O", "qcow2", str(disk), str(candidate)], timeout=1800)
+            candidate.chmod(0o600)
+            worker = Path(__file__).with_name("disk_worker.py")
+            def tooling(mode):
+                result = json.loads(run(["/usr/bin/python3", "-I", str(worker), mode, str(candidate), str(target), str(work)], timeout=1800))
+                require(result.get("ok"), "resize_failure: " + result.get("reason", "filesystem_tool_failed"))
+            tooling("prepare")
+            args = ["/usr/bin/qemu-img", "resize"]
+            if target < info["virtual-size"]:
+                args.append("--shrink")
+            run([*args, str(candidate), str(target)])
+            tooling("verify")
+            run(["/usr/bin/qemu-img", "check", str(candidate)], timeout=1800)
+            st = disk.stat()
+            os.chown(candidate, st.st_uid, st.st_gid)
+            candidate.chmod(0o600)
+            with candidate.open("rb") as f:
+                os.fsync(f.fileno())
+            self.require_stopped(resource)
+            self.virsh("define", str(definition))
+            defined = True
+            self.assert_owned(resource)
+            # Last disk mutation is an atomic replacement. The original bytes are
+            # already in the checked, seven-day pre-resize backup.
+            os.replace(candidate, disk)
+            fd = os.open(directory, os.O_RDONLY | os.O_DIRECTORY)
+            try:
+                os.fsync(fd)
+            finally:
+                os.close(fd)
+        except Exception:
+            if defined and candidate.exists():
+                self.virsh("define", str(original_definition))
+            raise
+        finally:
+            # Only these exact disposable files were created by this invocation.
+            if candidate.is_file() and not candidate.is_symlink():
+                candidate.unlink()
+            shutil.rmtree(work)
+
+    def resize_workspace_present(self, resource):
+        directory = self.storage / resource["id"]
+        return (directory / ".resize-working.qcow2").exists() or any(directory.glob(".resize-tools-*"))
 
     def backup(self, resource, destination):
         self.require_stopped(resource)

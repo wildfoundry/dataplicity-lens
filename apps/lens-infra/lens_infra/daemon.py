@@ -78,6 +78,27 @@ class Server:
                 req = operation["request"]
                 service.update(desired_instances=req["instances"], applied_release=req["release"], applied_configuration_revision=req["configuration_revision"], last_healthy_operation=operation["id"])
             return {"host_id": p["host_id"], "configuration_revision": p["revision"], "configuration_digest": digest(p), "resources": rows, "services": services}
+        if method == "images":
+            authorize(p, uid, "read")
+            result = []
+            for environment, definition in p["environments"].items():
+                try:
+                    authorize(p, uid, "read", environment)
+                except Rejected:
+                    continue
+                for image_id in definition.get("images", []):
+                    image = p["images"][image_id]
+                    # Paths are administrator metadata, not part of the user catalogue.
+                    result.append({"image": image_id, "environment": environment, "os_family": image["os_family"],
+                                   "format": image.get("format", "qcow2"), "sha256": image["sha256"], "capabilities": image["capabilities"]})
+            return {"host_id": p["host_id"], "configuration_revision": p["revision"], "images": result}
+        if method in ("alerts", "thresholds"):
+            from . import alerts
+            require(not payload, "alert queries do not accept configuration changes")
+            return alerts.status(self.engine, uid) if method == "alerts" else alerts.thresholds(self.engine, uid)
+        if method == "classes":
+            from .capacity import classes
+            return classes(self.engine, payload, uid)
         if method == "deploy.plan":
             return self.engine.plan(payload, uid)
         if method in ("runner.hold", "runner.resume"):
@@ -172,6 +193,10 @@ class Server:
             if self.execution.acquire(blocking=False):
                 try:
                     self.engine.health_tick()
+                    from . import alerts
+                    alerts.sample(self.engine)
+                    from .resize import expire
+                    expire(self.engine)
                 except Exception:
                     pass  # Dataplane checks remain active; never turn uncertainty into deletion.
                 finally:

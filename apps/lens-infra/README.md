@@ -11,6 +11,57 @@ and Faceplate integration are deferred to a separate task and are not prerequisi
 Do not enable it on production hosts until the hardware, recovery and security gates in
 the Linear project are qualified.
 
+## VPS experience
+
+The product is a straightforward VPS connected to the Dataplicity ecosystem: Lens,
+monitoring, logging, useful local access and recovery, with optional IoT/shim integration.
+The first-boot experience and useful operational information are the priorities. A plain
+server does not require an application container, an HTTP endpoint or a shim. Custom OS
+builds remain a separate task; the first integrated guests use vanilla Ubuntu packages.
+
+For the future internal web interface, use a direct **Servers** entry with **Create VPS**
+as the primary action. Show location, environment/network, OS image, available sizes and
+SSH access together. The resulting server page should make its address, current state,
+configuration revision, health, logs and recovery controls easy to find. Application
+deployment is a further action with an explicit workload definition, not a prerequisite
+for creating or understanding a server. Keep unavailable sizes visible with concrete
+capacity reasons. The API must enforce the same internal feature gate as the navigation.
+
+Keep the build choices distinct:
+
+| Choice | Purpose | Example |
+| --- | --- | --- |
+| VM image | Approved, cached base OS disk, pinned by checksum | `ubuntu-server-v1` |
+| Class | CPU, RAM and disk allocation allowed on this host | `small-v1` |
+| Build profile | Named users, Lens/logging, files and run-once setup | `connected-v1` |
+| Workload template | Optional application/runner behavior and ingress | Private server, web service, GitHub runner |
+
+An image name is a local catalogue key, not an AWS identifier. The administrator registers
+the disk path, checksum and supported capabilities once; a build explicitly selects that
+name. New image bytes require a new name. Different operating systems can be approved;
+the selected profile's dependencies must be satisfied. The current Lens package installer
+requires a Debian-family guest. Container/OCI image digests are a separate choice inside
+an application template and never stand in for the VM's base OS.
+
+CI prepares application artifacts. A versioned workload definition tells the guest runtime
+what to execute: pinned application image, command, limits, ports, storage, secret bindings,
+health and shutdown rules. This is the useful task-definition/service distinction in ECS.
+File injection and per-VM run-once setup do not replace supervision of long-running services.
+Database migrations need a separately coordinated deployment job; they must not run once
+per replica simply because a new VPS is bootstrapping. The full worker/scheduler, storage
+and release-publication contract remains in progress under DAT-865 and DAT-868.
+
+```sh
+lens-infra images
+lens-infra classes --environment lab --template server-v1 --image ubuntu-server-v1
+lens-infra vm create build.toml --image ubuntu-server-v1 --plan
+```
+
+These are example names; use the catalogue on the target host. No OS is selected implicitly.
+This source adds the explicit image contract; migrate host policy and existing CI examples
+before upgrading an older installed controller. Central web management is tracked separately
+in [DAT-868](https://linear.app/wildfoundry/issue/DAT-868).
+
 ## Current implementation
 
 - Administrator-owned TOML policy and exact configuration revisions.
@@ -27,8 +78,12 @@ the Linear project are qualified.
 - GitHub runner templates using a pinned local distribution archive and a local registration-token binding.
 - Plan/apply scaling, drain and fresh-build rollback guarded by the expected current release.
 - Local health observation, canary ingress and protocol checks, with independent ingress supervision.
+- Passive local threshold evaluation for sustained VM/container pressure and HTTP endpoint failures.
+- Current class availability with explicit capacity, authorization and preparation shortfalls.
 - Locally administered environment network creation and scoped nftables rules.
-- Persistent VM builds, graceful power controls, offline class/disk growth and disk backup/restore.
+- Explicit approved base-image selection, pinned file injection and recorded per-VM run-once setup.
+- Persistent VM builds, graceful power controls, guarded offline resizing and disk backup/restore.
+- Verified pre-resize local recovery copies, retained for seven days and charged to capacity.
 - Versioned Lens/logging build artifacts and named SSH users with private local home directories.
 - Explicit software VXLAN fabric membership and pinned CPU/machine compatibility pools.
 - An opt-in adapter for the existing custom Wildfoundry runner controller, with durable per-slot hold/resume.

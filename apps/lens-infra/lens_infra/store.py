@@ -92,7 +92,7 @@ class Store:
             if old:
                 before = json.loads(c.execute("SELECT document FROM policies WHERE revision=?", (old[0],)).fetchone()[0])
                 require(before["host_id"] == policy["host_id"], "host identity cannot be changed by a policy update")
-                for section in ("classes", "templates", "networks", "build_profiles"):
+                for section in ("classes", "templates", "networks", "build_profiles", "images"):
                     for key in before.get(section, {}).keys() & policy.get(section, {}).keys():
                         require(before[section][key] == policy[section][key], f"{section} definitions are immutable; create a new versioned name")
                 active = c.execute("SELECT 1 FROM resources WHERE owner='lens' AND state!='removed' LIMIT 1").fetchone()
@@ -155,33 +155,51 @@ class Store:
             return [dict(r) | {"detail": json.loads(r["detail"])} for r in rows]
 
     @staticmethod
-    def _capacity(c, policy, request, allocations):
+    def _capacity_report(c, policy, request, allocations):
         all_rows = c.execute("SELECT * FROM resources").fetchall()
         rows = [row for row in all_rows if row["state"] != "removed"]
         limits = policy["capacity"]
         env = policy["environments"][request["environment"]]
         overrides = policy.get("protected_resources", {})
         parked = set(policy.get("parked_resources", []))
+        reasons, checks = [], []
         for identity in parked:
             matches = [row for row in rows if row["id"] == identity]
-            require(len(matches) == 1 and matches[0]["protected"] and matches[0]["kind"] == "vm" and matches[0]["state"] == "shut off" and time.time() - matches[0]["observed_at"] < 30,
-                    "parked VM must remain defined, protected and freshly verified shut off")
+            if not (len(matches) == 1 and matches[0]["protected"] and matches[0]["kind"] == "vm" and matches[0]["state"] == "shut off" and time.time() - matches[0]["observed_at"] < 30):
+                reasons.append({"code": "parked_state_unverified", "message": "parked VM must remain defined, protected and freshly verified shut off"})
         for row in rows:
             unknown = row["kind"] != "vm" or json.loads(row["detail"]).get("capacity_unknown")
-            require(not unknown or row["id"] in overrides, "protected runtime resources need explicit administrator capacity reservations before new builds")
+            if unknown and row["id"] not in overrides:
+                reasons.append({"code": "unmeasured_protected_resources", "message": "protected runtime resources need explicit administrator capacity reservations before new builds"})
+                break
+        def check(scope, resource, used, needed, limit, message):
+            result = {"scope": scope, "resource": resource, "used": used, "required": needed, "limit": limit,
+                      "available": max(0, limit - used), "shortfall": max(0, used + needed - limit)}
+            checks.append(result)
+            if used + needed > limit:
+                reasons.append({"code": scope + "_" + resource + "_exhausted", "message": message, **result})
         for key in ("vcpus", "memory_mib", "disk_gib"):
-            # Retained disks remain charged even after a VM is unregistered.
             budget_rows = all_rows if key == "disk_gib" else [row for row in rows if row["id"] not in parked]
             used = sum(max(row[key], overrides.get(row["id"], {}).get(key, 0)) for row in budget_rows)
-            backups = c.execute("SELECT * FROM backups").fetchall() if key == "disk_gib" else []
-            used += sum(row["disk_gib"] for row in backups)
+            backups = c.execute("SELECT * FROM backups WHERE state != 'expired'").fetchall() if key == "disk_gib" else []
+            used += sum(row["disk_gib"] + json.loads(row["detail"]).get("workspace_gib", 0) for row in backups)
             needed = sum(a[key] for a in allocations)
-            require(used + needed <= limits[key], f"host {key} capacity exhausted: reserved={used}, requested={needed}, limit={limits[key]}")
+            check("host", key, used, needed, limits[key], f"host {key} capacity exhausted: reserved={used}, requested={needed}, limit={limits[key]}")
             env_used = sum(row[key] for row in budget_rows if row["environment"] == request["environment"])
-            env_used += sum(row["disk_gib"] for row in backups if row["environment"] == request["environment"])
-            require(env_used + needed <= env[key], f"environment {key} quota exhausted")
+            env_used += sum(row["disk_gib"] + json.loads(row["detail"]).get("workspace_gib", 0) for row in backups if row["environment"] == request["environment"])
+            check("environment", key, env_used, needed, env[key], f"environment {key} quota exhausted")
         env_count = sum(row["environment"] == request["environment"] for row in rows)
-        require(env_count + len(allocations) <= env["max_instances"], "environment instance quota exhausted (including rollout surge)")
+        check("environment", "instances", env_count, len(allocations), env["max_instances"], "environment instance quota exhausted (including rollout surge)")
+        return {"checks": checks, "reasons": reasons}
+
+    @staticmethod
+    def _capacity(c, policy, request, allocations):
+        result = Store._capacity_report(c, policy, request, allocations)
+        require(not result["reasons"], result["reasons"][0]["message"] if result["reasons"] else "capacity unavailable")
+
+    def capacity_report(self, policy, request, allocations):
+        with self.connection() as c:
+            return self._capacity_report(c, policy, request, allocations)
 
     def check_capacity(self, policy, request, allocations):
         with self.connection() as c:
@@ -266,6 +284,26 @@ class Store:
         with self.connection() as c:
             c.execute("UPDATE backups SET state='ready',sha256=? WHERE id=?", (checksum, identity))
 
+    def resize_workspace_released(self, operation_id):
+        from .resize import backup_id
+        with self.connection() as c:
+            row = c.execute("SELECT detail FROM backups WHERE id=?", (backup_id(operation_id),)).fetchone()
+            if row:
+                detail = json.loads(row[0])
+                detail["workspace_gib"] = 0
+                c.execute("UPDATE backups SET detail=? WHERE id=?", (json.dumps(detail), backup_id(operation_id)))
+
+    def resize_backup_ready(self, identity, checksum, retention_seconds):
+        with self.connection() as c:
+            row = c.execute("SELECT detail,state FROM backups WHERE id=?", (identity,)).fetchone()
+            require(row is not None, "missing pre-resize recovery copy")
+            detail = json.loads(row["detail"])
+            require(detail.get("kind") == "pre-resize" and row["state"] == "reserved", "invalid pre-resize recovery transition")
+            ready = time.time()
+            detail.update(ready_at=ready, retain_until=ready + retention_seconds)
+            c.execute("UPDATE backups SET state='ready',sha256=?,detail=? WHERE id=?", (checksum, json.dumps(detail), identity))
+            self.audit(c, detail["resize_operation"], 0, "resize-backup-ready", {"backup_id": identity, "retain_until": detail["retain_until"]})
+
     def reserve_action(self, policy, selector, uid):
         with self.connection() as c:
             active = c.execute("SELECT digest FROM policies ORDER BY revision DESC LIMIT 1").fetchone()
@@ -285,9 +323,16 @@ class Store:
             detail = json.loads(resource["detail"])
             if selector["action"] == "resize":
                 cls = policy["classes"][selector["new_class"]]
-                require(cls["disk_gib"] >= resource["disk_gib"], "disk shrinking is not supported")
                 require(detail.get("desired_power") == "off", "shut the VM down before resizing")
-                c.execute("UPDATE resources SET vcpus=?,memory_mib=?,disk_gib=? WHERE id=?", (max(cls["vcpus"], resource["vcpus"]), max(cls["memory_mib"], resource["memory_mib"]), cls["disk_gib"], resource["id"]))
+                c.execute("UPDATE resources SET vcpus=?,memory_mib=?,disk_gib=? WHERE id=?", (max(cls["vcpus"], resource["vcpus"]), max(cls["memory_mib"], resource["memory_mib"]), max(cls["disk_gib"], resource["disk_gib"]), resource["id"]))
+            if selector["action"] == "resize":
+                from .resize import backup_id
+                recovery_detail = {"kind": "pre-resize", "resize_operation": selector["operation_id"],
+                                   "workspace_gib": max(resource["disk_gib"], cls["disk_gib"]),
+                                   "source_request": original, "resource_detail": detail, "original_class": {
+                                       key: resource[key] for key in ("vcpus", "memory_mib", "disk_gib")}}
+                c.execute("INSERT INTO backups VALUES(?,?,?,?,?,?,?,?)", (backup_id(selector["operation_id"]), resource["id"], resource["environment"], resource["disk_gib"],
+                          "reserved", time.time(), None, json.dumps(recovery_detail)))
             if selector["action"] == "backup":
                 require(detail.get("desired_power") == "off", "shut the VM down before an offline backup")
                 c.execute("INSERT INTO backups VALUES(?,?,?,?,?,?,?,?)", (selector["operation_id"], resource["id"], resource["environment"], resource["disk_gib"], "reserved", time.time(), None,

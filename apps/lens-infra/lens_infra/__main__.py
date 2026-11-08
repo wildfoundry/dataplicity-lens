@@ -45,6 +45,8 @@ def main(argv=None):
     for action in ("create", "restore", "boot", "shutdown", "resize", "backup", "delete"):
         p = vm.add_parser(action)
         p.add_argument("file", help="TOML VM build or exact instance selector")
+        if action == "create":
+            p.add_argument("--image", required=True, metavar="NAME", help="Approved local VM image name; run lens-infra images to list choices")
         p.add_argument("--plan", action="store_true")
         p.add_argument("--yes", action="store_true")
     vm.add_parser("backups")
@@ -70,9 +72,17 @@ def main(argv=None):
             p.add_argument("--yes", action="store_true")
     inventory.add_argument("--direct", action="store_true", help="Read existing runtimes with the invoking user's permissions; no daemon needed")
     inventory.add_argument("--record", help="Persist direct inventory as protected resources in this administrator-owned directory")
+    classes = sub.add_parser("classes", help="Show configured classes and whether this host can build them now")
+    for field in ("environment", "network", "template", "image"):
+        classes.add_argument("--" + field)
+    classes.add_argument("--workload", choices=("vm", "service"), default="vm")
+    classes.add_argument("--instances", type=int, default=1, help="Include the capacity required for this many new instances")
     sub.add_parser("status")
     sub.add_parser("metrics")
     sub.add_parser("events")
+    sub.add_parser("images", help="List explicitly approved VM images; no operating system is selected by default")
+    sub.add_parser("alerts", help="Query local evaluated alerts; no automatic actions or notifications")
+    sub.add_parser("thresholds", help="Show the current local monitoring rules and policy revision")
     sub.add_parser("rpc", help="Restricted SSH forced-command transport; accepts one JSON request on stdin")
     worker = sub.add_parser("runner-controller", help="Adopted per-slot controller; local administrator/systemd entry point")
     worker.add_argument("slot", type=int)
@@ -160,6 +170,9 @@ def main(argv=None):
             require(args.plan or args.yes, "VM operations require --yes or --plan")
             with Path(args.file).open("rb") as f:
                 payload = tomllib.load(f)
+            if args.action == "create":
+                require("image" not in payload or payload["image"] == args.image, "--image conflicts with the build document")
+                payload["image"] = args.image
             if args.action in ("create", "restore"):
                 method = "vm." + args.action + (".plan" if args.plan else "")
             else:
@@ -179,6 +192,9 @@ def main(argv=None):
         if args.action in ("resume", "cancel", "cleanup"):
             require(args.yes, "operation changes require --yes")
         result = request(args.socket, {"method": "operation." + args.action, "payload": {"operation_id": args.operation_id}})
+    elif args.command == "classes":
+        payload = {field: getattr(args, field) for field in ("environment", "network", "template", "instances", "workload", "image") if getattr(args, field) is not None}
+        result = request(args.socket, {"method": "classes", "payload": payload})
     elif args.command == "rpc":
         line = sys.stdin.buffer.readline(1024 * 1024 + 1)
         require(len(line) <= 1024 * 1024, "request exceeds frame size")

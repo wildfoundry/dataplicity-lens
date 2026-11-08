@@ -124,6 +124,8 @@ def mounted_root(args, scratch):
             "--image", str(args.image), "--scratch", str(scratch)]
     if args.lens_package:
         argv += ["--lens-package", str(args.lens_package)]
+    if args.build_only:
+        argv += ["--build-only"]
     os.execve("/usr/bin/python3", argv, env)
 
 
@@ -262,6 +264,19 @@ def qualify(args):
         p["templates"]["http-v1"]["image_sha256"] = file_digest(golden)
         p["templates"]["server-v1"]["image"] = str(golden)
         p["templates"]["server-v1"]["image_sha256"] = file_digest(golden)
+        p['images'] = {'qualified-linux-v1': {'path': str(golden), 'sha256': file_digest(golden),
+            'format': 'qcow2', 'os_family': 'debian',
+            'capabilities': ['cloud-init', 'qemu-guest-agent', 'python3', 'nftables', 'systemd', 'bash']}}
+        p['environments']['qualification']['images'] = ['qualified-linux-v1']
+        config_file = args.scratch / 'first-boot.conf'
+        config_file.write_text('qualification-config-v1\n')
+        run_once_file = args.scratch / 'first-boot.sh'
+        run_once_file.write_text('set -eu\ntest "$(cat /etc/lens-qualification.conf)" = qualification-config-v1\nprintf "initialised\\n" >> /var/lib/lens-first-boot-count\n')
+        p['build_profiles']['agents-v1'].update(
+            files=[{'name': 'first-boot-config-v1', 'path': str(config_file), 'sha256': file_digest(config_file),
+                    'destination': '/etc/lens-qualification.conf', 'owner': 'root', 'group': 'root', 'mode': '0640'}],
+            run_once=[{'name': 'first-boot-v1', 'path': str(run_once_file), 'sha256': file_digest(run_once_file),
+                       'interpreter': '/bin/sh', 'timeout_seconds': 30}])
         store = Store("/var/lib/lens-infra")
         store.apply_policy(validate(p), 0)
         proxy = Ingress(store.root, binary=str(args.tools.parent / "haproxy"), supervised=False)
@@ -307,7 +322,7 @@ def qualify(args):
         assert store.operation(req["operation_id"])["resources"][0]["state"] == "removed"
         from lens_infra import vm
         server_request = vm.create_request({'operation_id': 'qualification-server', 'configuration_revision': 1, 'host_id': p['host_id'],
-                                           'environment': 'qualification', 'name': 'persistent-server', 'class': 'small-v1', 'template': 'server-v1', 'network': 'app', 'release': 'server-one'})
+                                           'environment': 'qualification', 'name': 'persistent-server', 'class': 'small-v1', 'template': 'server-v1', 'network': 'app', 'release': 'server-one', 'image': 'qualified-linux-v1'})
         engine.submit(server_request, 0)
         engine.execute(server_request['operation_id'])
         server = store.operation(server_request['operation_id'])
@@ -334,7 +349,25 @@ def qualify(args):
         assert b'ROOT]' in root_shell.stdout, 'elevated shell was not unmistakable'
         status = json.loads(command(*ssh, 'dp-status --json'))
         assert status['environment'] == 'qualification' and status['class'] == 'small-v1'
+        def bootstrap_status(target):
+            code = 'import json;from pathlib import Path;f=Path("/etc/lens-qualification.conf");s=Path("/var/lib/lens/bootstrap/steps/first-boot-v1.json");print(json.dumps({"config":f.read_text(),"mode":f.stat().st_mode & 511,"count":Path("/var/lib/lens-first-boot-count").read_text(),"step":json.loads(s.read_text())["state"]}))'
+            return json.loads(backend.guest_exec(target, ['/usr/bin/python3', '-I', '-c', code]))
+        expected_bootstrap = {'config': 'qualification-config-v1\n', 'mode': 0o640, 'count': 'initialised\n', 'step': 'completed'}
+        assert bootstrap_status(instance) == expected_bootstrap
+        # Delivery repeats during controller recovery/boot. Completed setup must not.
+        engine.deliver(instance, server_request, p)
+        assert bootstrap_status(instance) == expected_bootstrap
+        print('explicit local image, pinned file injection and non-repeating bootstrap qualified', flush=True)
         print('real interactive SSH prompt, root distinction and local status qualified', flush=True)
+        if args.build_only:
+            evidence = {'qualified': True, 'runtime': 'real-kvm-libvirt', 'scope': 'private-mount-and-network-namespaces',
+                        'checks': ['explicit-local-image-selection', 'pinned-file-injection', 'file-owner-and-mode',
+                                   'run-once-before-readiness', 'run-once-not-repeated-by-recovery', 'private-server-without-HTTP-readiness',
+                                   'named-user-SSH-and-sudo', 'Lens-and-logging-build-profile' if args.lens_package else 'local-build-profile'],
+                        'excluded': ['disk-resize', 'backup-and-restore', 'host-reboot']}
+            (args.scratch / 'evidence.json').write_text(json.dumps(evidence, indent=2))
+            print(json.dumps(evidence), flush=True)
+            return
         backend.guest_exec(instance, ['/usr/bin/python3', '-I', '-c', 'from pathlib import Path;Path("/var/lib/lens-backup-marker").write_text("preserved-customer-data")'])
         def action(kind, suffix, **extra):
             selector = {'operation_id': 'qualification-'+suffix, 'configuration_revision': 1, 'host_id': p['host_id'], 'instance_id': instance['id'], 'action': kind, **extra}
@@ -364,6 +397,7 @@ def qualify(args):
         assert b'preserved-customer-data' in marker
         home_data = backend.guest_exec(instance2, ['/usr/bin/python3', '-I', '-c', 'from pathlib import Path;print(Path("/home/vmadmin/home-marker").read_text())'])
         assert b'preserved-private-home' in home_data
+        assert bootstrap_status(instance2) == expected_bootstrap, 'restored bootstrap repeated or injected file changed'
         import xml.etree.ElementTree as ET
         definition = ET.fromstring(backend.virsh('dumpxml', instance2['id']))
         assert definition.find('memory').text == str(1536 * 1024)
@@ -403,6 +437,7 @@ def main():
     parser.add_argument("--image", required=True, type=Path)
     parser.add_argument("--scratch", type=Path)
     parser.add_argument("--lens-package", type=Path)
+    parser.add_argument("--build-only", action="store_true", help="Qualify image/bootstrap without disk lifecycle operations")
     parser.add_argument("--inside", action="store_true")
     args = parser.parse_args()
     if sys.platform != "linux" or os.geteuid() != 0:
