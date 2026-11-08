@@ -94,6 +94,18 @@ class ClassAvailabilityTests(unittest.TestCase):
         self.assertTrue(all(any(reason['code'] == 'artifact_unavailable' and 'bootstrap' in reason['message']
                                 for reason in row['reasons']) for row in rows))
 
+    def test_catalogue_template_without_environment_image_permission_fails_cleanly(self):
+        p = copy.deepcopy(self.policy);p['revision'] = 2
+        p['templates']['catalogue-only-v1'] = {'kind': 'appliance', 'profile': 'private', 'build_profile': 'admin-v1'}
+        p['environments']['production'].update(templates=['catalogue-only-v1'], images=[])
+        self.store.apply_policy(validate(p), 0)
+        for workload in ('vm', 'service'):
+            rows = self.query(workload=workload)['classes']
+            self.assertTrue(all(not row['available'] for row in rows))
+            self.assertTrue(all(any(reason['code'] == 'build_not_allowed' for reason in row['reasons']) for row in rows))
+        with self.assertRaisesRegex(Rejected, 'explicit approved local VM image'):
+            self.engine.submit(request(configuration_revision=2, template='catalogue-only-v1'), 1001)
+
     def test_api_dispatch_and_repeat_queries_never_reserve_resources(self):
         server = Server(self.engine, self.root / 'unused.sock')
         one = server.dispatch({'method': 'classes'}, 1001)

@@ -406,6 +406,7 @@ def deployment(p, request):
     require(request["network"] in e["networks"], "network is not owned by this environment")
     integer(request.get("instances"), 0, e["max_instances"], "instance count")
     t = p["templates"][request["template"]]
+    require(request.get("image") or t.get("image"), "select an explicit approved local VM image")
     if request.get("image"):
         image_id = name(request["image"])
         require(image_id in p.get("images", {}) and image_id in e.get("images", []), "image is not approved for this environment")

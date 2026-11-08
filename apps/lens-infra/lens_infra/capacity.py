@@ -56,7 +56,7 @@ def classes(engine, selector, uid):
     if image_id:
         image = p['images'][image_id]
         selected.update(image=image['path'], image_sha256=image['sha256'], image_format=image.get('format', 'qcow2'))
-    artifacts = [(selected['image'], 'VM image')]
+    artifacts = [(selected['image'], 'VM image')] if selected.get('image') else []
     profile = p.get('build_profiles', {}).get(selected.get('build_profile'), {})
     artifacts += [(a['path'], 'build artifact') for a in profile.values() if isinstance(a, dict) and 'path' in a]
     for kind in ('files', 'run_once'):

@@ -72,7 +72,7 @@ coordinate through Linux flock while the service keeps `/etc` read-only.
 
 ## Recorded qualification
 
-The latest source passed **131 Linux tests** on 2026-11-08, including real HAProxy,
+The latest source passed **132 Linux tests** on 2026-11-08, including real HAProxy,
 Unix peer identity, terminal rendering, transactional admission, resize protection,
 passive alert windows/scoping and concurrent bootstrap recovery. A separate real
 KVM/libvirt build-only fixture in disposable mount/network namespaces passed explicit
@@ -84,7 +84,7 @@ test. This fixture explicitly excludes resize, backup/restore and host reboot.
 The separate disk-tool fixture also booted a verified 8-to-6-GiB shrunk Ubuntu disk,
 preserved file checksums/boot identities and rejected a too-small target and an unsupported
 ext3 filesystem without changing its source. Installed-systemd/live-VM resize qualification
-remains outstanding. Package `0.3.11+infra10` was built and checked for the absence of
+remains outstanding. Package `0.3.11+infra11` was built and checked for the absence of
 maintainer scripts, **not installed on the live R630s**. They retain `infra9` and policy
 revision 1; catalogue/CI migration and functional upgrade qualification are still required.
 
