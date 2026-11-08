@@ -27,7 +27,8 @@ procedure exists. This version deliberately has no disk purge operation.
 An administrator may explicitly list a protected VM's UUID in `parked_resources` after
 stopping its owning controller and gracefully shutting it down. Compute reservations are
 released only while inventory freshly confirms that the VM remains defined and shut off;
-its disk stays charged. A running or missing parked VM blocks new builds and recovery.
+its disk stays charged. A running or missing parked VM blocks capacity-increasing work
+and recovery; graceful shutdown remains available.
 CPU overcommit is separately bounded by administrator policy (`cpu_overcommit_percent`,
 default 100). Memory retains its physical host reserve; CI cannot change either budget.
 
@@ -69,7 +70,7 @@ coordinate through Linux flock while the service keeps `/etc` read-only.
 
 ## Recorded qualification
 
-On 2026-11-08, the Linux suite passed 82 unit/integration/real-PTY checks. Real packet tests
+On 2026-11-08, the Linux suite passed 86 unit/integration/real-PTY checks. Real packet tests
 passed the 10 local isolation checks and the nested-host VXLAN checks, including two VNIs,
 the 1350-byte MTU boundary, environment/management denial, unapproved transport peers and
 guest DHCP-server spoofing. Link verification reads the kernel's read-only rtnetlink API:
@@ -83,6 +84,28 @@ filesystem growth were checked; customer/home marker files survived, and verifie
 artifacts were reused. This was inside disposable mount/network namespaces, not an R730
 qualification. The separate package was audited for root ownership, directory permissions,
 required shell assets and absence of service-enabling maintainer scripts.
+
+The installed vanilla-Ubuntu pilot also completed VM builds through the restricted SSH
+CI account on both physical R630 hosts. Both hosts passed graceful shutdown, offline
+RAM/disk growth, standalone offline backup and reboot. Guest checks confirmed actual
+RAM/filesystem growth, local configuration version, named-admin SSH/sudo, private homes,
+Lens/logging installation and secret file mode `0600`. Protected inventory and stale policy
+requests were rejected; local monitoring remained available without a web component.
+
+On the first R630, a local web service completed health-gated deployment and replacement
+with independently supervised HAProxy. Direct HTTP checks passed; restarting only the new
+control daemon produced zero failures across 99 HTTP probes while ingress stayed active.
+The recorded original parked VM remained defined and shut off on each host, with its disk
+preserved; the other 13 runner-controller services per host retain the original controller.
+This is a bounded pilot, not a completed host-reboot or cross-host qualification.
+
+Installed-service testing caught admission-lock access on read-only `/etc`, directory
+traversal under the private service umask, named CPU expansion and stale parked-capacity
+observations. Secret files are explicitly created `0600` before delivery; the guest agent's
+umask is not trusted. Lifecycle admission refreshes inventory, and graceful shutdown is
+allowed even if current reservations exceed the configured budget. The optional package
+is `0.3.11+infra7`; the main collector remains the existing release. The pilot controller
+was started explicitly and has not yet been enabled for host boot.
 
 These results do not close the physical R630 network, real GitHub job, reboot/failure,
 certificate rotation, redundant ingress, independent rescue, IPAM/failover or fenced
