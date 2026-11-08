@@ -40,6 +40,25 @@ host containers. VM destruction checks
 the persistent reservation, UUID and Lens ownership metadata before acting. Retained disks
 are kept for recovery and must continue to count against storage capacity.
 
+## Terminal output
+
+Commands render human-readable summaries by default: Lens-coloured headings, service
+releases, VM sizes/states, protected inventory, plans, operation progress and errors.
+Tables adapt to terminal width; narrow terminals use stacked fields without losing UUIDs.
+Pipes and `NO_COLOR` omit colour, and dumb/non-Unicode terminals use ASCII.
+
+```sh
+lens-infra status
+lens-infra operation status web-build-one
+lens-infra status --json
+lens-infra --json operation status web-build-one
+```
+
+`--json` preserves the versioned envelope for scripts and is accepted before or after
+subcommands. Restricted SSH `rpc` always emits JSON, including errors, without needing
+that flag. `metrics` continues to emit Prometheus text. Existing scripts that parse the
+ordinary CLI's previous default JSON must add `--json`.
+
 ## Development
 
 Requires Python 3.11 or newer. The guest workload runner requires an approved Linux VM

@@ -19,7 +19,7 @@ from .store import Store
 def main(argv=None):
     parser = argparse.ArgumentParser(prog="lens-infra", description="Opt-in local Lens infrastructure control; no cloud or reporting connection.")
     parser.add_argument("--socket", default="/run/lens-infra/control.sock")
-    parser.add_argument("--json", action="store_true")
+    parser.add_argument("--json", action="store_true", help="Emit the versioned JSON envelope for scripts")
     sub = parser.add_subparsers(dest="command", required=True)
     config = sub.add_parser("config").add_subparsers(dest="action", required=True)
     for action in ("validate", "apply"):
@@ -80,6 +80,16 @@ def main(argv=None):
     server.add_argument("--state-dir", default="/var/lib/lens-infra")
     server.add_argument("--storage-dir", default="/var/lib/libvirt/images/lens-infra")
     server.add_argument("--group", default="lens-infra")
+    # Permit --json before or after any subcommand without child defaults
+    # overwriting the root flag (e.g. operation status ID --json).
+    def output_options(parent):
+        for item in parent._actions:
+            if isinstance(item, argparse._SubParsersAction):
+                for child in item.choices.values():
+                    child.add_argument("--json", action="store_true", default=argparse.SUPPRESS,
+                                       help="Emit the versioned JSON envelope for scripts")
+                    output_options(child)
+    output_options(parser)
     args = parser.parse_args(argv)
     if args.command == "runner-controller":
         require(os.geteuid() == 0, "the runner controller requires the local administrator")
@@ -181,16 +191,29 @@ def main(argv=None):
         result = request(args.socket, {"method": args.command})
     if args.command == "metrics":
         print(result, end="")
-    else:
+    elif args.json or args.command == "rpc":
         print(json.dumps({"schema_version": 1, "result": result}, indent=None if args.command == "rpc" else 2))
+    else:
+        from .display import render
+        print(render(args.command, getattr(args, "action", None), result,
+                     planned=getattr(args, "plan", False)), end="")
     return 0
 
 
-if __name__ == "__main__":
+def cli(argv=None):
+    arguments = list(sys.argv[1:] if argv is None else argv)
     try:
-        sys.exit(main())
+        return main(arguments)
     except (Rejected, OSError, ValueError) as exc:
-        # Policy errors contain no secret values; native command output is never echoed.
+        # Raw native/guest output never enters diagnostics. Preserve RPC errors.
         message = str(exc) if isinstance(exc, Rejected) else type(exc).__name__ + ": local operation failed"
-        print(json.dumps({"schema_version": 1, "error": message}), file=sys.stderr)
-        sys.exit(1)
+        if "--json" in arguments or "rpc" in arguments:
+            print(json.dumps({"schema_version": 1, "error": message}), file=sys.stderr)
+        else:
+            from .display import render_error
+            print(render_error(message, sys.stderr), end="", file=sys.stderr)
+        return 1
+
+
+if __name__ == "__main__":
+    sys.exit(cli())

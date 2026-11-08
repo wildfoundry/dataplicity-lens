@@ -145,6 +145,25 @@ For the first implementation, the service frontend binds loopback. An existing l
 administered edge proxy can expose it; public edge routing and a redundant ingress VM pair
 remain pilot work. Local combined PEM files may terminate TLS; their key remains local.
 
+## Human and machine output
+
+Normal CLI commands render terminal summaries, following Lens's magenta/cyan palette.
+States always have text labels; narrow terminals use stacked fields and preserve exact
+selectors. Output has no ANSI colour when piped or when `NO_COLOR` is set. `TERM=dumb`
+and non-Unicode output streams use ASCII.
+
+For scripts parsing CLI results, explicitly add `--json` (before or after subcommands):
+
+```sh
+sudo lens-infra status
+sudo lens-infra status --json
+sudo lens-infra operation status web-build-one --json
+```
+
+The JSON envelope and failure exit codes are unchanged. Restricted SSH `rpc` always uses
+JSON for results/errors. `metrics` remains Prometheus text. This display change does not
+alter authorization, requests, policy, scheduling or workload lifecycle.
+
 ## CI interface
 
 ```sh
