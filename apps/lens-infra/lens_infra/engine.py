@@ -146,7 +146,11 @@ class Engine:
             else:
                 data = self._trusted_file(binding["path"], max_bytes=1024 * 1024)
             try:
-                self.backend.guest_file(resource, "/run/lens/secrets/" + secret, data)
+                destination = "/run/lens/secrets/" + secret
+                # QGA's file-open uses the agent's umask. Create privately before
+                # the first byte, including when refreshing an existing binding.
+                self.backend.guest_exec(resource, ["/usr/bin/install", "-m", "0600", "/dev/null", destination])
+                self.backend.guest_file(resource, destination, data)
             finally:
                 del data
             generations[secret] = binding["generation"]

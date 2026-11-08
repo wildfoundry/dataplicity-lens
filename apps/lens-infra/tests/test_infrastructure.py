@@ -315,6 +315,25 @@ class InfrastructureTests(unittest.TestCase):
         self.assertNotIn("sentinel-do-not-report", public)
         self.assertNotIn("sentinel-do-not-report", (self.root / "state/state.sqlite3").read_bytes().decode(errors="ignore"))
 
+    def test_secret_delivery_is_private_before_the_first_byte(self):
+        import os
+        import subprocess
+        destination = self.root / "guest-secret"
+        previous = os.umask(0o022)  # agent defaults must not decide secret modes
+        self.addCleanup(os.umask, previous)
+        def execute(resource, argv, **kwargs):
+            if argv[:4] == ["/usr/bin/install", "-m", "0600", "/dev/null"]:
+                subprocess.run([*argv[:4], str(destination)], check=True)
+            return b""
+        def write(resource, path, data):
+            if path == "/run/lens/secrets/db":
+                self.assertEqual(destination.stat().st_mode & 0o777, 0o600)
+                destination.write_bytes(data)
+                self.assertEqual(destination.stat().st_mode & 0o777, 0o600)
+        with patch.object(self.backend, "guest_exec", side_effect=execute), patch.object(self.backend, "guest_file", side_effect=write):
+            self.engine.deliver({"id": "fixture", "name": "fixture", "detail": {}}, request(), self.store.policy())
+        self.assertEqual(destination.read_bytes(), b"sentinel-do-not-report")
+
     def test_secret_source_permissions_and_symlinks_are_rejected(self):
         path = self.root / "credential"
         path.chmod(0o644)
