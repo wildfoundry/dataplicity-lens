@@ -120,7 +120,7 @@ fn remaining(gate: &Gate) -> Duration {
     Duration::from_millis(gate.not_before_ms.saturating_sub(wall_ms()))
 }
 
-/// Explicit one-attempt registration. The organisation code is never written to state.
+/// Explicit one-attempt registration. The setup code is never written to state.
 pub fn register(dir: &Path, base: &str, name: &str, code: &str, refresh: bool) -> Result<()> {
     private_dir(dir)?;
     validate_server(base)?;
@@ -159,16 +159,20 @@ pub fn register(dir: &Path, base: &str, name: &str, code: &str, refresh: bool) -
     // Store enrolment identity and reserve a slot BEFORE making a potentially ambiguous request.
     state.gate.reserve_attempt(wall_ms());
     write_state(dir, &state)?;
-    let body = serde_json::to_vec(
-        &serde_json::json!({"provisioning_key":code.trim(),"name":name,"registration_id":state.registration_id,"expected_device_hash":state.device_hash}),
-    )?;
-    let result = agent()
-        .post(format!(
-            "{}/device-gateway/lens/provision/",
-            state.server_url
-        ))
-        .header("Content-Type", "application/json")
-        .send(&body);
+    let code = code.trim();
+    let body = serde_json::to_vec(&serde_json::json!({
+        "provisioning_key": code,
+        "name": name,
+        "registration_id": state.registration_id,
+        "expected_device_hash": state.device_hash,
+    }))?;
+    let result = send_registration(
+        &agent(),
+        &format!("{}/device-gateway/lens/provision/", state.server_url),
+        code,
+        state.device_secret.as_deref(),
+        &body,
+    );
     let mut response = match result {
         Ok(response) => response,
         Err(_) => {
@@ -243,6 +247,20 @@ pub fn register(dir: &Path, base: &str, name: &str, code: &str, refresh: bool) -
     write_state(dir, &state)?;
     println!("Lens registered. Reporting services remain stopped until explicitly enabled.");
     Ok(())
+}
+
+fn send_registration(
+    agent: &ureq::Agent,
+    url: &str,
+    code: &str,
+    existing_secret: Option<&str>,
+    body: &[u8],
+) -> Result<ureq::http::Response<ureq::Body>, ureq::Error> {
+    let mut request = agent.post(url).header("Content-Type", "application/json");
+    if let Some(secret) = existing_secret.filter(|_| code.starts_with("vpslog1.")) {
+        request = request.header("Authorization", format!("ApiKey {secret}"));
+    }
+    request.send(body)
 }
 
 fn send_upload(
@@ -432,9 +450,40 @@ fn prepare_upload(report: &mut crate::protocol::Report, enabled: bool, reason: &
     Ok(())
 }
 
+fn valid_syslog_host(host: &str) -> bool {
+    host.len() <= 253
+        && host
+            .rsplit_once('.')
+            .is_some_and(|(_, last)| last.bytes().any(|byte| byte.is_ascii_alphabetic()))
+        && host.split('.').all(|label| {
+            (1..=63).contains(&label.len())
+                && !label.starts_with('-')
+                && !label.ends_with('-')
+                && label
+                    .bytes()
+                    .all(|byte| byte.is_ascii_alphanumeric() || byte == b'-')
+        })
+}
+
 /// Produce an rsyslog snippet for an administrator to install privately. Does not transmit logs.
-pub fn syslog_config(dir: &Path, ca_file: &str) -> Result<String> {
+pub fn syslog_config(
+    dir: &Path,
+    ca_file: &str,
+    host: Option<&str>,
+    port: Option<u16>,
+) -> Result<String> {
     let state = read_state(dir)?;
+    let host = match host {
+        Some(host) => host,
+        None if state.server_url == "https://app-api.dataplicity.com" && port.is_none() => {
+            "syslog.us.dvcmgr.net"
+        }
+        None => bail!("set the TLS syslog collector host explicitly for this API origin"),
+    };
+    let port = port.unwrap_or(6514);
+    if !valid_syslog_host(host) || port == 0 {
+        bail!("invalid TLS syslog collector host or port");
+    }
     let token = state
         .syslog_token
         .as_deref()
@@ -460,9 +509,9 @@ template(name="DataplicityLensFrame" type="string"
  string="<%pri%>1 %timestamp:::date-rfc3339% %hostname% %app-name% %procid% - [dataplicity@48577 token=\"{token}\"] %msg:1:4096%\n")
 if ($syslogseverity <= 4) then {{
  action(name="DataplicityLensForward" type="omfwd"
-  target="syslog.us.dvcmgr.net" port="6514" protocol="tcp"
+  target="{host}" port="{port}" protocol="tcp"
   StreamDriver="gtls" StreamDriverMode="1" StreamDriverAuthMode="x509/name"
-  StreamDriverPermittedPeers="syslog.us.dvcmgr.net" StreamDriver.CAFile="{ca_file}"
+  StreamDriverPermittedPeers="{host}" StreamDriver.CAFile="{ca_file}"
   template="DataplicityLensFrame" action.resumeRetryCount="-1"
   action.resumeInterval="60" action.resumeIntervalMax="3600"
   queue.type="FixedArray" queue.size="1000" queue.timeoutEnqueue="0"
@@ -533,17 +582,48 @@ mod tests {
         let mut value = state();
         let token = format!("lnslog1.{}.{}", "a".repeat(64), "b".repeat(64));
         value.syslog_token = Some(token.clone());
+        value.server_url = "https://app-api.dataplicity.com".into();
         write_state(&dir.0, &value).unwrap();
-        let config = syslog_config(&dir.0, "/etc/ssl/certs/ca-certificates.crt").unwrap();
+        let ca = "/etc/ssl/certs/ca-certificates.crt";
+        let config = syslog_config(&dir.0, ca, None, None).unwrap();
         assert!(config.contains(&token));
         assert!(!config.contains(value.device_secret.as_deref().unwrap()));
         assert!(config.contains("x509/name"));
+        assert!(config.contains("target=\"syslog.us.dvcmgr.net\" port=\"6514\""));
         assert!(config.contains("queue.size=\"1000\""));
         assert!(config.contains("queue.saveOnShutdown=\"off\""));
-        assert!(syslog_config(&dir.0, "/bad/path\" injection").is_err());
+        assert!(syslog_config(&dir.0, "/bad/path\" injection", None, None).is_err());
         value.syslog_token = Some("lnslog1.bad\" injection".into());
         write_state(&dir.0, &value).unwrap();
-        assert!(syslog_config(&dir.0, "/etc/ssl/certs/ca-certificates.crt").is_err());
+        assert!(syslog_config(&dir.0, ca, None, None).is_err());
+    }
+
+    #[test]
+    fn custom_origins_require_an_explicit_collector_and_validate_its_exact_tls_peer() {
+        let dir = Directory::new();
+        let mut value = state();
+        value.syslog_token = Some(format!("lnslog1.{}.{}", "a".repeat(64), "b".repeat(64)));
+        write_state(&dir.0, &value).unwrap();
+        let ca = "/etc/ssl/certs/ca-certificates.crt";
+        assert!(syslog_config(&dir.0, ca, None, None).is_err());
+        let config = syslog_config(&dir.0, ca, Some("logs.test.invalid"), Some(16514)).unwrap();
+        assert!(config.contains("target=\"logs.test.invalid\" port=\"16514\""));
+        assert!(config.contains("StreamDriverPermittedPeers=\"logs.test.invalid\""));
+        assert!(config.contains("StreamDriverAuthMode=\"x509/name\""));
+        assert!(!config.contains("syslog.us.dvcmgr.net"));
+        assert!(syslog_config(&dir.0, ca, Some("logs.test.invalid"), Some(0)).is_err());
+        for invalid in [
+            "*.test.invalid",
+            "logs.test.invalid.",
+            "192.0.2.1",
+            "logs..invalid",
+            "logs-.invalid",
+            "https://logs.test.invalid",
+            "logs.test.invalid:6514",
+            "logs.test.invalid\" injection",
+        ] {
+            assert!(syslog_config(&dir.0, ca, Some(invalid), None).is_err());
+        }
     }
 
     fn state() -> State {
@@ -608,7 +688,7 @@ mod tests {
         assert!(agent().config().https_only());
         assert_eq!(agent().config().max_response_header_size(), 16384);
     }
-    fn mock_server(response: &'static str) -> (String, std::thread::JoinHandle<usize>) {
+    fn mock_server(response: &'static str) -> (String, std::thread::JoinHandle<Vec<u8>>) {
         let listener = TcpListener::bind("127.0.0.1:0").expect("bind loopback test server");
         let address = listener.local_addr().expect("test address");
         let thread = std::thread::spawn(move || {
@@ -645,9 +725,35 @@ mod tests {
                 bytes.extend_from_slice(&buf[..n]);
             }
             stream.write_all(response.as_bytes()).expect("respond once");
-            1
+            bytes
         });
         (format!("http://{address}/reports"), thread)
+    }
+    #[test]
+    fn only_vps_setup_codes_prove_existing_registration_with_its_upload_credential() {
+        let local: ureq::Agent = ureq::Agent::config_builder()
+            .proxy(None)
+            .timeout_global(Some(Duration::from_secs(3)))
+            .build()
+            .into();
+        for (code, existing_secret, expected) in [
+            ("vpslog1.fixture", Some("fixture"), Some("ApiKey fixture")),
+            ("vpslog1.fixture", None, None),
+            ("organisation-fixture", Some("fixture"), None),
+        ] {
+            let (url, server) = mock_server(
+                "HTTP/1.1 201 Created\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
+            );
+            let response = send_registration(&local, &url, code, existing_secret, b"{}").unwrap();
+            assert_eq!(response.status(), 201);
+            let request = String::from_utf8(server.join().expect("server")).unwrap();
+            let authorization = request.lines().find_map(|line| {
+                let (name, value) = line.split_once(':')?;
+                name.eq_ignore_ascii_case("authorization")
+                    .then(|| value.trim())
+            });
+            assert_eq!(authorization, expected);
+        }
     }
     #[test]
     fn actual_success_announces_four_hour_interval_without_reading_a_control_body() {
@@ -670,7 +776,12 @@ mod tests {
         );
         assert_eq!(gate.interval_seconds, 14400);
         assert!(!gate.ready(before + 14_400_000 - 1));
-        assert_eq!(server.join().expect("server"), 1);
+        assert!(
+            server
+                .join()
+                .expect("server")
+                .starts_with(b"POST /reports ")
+        );
     }
     #[test]
     fn actual_429_is_one_request_and_long_retry_after_is_not_capped() {
@@ -697,7 +808,12 @@ mod tests {
         for tick in 0..7200 {
             assert!(!gate.ready(before + tick * 1000));
         }
-        assert_eq!(server.join().expect("test server"), 1);
+        assert!(
+            server
+                .join()
+                .expect("server")
+                .starts_with(b"POST /reports ")
+        );
     }
     #[test]
     fn actual_redirect_does_not_forward_credentials_or_follow_location() {
@@ -717,7 +833,12 @@ mod tests {
             Outcome::Halt
         );
         assert!(gate.halted);
-        assert_eq!(server.join().expect("test server"), 1);
+        assert!(
+            server
+                .join()
+                .expect("server")
+                .starts_with(b"POST /reports ")
+        );
     }
 }
 
