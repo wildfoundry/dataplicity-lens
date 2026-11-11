@@ -375,7 +375,13 @@ impl SessionView {
                     ),
                 ] {
                     if let Some(history) = history {
-                        lines.push(trend_line(label, history, width.saturating_sub(8), divisor));
+                        lines.extend(trend_lines(
+                            label,
+                            history,
+                            width.saturating_sub(8),
+                            divisor,
+                            1,
+                        ));
                     }
                 }
             }
@@ -387,11 +393,12 @@ impl SessionView {
             }
         } else if view == View::Hardware {
             if !self.power.is_empty() {
-                lines.push(trend_line(
+                lines.extend(trend_lines(
                     "Host power W",
                     &self.power,
                     width.saturating_sub(8),
                     1.0,
+                    if budget >= 12 { 3 } else { 1 },
                 ));
                 let mean = self.power.iter().sum::<u64>() as f64 / self.power.len() as f64;
                 lines.push(format!(
@@ -406,26 +413,28 @@ impl SessionView {
                 .take(4)
             {
                 if let Some(history) = self.thermal.get(&sensor.source) {
-                    lines.push(trend_line(
+                    lines.extend(trend_lines(
                         &sensor_label(snapshot, sensor),
                         history,
                         width.saturating_sub(8),
                         10.0,
+                        1,
                     ));
                 }
             }
         } else if view == View::Logs && !self.log_activity.is_empty() {
-            lines.push(trend_line(
+            lines.extend(trend_lines(
                 "New flagged / refresh (latest 2000)",
                 &self.log_activity,
                 width.saturating_sub(8),
                 1.0,
+                1,
             ));
         }
         if !lines.is_empty() {
             let elapsed = self.first_sample.map_or(0, |t| t.elapsed().as_secs());
             let panel = overview::OverviewPanel::new(
-                &format!("TRENDS ~10s/sample / {elapsed}s observed / peak scale"),
+                &format!("TRENDS ~10s/sample / {elapsed}s observed / min..max scale"),
                 lines,
                 Ink::Info,
             );
@@ -444,24 +453,65 @@ fn log_key(log: &LogEntry) -> String {
         log.message
     )
 }
-fn trend_line(label: &str, history: &VecDeque<u64>, width: usize, divisor: f64) -> String {
-    let graph_width = width.saturating_sub(38).clamp(4, 60);
+/// Labels never compete with the graph for horizontal space. Sparse observations
+/// occupy equal time slots; stretching their display does not invent new samples.
+fn trend_lines(
+    label: &str,
+    history: &VecDeque<u64>,
+    width: usize,
+    divisor: f64,
+    height: usize,
+) -> Vec<String> {
+    if history.is_empty() || width == 0 {
+        return Vec::new();
+    }
+    let minimum = history.iter().copied().min().unwrap_or(0);
+    let maximum = history.iter().copied().max().unwrap_or(0);
     let current = history.back().copied().unwrap_or(0) as f64 / divisor;
-    let peak = history
-        .iter()
-        .rev()
-        .take(graph_width)
-        .max()
-        .copied()
-        .unwrap_or(0) as f64
-        / divisor;
-    truncate_text(
+    let mut lines = vec![truncate_text(
         &format!(
-            "{label}: {current:.1} (peak {peak:.1}) {}",
-            activity_sparkline(history, graph_width)
+            "{label}: {current:.1} / min {:.1} / peak {:.1} / {} samples",
+            minimum as f64 / divisor,
+            maximum as f64 / divisor,
+            history.len()
         ),
         width,
-    )
+    )];
+    // One observation is a value, not a trend. Keep the history visibly pending.
+    if history.len() == 1 {
+        lines.push(truncate_text("Collecting history...", width));
+        return lines;
+    }
+    let height = height.max(1);
+    let bars = glyphs().bars;
+    for row in (0..height).rev() {
+        let graph: String = (0..width)
+            .map(|column| {
+                // Compress dense histories by retaining each bucket's peak.
+                let start = column * history.len() / width;
+                let end = ((column + 1) * history.len() / width).max(start + 1);
+                let value = history
+                    .range(start..end.min(history.len()))
+                    .copied()
+                    .max()
+                    .unwrap_or(minimum);
+                let level = if minimum == maximum {
+                    height * 4
+                } else {
+                    1 + ((value - minimum) as u128 * (height * 8 - 1) as u128
+                        / (maximum - minimum) as u128) as usize
+                };
+                let fill = level.saturating_sub(row * 8).min(8);
+                if fill == 0 {
+                    ' '
+                } else {
+                    bars[fill.saturating_sub(1).min(7)]
+                }
+            })
+            .collect();
+        lines.push(graph);
+    }
+    lines
 }
 
 // All escapes here are Lens-authored SGR sequences. Untrusted fields are sanitized upstream.
@@ -634,6 +684,55 @@ pub(super) fn log_clock(timestamp: &str) -> String {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn charts_keep_labels_separate_and_fill_available_width() {
+        let history = VecDeque::from([130, 140, 132, 128]);
+        for width in [1, 28, 72, 192] {
+            let lines = trend_lines("Host power W", &history, width, 1.0, 3);
+            assert_eq!(lines.len(), 4);
+            assert!(lines.iter().all(|line| cell_width(line) <= width));
+            assert!(lines[1..].iter().all(|line| cell_width(line) == width));
+        }
+        let lines = trend_lines("Power W", &history, 72, 1.0, 3);
+        assert!(lines[0].contains("128.0 / min 128.0 / peak 140.0 / 4 samples"));
+        assert_ne!(lines[1], lines[3]);
+        assert!(trend_lines("Power W", &VecDeque::new(), 72, 1.0, 3).is_empty());
+        assert_eq!(
+            trend_lines("Power W", &VecDeque::from([130]), 72, 1.0, 3)[1],
+            "Collecting history..."
+        );
+        assert!(
+            trend_lines("Power W", &VecDeque::from([130, 130]), 72, 1.0, 3)
+                .iter()
+                .all(|line| cell_width(line) <= 72)
+        );
+        let dense = (0..120).collect::<VecDeque<u64>>();
+        assert_eq!(
+            trend_lines("dense", &dense, 4, 1.0, 1)[1].chars().count(),
+            4
+        );
+    }
+
+    #[test]
+    fn shared_trends_respect_row_and_column_budgets() {
+        let snapshot = demo_snapshot();
+        let mut ui = SessionView::default();
+        ui.observe(&snapshot, Instant::now());
+        ui.power = VecDeque::from([130, 140, 132, 128]);
+        for view in [View::Hardware, View::Services, View::Logs] {
+            for width in [36, 80, 200] {
+                for budget in [5, 8, 18] {
+                    let mut out = Vec::new();
+                    ui.render(view, &snapshot, 0, width, budget, &mut out)
+                        .unwrap();
+                    let text = String::from_utf8(out).unwrap();
+                    assert!(text.lines().count() <= budget);
+                    assert!(text.lines().all(|line| cell_width(line) <= width));
+                }
+            }
+        }
+    }
+
     #[test]
     fn power_history_deduplicates_cached_samples_and_clears_unavailable_gaps() {
         let mut snapshot = SystemSnapshot::empty("power-fixture");

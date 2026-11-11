@@ -3800,6 +3800,28 @@ fn render_specialist_content_with_ui(
         rows
     };
     let body_loading = loading && !specialist_has_data(view, snapshot);
+    // Session trends belong to the page, before inventory and selected detail.
+    // Reserve enough rows for both panes, including on compact terminals.
+    let page_trends = !body_loading
+        && !inspecting
+        && rows >= 30
+        && matches!(view, View::Hardware | View::Services | View::Logs);
+    let before_trends = stdout.iter().filter(|b| **b == b'\n').count();
+    if page_trends {
+        if let Some(ui) = ui {
+            ui.render(
+                view,
+                snapshot,
+                selected,
+                width,
+                usize::from(rows.saturating_sub(22)).min(18),
+                stdout,
+            )?;
+        }
+    }
+    let trend_rows = stdout.iter().filter(|b| **b == b'\n').count() - before_trends;
+    let content_rows = content_rows.saturating_sub(trend_rows as u16);
+    let body_ui = if page_trends { None } else { ui };
     let split = width >= 150
         && rows >= 32
         && !inspecting
@@ -3821,7 +3843,7 @@ fn render_specialist_content_with_ui(
             body_loading,
             content_rows,
             left_width,
-            ui,
+            body_ui,
             &mut left,
         )?;
         writeln!(right, "  SELECTED DETAIL / Enter: full screen")?;
@@ -3836,7 +3858,7 @@ fn render_specialist_content_with_ui(
             body_loading,
             content_rows.saturating_sub(1),
             right_width,
-            ui,
+            body_ui,
             &mut right,
         )?;
         let used = stdout.iter().filter(|b| **b == b'\n').count();
@@ -3860,7 +3882,7 @@ fn render_specialist_content_with_ui(
             body_loading,
             content_rows,
             width,
-            ui,
+            body_ui,
             stdout,
         )?;
     }
@@ -12360,6 +12382,72 @@ mod tests {
             .expect("detail");
             assert!(!list.is_empty());
             assert!(!detail.is_empty());
+        }
+    }
+
+    #[test]
+    fn page_trends_appear_once_above_inventory_and_detail() {
+        let mut snapshot = demo_snapshot();
+        snapshot.hardware.server = Some(lens_model::ServerContext {
+            power: Some(lens_model::PowerReading {
+                watts: 130,
+                observed_at: Timestamp("2026-11-11T00:00:00Z".into()),
+                source: "local_bmc_dcmi".into(),
+            }),
+            ..Default::default()
+        });
+        let mut ui = presentation::SessionView::default();
+        ui.observe(&snapshot, Instant::now());
+        for (index, watts) in [132, 130, 128, 129, 140, 138, 134, 132, 130, 130]
+            .into_iter()
+            .enumerate()
+        {
+            let power = snapshot
+                .hardware
+                .server
+                .as_mut()
+                .unwrap()
+                .power
+                .as_mut()
+                .unwrap();
+            power.watts = watts;
+            power.observed_at = Timestamp(format!(
+                "2026-11-11T00:{:02}:{:02}Z",
+                (index + 1) / 6,
+                (index + 1) % 6 * 10
+            ));
+            ui.observe(
+                &snapshot,
+                Instant::now() + Duration::from_secs((index + 1) as u64 * 10),
+            );
+        }
+        for view in [View::Hardware, View::Services] {
+            for rows in [30, 40, 70] {
+                let mut out = Vec::new();
+                render_specialist_content_with_ui(
+                    view,
+                    &snapshot,
+                    &NetworkActivity::default(),
+                    &storage_activity::StorageActivity::default(),
+                    None,
+                    0,
+                    false,
+                    false,
+                    "Ready",
+                    rows,
+                    Some(&ui),
+                    &mut out,
+                )
+                .unwrap();
+                let text = String::from_utf8(out).unwrap();
+                assert_eq!(text.matches("TRENDS").count(), 1, "{view:?} {rows}");
+                if let Some(detail) = text.find("SELECTED DETAIL") {
+                    assert!(text.find("TRENDS").unwrap() < detail);
+                }
+                if view == View::Hardware {
+                    assert!(text.contains("Host power W"));
+                }
+            }
         }
     }
 
