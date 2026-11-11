@@ -1,5 +1,7 @@
 #!/usr/bin/env bash
 # Explicit local administrative setup. Package hooks never invoke this helper.
+# Keep setup codes private even if the helper is invoked with Bash tracing.
+set +x
 set -euo pipefail
 if [[ $(id -u) != 0 ]]; then
   echo 'Run setup as administrator. Lens services themselves run without root.' >&2
@@ -9,6 +11,8 @@ lens_name=$(hostname -s)
 lens_server_url=https://app-api.dataplicity.com
 lens_refresh=()
 lens_syslog_mode=auto
+lens_syslog_host=''
+lens_syslog_port=''
 while (($#)); do
   case "$1" in
     --name) lens_name=${2:?Missing name}; shift 2;;
@@ -16,9 +20,32 @@ while (($#)); do
     --refresh) lens_refresh=(--refresh); shift;;
     --no-syslog-upload) [[ $lens_syslog_mode != force ]] || { echo 'Conflicting syslog options' >&2; exit 2; }; lens_syslog_mode=off; shift;;
     --syslog-upload) [[ $lens_syslog_mode != off ]] || { echo 'Conflicting syslog options' >&2; exit 2; }; lens_syslog_mode=force; shift;;
-    *) echo 'Usage: lens-reporting-enable [--name HOSTNAME] [--server-url HTTPS_ORIGIN] [--refresh] [--no-syslog-upload | --syslog-upload]' >&2; exit 2;;
+    --syslog-host) lens_syslog_host=${2:?Missing syslog host}; shift 2;;
+    --syslog-port) lens_syslog_port=${2:?Missing syslog port}; shift 2;;
+    *) echo 'Usage: lens-reporting-enable [--name HOSTNAME] [--server-url HTTPS_ORIGIN] [--refresh] [--no-syslog-upload | --syslog-upload] [--syslog-host DNS_NAME [--syslog-port PORT]]' >&2; exit 2;;
   esac
 done
+lens_syslog_command=(/usr/bin/lens-publisher syslog-config)
+lens_valid_syslog_host() {
+  local LC_ALL=C
+  local lens_label='[A-Za-z0-9]([A-Za-z0-9-]{0,61}[A-Za-z0-9])?'
+  local lens_dns="^(${lens_label}\.)+${lens_label}$"
+  [[ ${#lens_syslog_host} -le 253 && $lens_syslog_host =~ $lens_dns && ${lens_syslog_host##*.} =~ [A-Za-z] ]]
+}
+if [[ -n $lens_syslog_host ]]; then
+  if [[ $lens_syslog_mode == off ]] || ! lens_valid_syslog_host; then
+    echo 'Specify a DNS name for the TLS syslog collector only when forwarding is requested.' >&2
+    exit 2
+  fi
+  lens_syslog_command+=(--host "$lens_syslog_host")
+fi
+if [[ -n $lens_syslog_port ]]; then
+  if [[ -z $lens_syslog_host || ! $lens_syslog_port =~ ^[0-9]{1,5}$ ]] || ((10#$lens_syslog_port < 1 || 10#$lens_syslog_port > 65535)); then
+    echo 'Specify a TLS syslog collector port from 1 to 65535 with --syslog-host.' >&2
+    exit 2
+  fi
+  lens_syslog_command+=(--port "$lens_syslog_port")
+fi
 lens_publisher_was_active=0
 if systemctl is-active --quiet lens-publisher.service; then lens_publisher_was_active=1; fi
 lens_setup_failed() {
@@ -40,7 +67,7 @@ systemd-tmpfiles --create /usr/lib/tmpfiles.d/lens-reporting.conf
 systemctl stop lens-publisher.service
 if ((${#lens_refresh[@]})) || ! runuser -u lens-publisher -- /usr/bin/lens-publisher status >/dev/null 2>&1; then
   if [[ -t 0 ]]; then
-    IFS= read -r -s -p 'Dataplicity organisation code: ' lens_org_code
+    IFS= read -r -s -p 'Dataplicity organisation or VPS setup code: ' lens_org_code
     printf '\n' >&2
   else
     IFS= read -r lens_org_code || [[ -n ${lens_org_code:-} ]]
@@ -69,8 +96,8 @@ fi
 if [[ $lens_syslog_mode != off ]]; then
   if [[ $lens_other_path == 1 && $lens_syslog_mode != force ]]; then
     lens_syslog_reason='existing Agent or Dataplicity forwarding detected; no second forwarding path configured'
-  elif [[ "$lens_server_url" != https://app-api.dataplicity.com ]]; then
-    lens_syslog_reason='custom API origin: configure its local syslog destination explicitly'
+  elif [[ "${lens_server_url%/}" != https://app-api.dataplicity.com && -z $lens_syslog_host ]]; then
+    lens_syslog_reason='custom API origin: specify its TLS syslog collector with --syslog-host'
   elif ! command -v rsyslogd >/dev/null 2>&1; then
     lens_syslog_reason='rsyslog unavailable; install and configure your existing forwarder locally'
   else
@@ -85,7 +112,7 @@ if [[ $lens_syslog_mode != off ]]; then
       lens_config_stage=$(mktemp /etc/rsyslog.d/.dataplicity-lens.XXXXXX)
       chmod 0600 "$lens_config_stage"
       trap 'rm -f "${lens_config_stage:-}"' EXIT
-      runuser -u lens-publisher -- /usr/bin/lens-publisher syslog-config --ca-file "$lens_ca" > "$lens_config_stage"
+      runuser -u lens-publisher -- "${lens_syslog_command[@]}" --ca-file "$lens_ca" > "$lens_config_stage"
       # Validation output may contain the inline credential. Never echo it.
       lens_validation=$(mktemp)
       chmod 0600 "$lens_validation"
@@ -156,7 +183,8 @@ for lens_unit in lens-daemon.service lens-publisher.service; do
   fi
 done
 printf 'Lens reporting enabled. The first report appears after local collection completes.\n'
-if [[ $lens_syslog_enabled == 0 && $lens_syslog_mode != off && $lens_other_path == 0 ]]; then
+if [[ $lens_syslog_enabled == 0 && $lens_syslog_mode != off && ( $lens_other_path == 0 || $lens_syslog_mode == force ) ]]; then
   printf 'Lens logs are disabled: %s\n' "$lens_syslog_reason" >&2
+  if [[ $lens_syslog_mode == force && -n $lens_syslog_host ]]; then exit 1; fi
 fi
 trap - ERR

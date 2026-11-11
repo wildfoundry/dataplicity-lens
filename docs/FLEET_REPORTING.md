@@ -62,7 +62,21 @@ rsyslog forwarder. If validation identifies a missing TLS module, setup installs
 `rsyslog-gnutls` package through `apt-get` or `dnf` and validates again. Unrelated service restarts
 are deferred. It does not add another forwarder when rsyslog is absent. A failed repair leaves
 reporting enabled and logs disabled, with a specific recovery command rather than a false success.
-Custom API origins require explicit local configuration of their own syslog destination.
+
+For a VPS workspace that provides a one-time log setup code, install Lens inside the VPS and run the
+command from the workspace as a guest administrator. For a custom Dataplicity deployment, use its
+approved API origin and TLS syslog collector:
+
+```sh
+sudo lens-reporting-enable --server-url https://api.example.com --refresh \
+  --syslog-upload --syslog-host syslog.example.com --syslog-port 6514
+```
+
+Enter the setup code at the hidden prompt. The port defaults to 6514. The collector must have a
+certificate trusted by the system for the exact DNS name supplied. Verify the collector belongs to
+the deployment before giving it access to logs. With an explicit destination and `--syslog-upload`,
+the setup command exits unsuccessfully if it cannot enable forwarding. Existing reporting may
+still be active. Without an explicit collector, a custom API origin skips Lens syslog forwarding.
 
 The forwarder uses certificate-validated TLS, warning+ severity, a bounded 1000-event memory queue,
 no disk spool and a paced dequeue (one event/second) with reconnect delay. Operational HTTPS reports

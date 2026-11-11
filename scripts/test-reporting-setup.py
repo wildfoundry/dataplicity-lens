@@ -26,7 +26,8 @@ class ReportingSetupTests(unittest.TestCase):
             'id': 'echo 0', 'hostname':'echo server-test', 'systemd-sysusers':':',
             'systemd-tmpfiles':':', 'systemctl':':', 'rsyslogd':':',
             'runuser': '''case "$*" in
- *syslog-config*) printf '%s\\n' '# Managed by Dataplicity Lens. Credentials are logs-only; keep this file private.' 'test-secret-not-for-output' ;;
+ *syslog-config*) printf '%s\\n' "$*" >> "$SETUP_TEST_LOG"; printf '%s\\n' '# Managed by Dataplicity Lens. Credentials are logs-only; keep this file private.' 'test-secret-not-for-output' ;;
+ *register*) test "$(cat)" = vpslog1.private-test-code && printf '%s\\n' "$*" >> "$SETUP_TEST_LOG" ;;
  *configure*) printf '%s\\n' "$*" >> "$SETUP_TEST_LOG" ;;
  *) : ;;
  esac''',
@@ -73,6 +74,62 @@ class ReportingSetupTests(unittest.TestCase):
         result=self.run_setup('--syslog-upload')
         self.assertTrue(self.conf.exists())
         self.assertIn('explicit --syslog-upload override',result.stdout)
+
+    def test_custom_api_requires_an_explicit_collector(self):
+        result = self.run_setup('--server-url', 'https://api.test.invalid', '--syslog-upload')
+        self.assertFalse(self.conf.exists())
+        self.assertIn('specify its TLS syslog collector', result.stdout)
+        self.assertNotIn('syslog-config', self.log.read_text())
+
+    def test_vps_setup_refreshes_privately_and_uses_the_selected_collector(self):
+        self.stub('prelude-agent', ':')
+        result = subprocess.run(
+            ['bash', '-x', str(self.script), '--server-url', 'https://api.test.invalid',
+             '--refresh', '--syslog-upload', '--syslog-host', 'logs.test.invalid',
+             '--syslog-port', '16514'],
+            env=self.env, input='vpslog1.private-test-code\n', capture_output=True, text=True,
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertTrue(self.conf.exists())
+        commands = self.log.read_text()
+        self.assertIn('register --server-url https://api.test.invalid --name server-test --refresh', commands)
+        self.assertIn('syslog-config --host logs.test.invalid --port 16514', commands)
+        self.assertNotIn('vpslog1.private-test-code', commands + result.stdout + result.stderr)
+        self.assertNotIn('test-secret-not-for-output', result.stdout + result.stderr)
+
+    def test_custom_collector_preserves_the_automatic_duplicate_check(self):
+        self.stub('prelude-agent', ':')
+        self.run_setup('--server-url', 'https://api.test.invalid', '--syslog-host', 'logs.test.invalid')
+        self.assertFalse(self.conf.exists())
+
+    def test_invalid_collector_flags_are_rejected_before_registration(self):
+        self.stub('systemctl', 'printf "%s\\n" "$*" >> "$SETUP_TEST_LOG"')
+        invalid_options = (
+            ('--syslog-port', '6514'),
+            ('--syslog-host', '*.test.invalid'),
+            ('--syslog-host', '192.0.2.1'),
+            ('--syslog-host', 'https://logs.test.invalid'),
+            ('--syslog-host', 'logs.test.invalid', '--syslog-port', '65536'),
+            ('--syslog-host', 'logs.test.invalid', '--syslog-port', '0'),
+            ('--syslog-host', 'logs.test.invalid', '--no-syslog-upload'),
+        )
+        for args in invalid_options:
+            with self.subTest(args=args):
+                result = subprocess.run(['bash', str(self.script), '--refresh', *args],
+                                        env=self.env, capture_output=True, text=True)
+                self.assertEqual(result.returncode, 2, result.stderr)
+        self.assertFalse(self.log.exists())
+
+    def test_explicit_forwarding_failure_reports_unsuccessful_setup(self):
+        self.stub('rsyslogd', 'echo test-secret-not-for-output >&2; exit 1')
+        result = subprocess.run(
+            ['bash', str(self.script), '--syslog-upload', '--syslog-host', 'logs.test.invalid'],
+            env=self.env, capture_output=True, text=True,
+        )
+        self.assertEqual(result.returncode, 1, result.stderr)
+        self.assertIn('Lens logs are disabled', result.stderr)
+        self.assertNotIn('test-secret-not-for-output', result.stdout + result.stderr)
+        self.assertFalse(self.conf.exists())
 
     def test_no_syslog_removes_only_owned_destination(self):
         self.run_setup()
