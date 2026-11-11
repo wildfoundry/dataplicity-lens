@@ -141,6 +141,13 @@ else
 fi
 printf 'Lens syslog: %s\n' "$lens_syslog_reason"
 systemctl daemon-reload
+# The unprivileged observer never receives IPMI device access. Only the fixed,
+# network-isolated sampler can publish a bounded local power measurement.
+if command -v ipmitool >/dev/null 2>&1 && [[ -e /dev/ipmi0 || -e /dev/ipmi/0 ]]; then
+  if ! systemctl enable --now lens-power-sample.timer; then
+    printf 'Lens host power is unavailable; inspect lens-power-sample.service locally.\n' >&2
+  fi
+fi
 systemctl enable --now lens-daemon.service lens-publisher.service
 for lens_unit in lens-daemon.service lens-publisher.service; do
   if ! systemctl is-active --quiet "$lens_unit"; then

@@ -15,7 +15,7 @@ pub use snapshot::{
     ContainerResources, CpuTopology, DeletedOpenFile, DnsContext, Filesystem, GroupInfo,
     HardwareDevice, HardwareIdentity, HardwareIdentityUnavailableReason, Host, Interface,
     IoCounters, LoadAverage, LogEntry, LogSource, Memory, Metric, MetricPoint, MetricSeries,
-    ModelStore, Mount, NetworkDetail, Process, ProcessCounts, ProcessState, RaspberryPiStatus,
-    Route, SchemaVersion, ServerContext, Service, Snapshot, Socket, StorageDetail, StorageHealth,
-    StorageMember, TemperatureSensor, Timestamp,
+    ModelStore, Mount, NetworkDetail, PowerReading, PowerSupplyHealth, PowerSupplyReading, Process,
+    ProcessCounts, ProcessState, RaspberryPiStatus, Route, SchemaVersion, ServerContext, Service,
+    Snapshot, Socket, StorageDetail, StorageHealth, StorageMember, TemperatureSensor, Timestamp,
 };

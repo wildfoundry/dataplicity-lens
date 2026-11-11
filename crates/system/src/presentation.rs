@@ -109,6 +109,8 @@ pub(super) struct SessionView {
     restart_base: BTreeMap<String, u64>,
     restart_latest: BTreeMap<String, u64>,
     thermal: BTreeMap<String, VecDeque<u64>>,
+    power: VecDeque<u64>,
+    power_observed_at: Option<Timestamp>,
     log_activity: VecDeque<u64>,
     seen_logs: BTreeSet<String>,
     net_baseline: BTreeMap<String, NetworkCounters>,
@@ -199,6 +201,21 @@ impl SessionView {
                 self.service_cpu.remove(&service.name);
                 self.service_rss.remove(&service.name);
             }
+        }
+        if let Some(reading) = snapshot
+            .hardware
+            .server
+            .as_ref()
+            .and_then(|server| server.power.as_ref())
+        {
+            if self.power_observed_at.as_ref() != Some(&reading.observed_at) {
+                push_bounded(&mut self.power, u64::from(reading.watts), 120);
+                self.power_observed_at = Some(reading.observed_at.clone());
+            }
+        } else {
+            // Do not draw a line across a missing measurement or invent a zero.
+            self.power.clear();
+            self.power_observed_at = None;
         }
         self.thermal
             .retain(|source, _| snapshot.temperatures.iter().any(|s| &s.source == source));
@@ -369,6 +386,19 @@ impl SessionView {
                 }
             }
         } else if view == View::Hardware {
+            if !self.power.is_empty() {
+                lines.push(trend_line(
+                    "Host power W",
+                    &self.power,
+                    width.saturating_sub(8),
+                    1.0,
+                ));
+                let mean = self.power.iter().sum::<u64>() as f64 / self.power.len() as f64;
+                lines.push(format!(
+                    "Mean {mean:.1} W / {} measured BMC samples",
+                    self.power.len()
+                ));
+            }
             for sensor in snapshot
                 .temperatures
                 .iter()
@@ -604,6 +634,38 @@ pub(super) fn log_clock(timestamp: &str) -> String {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn power_history_deduplicates_cached_samples_and_clears_unavailable_gaps() {
+        let mut snapshot = SystemSnapshot::empty("power-fixture");
+        snapshot.hardware.server = Some(lens_model::ServerContext {
+            power: Some(lens_model::PowerReading {
+                watts: 182,
+                observed_at: Timestamp("2026-11-11T00:00:00Z".into()),
+                source: "local_bmc_dcmi".into(),
+            }),
+            ..Default::default()
+        });
+        let mut ui = SessionView::default();
+        ui.observe(&snapshot, Instant::now());
+        ui.observe(&snapshot, Instant::now());
+        assert_eq!(ui.power.len(), 1);
+        snapshot
+            .hardware
+            .server
+            .as_mut()
+            .unwrap()
+            .power
+            .as_mut()
+            .unwrap()
+            .observed_at = Timestamp("2026-11-11T00:00:10Z".into());
+        ui.observe(&snapshot, Instant::now());
+        assert_eq!(ui.power.len(), 2);
+        snapshot.hardware.server.as_mut().unwrap().power = None;
+        ui.observe(&snapshot, Instant::now());
+        assert!(ui.power.is_empty());
+        assert!(ui.power_observed_at.is_none());
+    }
+
     use super::*;
     #[test]
     fn priorities_override_message_words_and_filters_restore_cleanly() {

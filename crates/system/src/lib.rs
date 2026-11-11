@@ -13,6 +13,7 @@ mod journal;
 mod libvirt;
 mod native_details;
 mod overview;
+mod power;
 mod presentation;
 mod storage_activity;
 mod storage_health;
@@ -209,6 +210,9 @@ pub enum SpecialistSort {
 #[derive(Debug, Clone, Parser)]
 #[command(version, about = "A coherent view of a Linux or macOS system")]
 pub struct ViewArgs {
+    /// Write the fixed, local BMC power cache for the optional privileged sampler.
+    #[arg(long, hide = true)]
+    pub sample_power: bool,
     /// Emit stable JSON rather than human-readable output.
     #[arg(long, conflicts_with = "jsonl")]
     pub json: bool,
@@ -442,6 +446,17 @@ const fn glyph_mode_from_args(args: &ViewArgs) -> GlyphMode {
 pub fn run_view(view: View) -> Result<()> {
     let args = parse_view_args(view.binary());
     validate_view_args(view, &args)?;
+    if args.sample_power {
+        if view != View::Hardware
+            || env::args_os().skip(1).collect::<Vec<_>>()
+                != [std::ffi::OsString::from("--sample-power")]
+        {
+            return Err(usage_err(
+                "power sampling accepts only lens-hardware --sample-power",
+            ));
+        }
+        return power::write_sample();
+    }
     set_terminal_theme(args.theme);
     set_terminal_glyphs(glyph_mode_from_args(&args));
     if generate_assets(view.binary(), &args)? {
@@ -488,6 +503,9 @@ enum OutputView {
 
 pub fn run_cockpit() -> Result<()> {
     let args = parse_view_args("lens");
+    if args.sample_power {
+        return Err(usage_err("power sampling requires lens-hardware"));
+    }
     validate_view_args_cockpit(&args)?;
     set_terminal_theme(args.theme);
     set_terminal_glyphs(glyph_mode_from_args(&args));
@@ -5932,6 +5950,47 @@ fn hardware_identity_warnings(identity: &HardwareIdentity) -> Vec<String> {
         .collect()
 }
 
+fn power_supply_health(supply: &lens_model::PowerSupplyReading) -> &'static str {
+    use lens_model::PowerSupplyHealth;
+    match supply.health {
+        PowerSupplyHealth::Healthy => "Healthy",
+        PowerSupplyHealth::Warning => "Warning",
+        PowerSupplyHealth::Critical => "Critical",
+        PowerSupplyHealth::Absent => "Absent",
+        PowerSupplyHealth::Unknown => "Health unknown",
+    }
+}
+
+fn power_supply_details(supply: &lens_model::PowerSupplyReading) -> Vec<String> {
+    let mut values = Vec::new();
+    for (label, watts) in [
+        ("Input power", supply.input_watts),
+        ("Output power", supply.output_watts),
+        ("Power", supply.watts),
+    ] {
+        if let Some(watts) = watts {
+            values.push(format!("{label}: {watts} W"));
+        }
+    }
+    if supply.input_watts.is_none() && supply.output_watts.is_none() && supply.watts.is_none() {
+        values.push("Power: not reported".into());
+    }
+    if let Some(value) = supply.current_milliamps {
+        values.push(format!("Current: {:.2} A", f64::from(value) / 1000.0));
+    }
+    if let Some(value) = supply.voltage_millivolts {
+        values.push(format!("Voltage: {:.1} V", f64::from(value) / 1000.0));
+    }
+    if !supply.states.is_empty() {
+        values.push(supply.states.join(" / "));
+    }
+    values.push(format!(
+        "Measured: {} / local BMC IPMI",
+        supply.observed_at.0
+    ));
+    values
+}
+
 fn hardware_rows(snapshot: &SystemSnapshot) -> Vec<(String, String, String)> {
     let mut rows = Vec::new();
     if hardware_identity_present(&snapshot.hardware) {
@@ -6039,6 +6098,29 @@ fn hardware_rows(snapshot: &SystemSnapshot) -> Vec<(String, String, String)> {
                 details.push("Management IP: unavailable through local interfaces".into());
             }
             rows.push(("SERVER".into(), management.clone(), details.join("\n")));
+        }
+        if let Some(reading) = &server.power {
+            rows.push((
+                "POWER".into(),
+                format!("Host input {} W", reading.watts),
+                format!(
+                    "Measured: {}\nSource: local BMC / DCMI",
+                    reading.observed_at.0
+                ),
+            ));
+        } else if server.management.is_some() {
+            rows.push((
+                "POWER".into(),
+                "Not reported".into(),
+                "Whole-host BMC power reading unavailable".into(),
+            ));
+        }
+        for supply in &server.power_supplies {
+            rows.push((
+                "POWER SUPPLY".into(),
+                format!("{} / {}", supply.name, power_supply_health(supply)),
+                power_supply_details(supply).join("\n"),
+            ));
         }
     }
     rows.extend(snapshot.temperatures.iter().map(|sensor| {
@@ -10806,6 +10888,21 @@ fn render_plain(view: View, snapshot: &SystemSnapshot, out: &mut dyn Write) -> R
                 }
                 if let Some(management) = &server.management {
                     writeln!(out, "\nMANAGEMENT: {management}")?;
+                }
+                if let Some(reading) = &server.power {
+                    writeln!(
+                        out,
+                        "Host power: {} W / measured {} / local BMC DCMI",
+                        reading.watts, reading.observed_at.0
+                    )?;
+                } else if server.management.is_some() {
+                    writeln!(out, "Host power: not reported")?;
+                }
+                for supply in &server.power_supplies {
+                    writeln!(out, "{}: {}", supply.name, power_supply_health(supply))?;
+                    for detail in power_supply_details(supply) {
+                        writeln!(out, "  {detail}")?;
+                    }
                 }
                 if let Some(tag) = &server.service_tag {
                     writeln!(out, "Service tag / serial: {tag}")?;

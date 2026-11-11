@@ -157,3 +157,48 @@ An interval change reduces upload frequency and, above one minute, sends just th
 Collector cadence remains independent. Buffers/expiry remain at 30 minutes, so intervals above
 30 minutes leave periods with no current central observations. Lens reports freshness independently
 of Agent connectivity. Retry-After/backoff can require a delay beyond the four-hour normal-policy maximum.
+
+## Whole-host power
+
+On supported Linux servers, Lens reads actual whole-host input watts through the
+local BMC DCMI interface. It does not derive watts from CPU load, TDP or VM class
+sizes. `hardware.server.power` carries `watts`, the original `observed_at` timestamp,
+and source `local_bmc_dcmi`. The optional field remains absent when unsupported,
+unreadable or stale. No iDRAC password or remote management credential is needed.
+
+`hardware.server.power_supplies` independently lists discovered IPMI power-supply
+entities, whether a server exposes one, two or more. Each includes its stable
+entity ID, slot name, presence, health, original observation time and available
+power/current/voltage measurements. AC-loss and failure states take precedence
+even when ipmitool's discrete sensor status column says `ok`. An absent slot or
+unsupported sensor is not reported as a healthy supply or a zero measurement.
+
+The whole-host total is the BMC's DCMI reading; Lens never adds it to the supply
+readings. Individual watt sensors remain unavailable if the BMC only exposes
+amps and volts. Lens does not treat volts multiplied by amps as measured watts.
+Current and voltage use integer milliamps and millivolts in JSON and A/V in the
+human display. Power readings are in watts throughout.
+
+`lens-hardware` shows the reading and its live session trend. Cached measurements
+are deduplicated by timestamp. Missing readings clear the session trend rather
+than drawing a false zero or a continuous line across an outage. Shared history
+also exposes an actual-measurement `host_input_power` series in watts.
+
+The isolated collector and publisher keep their existing device and network
+restrictions. For unprivileged collection, the optional `lens-power-sample.timer`
+runs a separate fixed read-only BMC query every ten seconds. That sampler has no
+network access or control input and atomically writes only the typed measurement
+to `/run/lens-power/current.json`. Lens accepts it only from protected root-owned
+files and rejects readings older than thirty seconds. The sampler never reads
+management passwords. It does not expose the IPMI device to the observer.
+
+Packages leave the sampler disabled. Explicit reporting setup enables it when a
+local IPMI device and `ipmitool` are already available. For local-only use:
+
+```sh
+sudo systemctl enable --now lens-power-sample.timer
+lens-hardware
+```
+
+Install `ipmitool` through the host's normal package management if needed. Loading
+kernel drivers or changing BMC configuration remains an explicit host operation.

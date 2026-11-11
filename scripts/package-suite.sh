@@ -20,6 +20,7 @@ if [[ "$TARGET" == *linux* ]]; then
     install -m 0755 "target/${TARGET}/release/${binary}" "$stage/usr/bin/${binary}"
   done
   mkdir -p "$stage/usr/lib/systemd/system" "$stage/usr/lib/sysusers.d" "$stage/usr/lib/tmpfiles.d" "$stage/usr/lib/systemd/system-preset"
+  install -m 0644 packaging/systemd/*.timer "$stage/usr/lib/systemd/system/"
   install -m 0644 packaging/systemd/*.service "$stage/usr/lib/systemd/system/"
   install -m 0644 packaging/systemd/lens-reporting.sysusers "$stage/usr/lib/sysusers.d/lens-reporting.conf"
   install -m 0644 packaging/systemd/lens-reporting.tmpfiles "$stage/usr/lib/tmpfiles.d/lens-reporting.conf"
