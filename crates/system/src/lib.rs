@@ -3814,7 +3814,7 @@ fn render_specialist_content_with_ui(
                 snapshot,
                 selected,
                 width,
-                usize::from(rows.saturating_sub(22)).min(18),
+                usize::from(rows.saturating_sub(22)).min(24),
                 stdout,
             )?;
         }
@@ -12398,29 +12398,17 @@ mod tests {
         });
         let mut ui = presentation::SessionView::default();
         ui.observe(&snapshot, Instant::now());
-        for (index, watts) in [132, 130, 128, 129, 140, 138, 134, 132, 130, 130]
-            .into_iter()
-            .enumerate()
-        {
-            let power = snapshot
-                .hardware
-                .server
-                .as_mut()
-                .unwrap()
-                .power
-                .as_mut()
-                .unwrap();
-            power.watts = watts;
-            power.observed_at = Timestamp(format!(
-                "2026-11-11T00:{:02}:{:02}Z",
-                (index + 1) / 6,
-                (index + 1) % 6 * 10
-            ));
-            ui.observe(
-                &snapshot,
-                Instant::now() + Duration::from_secs((index + 1) as u64 * 10),
-            );
-        }
+        let power = snapshot
+            .hardware
+            .server
+            .as_mut()
+            .unwrap()
+            .power
+            .as_mut()
+            .unwrap();
+        power.watts = 140;
+        power.observed_at = Timestamp("2026-11-11T00:00:10Z".into());
+        ui.observe(&snapshot, Instant::now() + Duration::from_secs(10));
         for view in [View::Hardware, View::Services] {
             for rows in [30, 40, 70] {
                 let mut out = Vec::new();
@@ -12440,7 +12428,12 @@ mod tests {
                 )
                 .unwrap();
                 let text = String::from_utf8(out).unwrap();
-                assert_eq!(text.matches("TRENDS").count(), 1, "{view:?} {rows}");
+                let panels = if view == View::Hardware && rows >= 40 {
+                    2
+                } else {
+                    1
+                };
+                assert_eq!(text.matches("TRENDS").count(), panels, "{view:?} {rows}");
                 if let Some(detail) = text.find("SELECTED DETAIL") {
                     assert!(text.find("TRENDS").unwrap() < detail);
                 }

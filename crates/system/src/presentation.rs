@@ -209,7 +209,11 @@ impl SessionView {
             .and_then(|server| server.power.as_ref())
         {
             if self.power_observed_at.as_ref() != Some(&reading.observed_at) {
-                push_bounded(&mut self.power, u64::from(reading.watts), 120);
+                push_bounded(
+                    &mut self.power,
+                    u64::from(reading.watts),
+                    ACTIVITY_HISTORY_CAPACITY,
+                );
                 self.power_observed_at = Some(reading.observed_at.clone());
             }
         } else {
@@ -223,7 +227,7 @@ impl SessionView {
             push_bounded(
                 self.thermal.entry(sensor.source.clone()).or_default(),
                 (sensor.temperature_c.max(0.0) * 10.0).round() as u64,
-                120,
+                ACTIVITY_HISTORY_CAPACITY,
             );
         }
         self.net_baseline
@@ -357,7 +361,60 @@ impl SessionView {
         if budget < 5 {
             return Ok(());
         }
+        let elapsed = self.first_sample.map_or(0, |t| t.elapsed().as_secs());
+        let timing = format!("~10s/sample / {elapsed}s observed / peak scale");
+        let mut remaining = budget;
         let mut lines = Vec::new();
+        if view == View::Hardware {
+            if !self.power.is_empty() {
+                let mut power = trend_lines(
+                    "Host power W",
+                    &self.power,
+                    width.saturating_sub(8),
+                    1.0,
+                    if budget >= 12 { 3 } else { 1 },
+                );
+                if budget >= 6 {
+                    let mean = self.power.iter().sum::<u64>() as f64 / self.power.len() as f64;
+                    power.push(format!(
+                        "Mean {mean:.1} W / {} measured BMC samples",
+                        self.power.len()
+                    ));
+                }
+                remaining -= draw_trend_panel(
+                    &format!("POWER TRENDS / {timing}"),
+                    power,
+                    width,
+                    remaining,
+                    out,
+                )?;
+            }
+            // Keep each temperature label with its chart, leaving space between panels.
+            let capacity = remaining.saturating_sub(3) / 2;
+            for sensor in snapshot
+                .temperatures
+                .iter()
+                .filter(|s| !s.name.contains(" Core "))
+                .filter(|s| self.thermal.contains_key(&s.source))
+                .take(4.min(capacity))
+            {
+                lines.extend(trend_lines(
+                    &sensor_label(snapshot, sensor),
+                    &self.thermal[&sensor.source],
+                    width.saturating_sub(8),
+                    10.0,
+                    1,
+                ));
+            }
+            draw_trend_panel(
+                &format!("TEMPERATURE TRENDS / {timing}"),
+                lines,
+                width,
+                remaining,
+                out,
+            )?;
+            return Ok(());
+        }
         if view == View::Services {
             if let Some(service) = snapshot.services.get(selected) {
                 if let Some(delta) = self.restart_latest.get(&service.name) {
@@ -391,37 +448,6 @@ impl SessionView {
                     lines.push(delta.clone());
                 }
             }
-        } else if view == View::Hardware {
-            if !self.power.is_empty() {
-                lines.extend(trend_lines(
-                    "Host power W",
-                    &self.power,
-                    width.saturating_sub(8),
-                    1.0,
-                    if budget >= 12 { 3 } else { 1 },
-                ));
-                let mean = self.power.iter().sum::<u64>() as f64 / self.power.len() as f64;
-                lines.push(format!(
-                    "Mean {mean:.1} W / {} measured BMC samples",
-                    self.power.len()
-                ));
-            }
-            for sensor in snapshot
-                .temperatures
-                .iter()
-                .filter(|s| !s.name.contains(" Core "))
-                .take(4)
-            {
-                if let Some(history) = self.thermal.get(&sensor.source) {
-                    lines.extend(trend_lines(
-                        &sensor_label(snapshot, sensor),
-                        history,
-                        width.saturating_sub(8),
-                        10.0,
-                        1,
-                    ));
-                }
-            }
         } else if view == View::Logs && !self.log_activity.is_empty() {
             lines.extend(trend_lines(
                 "New flagged / refresh (latest 2000)",
@@ -431,16 +457,7 @@ impl SessionView {
                 1,
             ));
         }
-        if !lines.is_empty() {
-            let elapsed = self.first_sample.map_or(0, |t| t.elapsed().as_secs());
-            let panel = overview::OverviewPanel::new(
-                &format!("TRENDS ~10s/sample / {elapsed}s observed / min..max scale"),
-                lines,
-                Ink::Info,
-            );
-            let height = panel.lines.len().min(budget - 3);
-            overview::draw_panels(&[panel], width.saturating_sub(4), height, out)?;
-        }
+        draw_trend_panel(&format!("TRENDS / {timing}"), lines, width, budget, out)?;
         Ok(())
     }
 }
@@ -453,8 +470,8 @@ fn log_key(log: &LogEntry) -> String {
         log.message
     )
 }
-/// Labels never compete with the graph for horizontal space. Sparse observations
-/// occupy equal time slots; stretching their display does not invent new samples.
+/// Every session trend uses the same one-column-per-observation chart as the
+/// cockpit and disk views. Unused history stays blank on the left.
 fn trend_lines(
     label: &str,
     history: &VecDeque<u64>,
@@ -465,53 +482,42 @@ fn trend_lines(
     if history.is_empty() || width == 0 {
         return Vec::new();
     }
-    let minimum = history.iter().copied().min().unwrap_or(0);
-    let maximum = history.iter().copied().max().unwrap_or(0);
+    let visible = history.iter().skip(history.len().saturating_sub(width));
+    let minimum = visible.clone().copied().min().unwrap_or(0);
+    let maximum = visible.copied().max().unwrap_or(0);
     let current = history.back().copied().unwrap_or(0) as f64 / divisor;
     let mut lines = vec![truncate_text(
         &format!(
             "{label}: {current:.1} / min {:.1} / peak {:.1} / {} samples",
             minimum as f64 / divisor,
             maximum as f64 / divisor,
-            history.len()
+            history.len().min(width)
         ),
         width,
     )];
-    // One observation is a value, not a trend. Keep the history visibly pending.
-    if history.len() == 1 {
-        lines.push(truncate_text("Collecting history...", width));
-        return lines;
-    }
-    let height = height.max(1);
-    let bars = glyphs().bars;
-    for row in (0..height).rev() {
-        let graph: String = (0..width)
-            .map(|column| {
-                // Compress dense histories by retaining each bucket's peak.
-                let start = column * history.len() / width;
-                let end = ((column + 1) * history.len() / width).max(start + 1);
-                let value = history
-                    .range(start..end.min(history.len()))
-                    .copied()
-                    .max()
-                    .unwrap_or(minimum);
-                let level = if minimum == maximum {
-                    height * 4
-                } else {
-                    1 + ((value - minimum) as u128 * (height * 8 - 1) as u128
-                        / (maximum - minimum) as u128) as usize
-                };
-                let fill = level.saturating_sub(row * 8).min(8);
-                if fill == 0 {
-                    ' '
-                } else {
-                    bars[fill.saturating_sub(1).min(7)]
-                }
-            })
-            .collect();
-        lines.push(graph);
-    }
+    lines.extend(block_chart_rows(
+        history,
+        width,
+        maximum.max(1),
+        height.max(1),
+    ));
     lines
+}
+
+fn draw_trend_panel(
+    title: &str,
+    lines: Vec<String>,
+    width: usize,
+    budget: usize,
+    out: &mut impl Write,
+) -> Result<usize> {
+    if lines.is_empty() || budget < 5 {
+        return Ok(0);
+    }
+    let panel = overview::OverviewPanel::new(title, lines, Ink::Info);
+    let height = panel.lines.len().min(budget - 3);
+    overview::draw_panels(&[panel], width.saturating_sub(4), height, out)?;
+    Ok(height + 3)
 }
 
 // All escapes here are Lens-authored SGR sequences. Untrusted fields are sanitized upstream.
@@ -685,32 +691,94 @@ pub(super) fn log_clock(timestamp: &str) -> String {
 #[cfg(test)]
 mod tests {
     #[test]
-    fn charts_keep_labels_separate_and_fill_available_width() {
-        let history = VecDeque::from([130, 140, 132, 128]);
-        for width in [1, 28, 72, 192] {
-            let lines = trend_lines("Host power W", &history, width, 1.0, 3);
-            assert_eq!(lines.len(), 4);
-            assert!(lines.iter().all(|line| cell_width(line) <= width));
-            assert!(lines[1..].iter().all(|line| cell_width(line) == width));
+    fn sparse_trends_keep_one_column_per_sample_and_scroll_when_full() {
+        for count in [1, 2, 4, 120] {
+            let history = VecDeque::from(vec![130; count]);
+            for width in [1, 28, 72, 192] {
+                let lines = trend_lines("Host power W", &history, width, 1.0, 3);
+                assert_eq!(lines.len(), 4);
+                assert!(lines.iter().all(|line| cell_width(line) <= width));
+                for graph in &lines[1..] {
+                    assert_eq!(
+                        graph.chars().take_while(|c| *c == ' ').count(),
+                        width.saturating_sub(count)
+                    );
+                    assert_eq!(graph.trim_start().chars().count(), count.min(width));
+                }
+            }
         }
-        let lines = trend_lines("Power W", &history, 72, 1.0, 3);
-        assert!(lines[0].contains("128.0 / min 128.0 / peak 140.0 / 4 samples"));
-        assert_ne!(lines[1], lines[3]);
+        let scrolled = trend_lines("Power W", &VecDeque::from([999, 0, 100]), 2, 1.0, 1);
+        assert_eq!(scrolled[1], "▁█");
+        let stats = trend_lines("Power W", &VecDeque::from([999, 130, 140]), 28, 1.0, 1);
+        assert!(stats[0].contains("140.0"));
         assert!(trend_lines("Power W", &VecDeque::new(), 72, 1.0, 3).is_empty());
-        assert_eq!(
-            trend_lines("Power W", &VecDeque::from([130]), 72, 1.0, 3)[1],
-            "Collecting history..."
-        );
-        assert!(
-            trend_lines("Power W", &VecDeque::from([130, 130]), 72, 1.0, 3)
-                .iter()
-                .all(|line| cell_width(line) <= 72)
-        );
-        let dense = (0..120).collect::<VecDeque<u64>>();
-        assert_eq!(
-            trend_lines("dense", &dense, 4, 1.0, 1)[1].chars().count(),
-            4
-        );
+        let zero = trend_lines("Zero", &VecDeque::from([0, 0]), 72, 1.0, 1);
+        assert_eq!(zero[1].chars().take_while(|c| *c == ' ').count(), 70);
+    }
+
+    #[test]
+    fn power_and_temperature_trends_have_separate_spaced_panels() {
+        let mut snapshot = demo_snapshot();
+        snapshot.temperatures = (0..4)
+            .map(|index| TemperatureSensor {
+                name: format!("NVMe temperature {index}"),
+                source: format!(
+                    "/sys/class/hwmon/hwmon{}/temp{}_input",
+                    index / 2,
+                    index % 2 + 1
+                ),
+                temperature_c: 40.0,
+                max_c: None,
+                critical_c: None,
+            })
+            .collect();
+        let mut ui = SessionView::default();
+        ui.observe(&snapshot, Instant::now());
+        ui.power = VecDeque::from([130, 140]);
+        let mut out = Vec::new();
+        ui.render(View::Hardware, &snapshot, 0, 200, 24, &mut out)
+            .unwrap();
+        let text = String::from_utf8(out).unwrap();
+        let power = text.find("POWER TRENDS").unwrap();
+        let temperature = text.find("TEMPERATURE TRENDS").unwrap();
+        assert!(power < temperature);
+        assert!(text[power..temperature].contains("\n\n"));
+        assert!(text.contains("Host power W"));
+        assert_eq!(text.matches("NVMe temperature").count(), 4);
+    }
+
+    #[test]
+    fn hardware_history_fills_wide_viewports_and_survives_a_resize() {
+        let mut snapshot = demo_snapshot();
+        snapshot.hardware.server = Some(lens_model::ServerContext {
+            power: Some(lens_model::PowerReading {
+                watts: 130,
+                observed_at: Timestamp("0".into()),
+                source: "local_bmc_dcmi".into(),
+            }),
+            ..Default::default()
+        });
+        let mut ui = SessionView::default();
+        let now = Instant::now();
+        for index in 0..300 {
+            snapshot
+                .hardware
+                .server
+                .as_mut()
+                .unwrap()
+                .power
+                .as_mut()
+                .unwrap()
+                .observed_at = Timestamp(index.to_string());
+            ui.observe(&snapshot, now + Duration::from_secs(index * 10));
+        }
+        assert_eq!(ui.power.len(), 300);
+        assert!(ui.thermal.values().all(|history| history.len() == 300));
+        for width in [72, 192, 280] {
+            let rows = trend_lines("Power W", &ui.power, width, 1.0, 3);
+            assert_eq!(rows[3].chars().count(), width);
+            assert!(!rows[3].contains(' '));
+        }
     }
 
     #[test]
@@ -848,7 +916,7 @@ mod tests {
         }
         assert_eq!(ui.restart_latest[&snapshot.services[0].name], 0);
         assert_eq!(ui.log_activity.len(), 120);
-        assert!(ui.thermal.values().all(|values| values.len() <= 120));
+        assert!(ui.thermal.values().all(|values| values.len() == 150));
         assert!(ui.log_activity.iter().all(|value| *value == 0));
     }
     #[test]
