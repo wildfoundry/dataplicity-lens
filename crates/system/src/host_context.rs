@@ -17,6 +17,20 @@ use std::{
 /// Bounded optional command, including commands such as smartctl whose exit code is a bitmask.
 /// Output is capped; stdin is closed and stderr discarded so probes cannot prompt or flood Lens.
 pub(super) fn probe(program: &str, args: &[&str], timeout: Duration) -> Option<String> {
+    bounded_probe(program, args, timeout, false)
+}
+
+#[cfg(any(target_os = "linux", test))]
+pub(super) fn probe_success(program: &str, args: &[&str], timeout: Duration) -> Option<String> {
+    bounded_probe(program, args, timeout, true)
+}
+
+fn bounded_probe(
+    program: &str,
+    args: &[&str],
+    timeout: Duration,
+    require_success: bool,
+) -> Option<String> {
     let mut child = Command::new(program)
         .args(args)
         .stdin(Stdio::null())
@@ -33,7 +47,12 @@ pub(super) fn probe(program: &str, args: &[&str], timeout: Duration) -> Option<S
     let started = Instant::now();
     loop {
         match child.try_wait() {
-            Ok(Some(_)) => break,
+            Ok(Some(status)) => {
+                if require_success && !status.success() {
+                    return None;
+                }
+                break;
+            }
             Ok(None) if started.elapsed() < timeout => thread::sleep(Duration::from_millis(10)),
             _ => {
                 let _ = child.kill();
@@ -464,6 +483,27 @@ pub(super) fn cpu_summary(cpu: &CpuTopology) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[cfg(unix)]
+    #[test]
+    fn strict_probe_rejects_output_from_a_failed_command() {
+        assert!(
+            probe_success(
+                "/bin/sh",
+                &["-c", "printf '182 Watts'; exit 1"],
+                Duration::from_secs(1)
+            )
+            .is_none()
+        );
+        assert_eq!(
+            probe_success(
+                "/bin/sh",
+                &["-c", "printf '182 Watts'"],
+                Duration::from_secs(1)
+            ),
+            Some("182 Watts".into())
+        );
+    }
+
     #[test]
     fn topology_counts_core_ids_per_socket_and_smt() {
         let info = "processor: 0\nphysical id: 0\ncore id: 0\nmodel name: Xeon\n\nprocessor: 1\nphysical id: 0\ncore id: 0\n\nprocessor: 2\nphysical id: 1\ncore id: 0\n";

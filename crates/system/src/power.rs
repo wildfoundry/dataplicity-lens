@@ -24,7 +24,7 @@ pub(super) fn collect() -> Option<PowerReading> {
         }
         let value =
             if fs::read_dir("/sys/class/ipmi").is_ok_and(|mut entries| entries.next().is_some()) {
-                super::host_context::probe(
+                super::host_context::probe_success(
                     "ipmitool",
                     &["-I", "open", "dcmi", "power", "reading"],
                     Duration::from_millis(1500),
@@ -116,7 +116,7 @@ pub(super) fn write_sample() -> anyhow::Result<()> {
             info.is_dir() && info.uid() == 0 && info.mode() & 0o022 == 0,
             "power sample directory must be root-owned and protected"
         );
-        let value = super::host_context::probe(
+        let value = super::host_context::probe_success(
             "ipmitool",
             &["-I", "open", "dcmi", "power", "reading"],
             Duration::from_millis(1500),

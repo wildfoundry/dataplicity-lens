@@ -14,7 +14,6 @@ concurrency:
 env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
   CARGO_TERM_COLOR: always
-  VERSION: 0.3.9
 
 jobs:
   build:
@@ -50,6 +49,19 @@ jobs:
         uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:
           fetch-depth: 0
+      - name: Derive development package version from source
+        run: |
+          python3 - <<'PY'
+          import os, re, tomllib
+          from pathlib import Path
+          version = tomllib.loads(Path('Cargo.toml').read_text())['workspace']['package']['version']
+          assert re.fullmatch(r'[0-9]+\.[0-9]+\.[0-9]+', version), version
+          commit = os.environ['GITHUB_SHA']
+          assert re.fullmatch(r'[0-9a-f]{40}', commit), commit
+          with open(os.environ['GITHUB_ENV'], 'a') as target:
+              target.write(f'VERSION={version}+dev.{commit[:12]}\n')
+          Path('SOURCE_COMMIT').write_text(commit + '\n')
+          PY
       - name: Activate pinned Rust toolchain and install package tools
         run: |
           rustup show active-toolchain
@@ -128,7 +140,9 @@ jobs:
             grep -q "/usr/bin/${binary}$" rpm-contents.txt
           done
       - name: Generate checksums
-        run: find dist -type f -not -name 'SHA256SUMS*' -print0 | sort -z | xargs -0 sha256sum > "dist/SHA256SUMS-${{ matrix.name }}"
+        run: |
+          cp SOURCE_COMMIT dist/SOURCE_COMMIT
+          find "dist/${{ matrix.gnu_target }}" "dist/${{ matrix.musl_target }}" -type f -print0 | sort -z | xargs -0 sha256sum > "dist/SHA256SUMS-${{ matrix.name }}"
       - name: Upload retained development artifacts
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
@@ -137,5 +151,53 @@ jobs:
             dist/${{ matrix.gnu_target }}/*
             dist/${{ matrix.musl_target }}/*
             dist/SHA256SUMS-${{ matrix.name }}
+            dist/SOURCE_COMMIT
+          retention-days: 14
+          if-no-files-found: error
+
+  attest:
+    name: Attest ${{ matrix.name }} development artifacts
+    needs: build
+    runs-on: ubuntu-24.04
+    permissions:
+      actions: read
+      contents: read
+      id-token: write
+      attestations: write
+    strategy:
+      fail-fast: false
+      matrix:
+        name: [x86-64, ARM64, Raspberry-Pi-OS-32-bit]
+    steps:
+      - name: Download artifacts from this build
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: dataplicity-lens-main-${{ matrix.name }}-${{ github.sha }}
+          path: dist
+      - name: Verify build checksums and source
+        env:
+          EXPECTED_COMMIT: ${{ github.sha }}
+        run: |
+          test "$(cat dist/SOURCE_COMMIT)" = "$EXPECTED_COMMIT"
+          sha256sum --check "dist/SHA256SUMS-${{ matrix.name }}"
+      - name: Sign build provenance in GitHub Actions
+        id: provenance
+        uses: actions/attest-build-provenance@e8998f949152b193b063cb0ec769d69d929409be # v2.4.0
+        with:
+          subject-path: |
+            dist/**/*.deb
+            dist/**/*.rpm
+            dist/**/*.tar.gz
+            dist/SOURCE_COMMIT
+            dist/SHA256SUMS-${{ matrix.name }}
+      - name: Retain signed provenance bundle
+        env:
+          BUNDLE_PATH: ${{ steps.provenance.outputs.bundle-path }}
+        run: cp "$BUNDLE_PATH" dist/provenance.sigstore.json
+      - name: Upload attested development artifacts
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: dataplicity-lens-main-attested-${{ matrix.name }}-${{ github.sha }}
+          path: dist/
           retention-days: 14
           if-no-files-found: error
