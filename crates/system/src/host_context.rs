@@ -179,7 +179,10 @@ pub(super) fn server() -> Option<ServerContext> {
     let reading = super::power::collect();
     let mut context =
         cached_server().or_else(|| reading.as_ref().map(|_| ServerContext::default()))?;
-    context.power = reading;
+    if let Some(reading) = reading {
+        context.power = reading.power;
+        context.power_supplies = reading.supplies;
+    }
     Some(context)
 }
 

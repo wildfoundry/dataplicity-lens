@@ -166,6 +166,19 @@ sizes. `hardware.server.power` carries `watts`, the original `observed_at` times
 and source `local_bmc_dcmi`. The optional field remains absent when unsupported,
 unreadable or stale. No iDRAC password or remote management credential is needed.
 
+`hardware.server.power_supplies` independently lists discovered IPMI power-supply
+entities, whether a server exposes one, two or more. Each includes its stable
+entity ID, slot name, presence, health, original observation time and available
+power/current/voltage measurements. AC-loss and failure states take precedence
+even when ipmitool's discrete sensor status column says `ok`. An absent slot or
+unsupported sensor is not reported as a healthy supply or a zero measurement.
+
+The whole-host total is the BMC's DCMI reading; Lens never adds it to the supply
+readings. Individual watt sensors remain unavailable if the BMC only exposes
+amps and volts. Lens does not treat volts multiplied by amps as measured watts.
+Current and voltage use integer milliamps and millivolts in JSON and A/V in the
+human display. Power readings are in watts throughout.
+
 `lens-hardware` shows the reading and its live session trend. Cached measurements
 are deduplicated by timestamp. Missing readings clear the session trend rather
 than drawing a false zero or a continuous line across an outage. Shared history

@@ -111,6 +111,8 @@ pub struct ServerContext {
     pub source: Vec<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub power: Option<PowerReading>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub power_supplies: Vec<PowerSupplyReading>,
 }
 
 /// Measured whole-host input power, never CPU TDP or an allocation estimate.
@@ -119,6 +121,33 @@ pub struct PowerReading {
     pub watts: u32,
     pub observed_at: Timestamp,
     pub source: String,
+}
+
+/// A discovered BMC power-supply entity. Missing sensors are not zero readings.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PowerSupplyReading {
+    pub id: String,
+    pub name: String,
+    pub present: Option<bool>,
+    pub health: PowerSupplyHealth,
+    pub states: Vec<String>,
+    pub watts: Option<u32>,
+    pub input_watts: Option<u32>,
+    pub output_watts: Option<u32>,
+    pub current_milliamps: Option<u32>,
+    pub voltage_millivolts: Option<u32>,
+    pub observed_at: Timestamp,
+    pub source: String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PowerSupplyHealth {
+    Healthy,
+    Warning,
+    Critical,
+    Absent,
+    Unknown,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]

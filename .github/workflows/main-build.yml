@@ -3,6 +3,12 @@ name: Main development artifacts
 on:
   push:
     branches: [main]
+  pull_request:
+    paths:
+      - .github/workflows/main-build.yml
+      - scripts/package-suite.sh
+      - packaging/**
+      - crates/system/src/power.rs
 
 permissions:
   contents: read
@@ -158,6 +164,8 @@ jobs:
   attest:
     name: Attest ${{ matrix.name }} development artifacts
     needs: build
+    # Forks can exercise packaging, but cannot mint repository attestations.
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
     runs-on: ubuntu-24.04
     permissions:
       actions: read

@@ -5950,6 +5950,47 @@ fn hardware_identity_warnings(identity: &HardwareIdentity) -> Vec<String> {
         .collect()
 }
 
+fn power_supply_health(supply: &lens_model::PowerSupplyReading) -> &'static str {
+    use lens_model::PowerSupplyHealth;
+    match supply.health {
+        PowerSupplyHealth::Healthy => "Healthy",
+        PowerSupplyHealth::Warning => "Warning",
+        PowerSupplyHealth::Critical => "Critical",
+        PowerSupplyHealth::Absent => "Absent",
+        PowerSupplyHealth::Unknown => "Health unknown",
+    }
+}
+
+fn power_supply_details(supply: &lens_model::PowerSupplyReading) -> Vec<String> {
+    let mut values = Vec::new();
+    for (label, watts) in [
+        ("Input power", supply.input_watts),
+        ("Output power", supply.output_watts),
+        ("Power", supply.watts),
+    ] {
+        if let Some(watts) = watts {
+            values.push(format!("{label}: {watts} W"));
+        }
+    }
+    if supply.input_watts.is_none() && supply.output_watts.is_none() && supply.watts.is_none() {
+        values.push("Power: not reported".into());
+    }
+    if let Some(value) = supply.current_milliamps {
+        values.push(format!("Current: {:.2} A", f64::from(value) / 1000.0));
+    }
+    if let Some(value) = supply.voltage_millivolts {
+        values.push(format!("Voltage: {:.1} V", f64::from(value) / 1000.0));
+    }
+    if !supply.states.is_empty() {
+        values.push(supply.states.join(" / "));
+    }
+    values.push(format!(
+        "Measured: {} / local BMC IPMI",
+        supply.observed_at.0
+    ));
+    values
+}
+
 fn hardware_rows(snapshot: &SystemSnapshot) -> Vec<(String, String, String)> {
     let mut rows = Vec::new();
     if hardware_identity_present(&snapshot.hardware) {
@@ -6072,6 +6113,13 @@ fn hardware_rows(snapshot: &SystemSnapshot) -> Vec<(String, String, String)> {
                 "POWER".into(),
                 "Not reported".into(),
                 "Whole-host BMC power reading unavailable".into(),
+            ));
+        }
+        for supply in &server.power_supplies {
+            rows.push((
+                "POWER SUPPLY".into(),
+                format!("{} / {}", supply.name, power_supply_health(supply)),
+                power_supply_details(supply).join("\n"),
             ));
         }
     }
@@ -10849,6 +10897,12 @@ fn render_plain(view: View, snapshot: &SystemSnapshot, out: &mut dyn Write) -> R
                     )?;
                 } else if server.management.is_some() {
                     writeln!(out, "Host power: not reported")?;
+                }
+                for supply in &server.power_supplies {
+                    writeln!(out, "{}: {}", supply.name, power_supply_health(supply))?;
+                    for detail in power_supply_details(supply) {
+                        writeln!(out, "  {detail}")?;
+                    }
                 }
                 if let Some(tag) = &server.service_tag {
                     writeln!(out, "Service tag / serial: {tag}")?;
