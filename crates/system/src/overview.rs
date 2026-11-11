@@ -484,24 +484,7 @@ pub(super) fn render_details(
         if let Some(panel) = details.last_mut() {
             panel.tones = sensors
                 .iter()
-                .map(|sensor| {
-                    if sensor
-                        .critical_c
-                        .is_some_and(|limit| sensor.temperature_c >= limit)
-                        || sensor.temperature_c >= 90.0
-                    {
-                        Ink::Critical
-                    } else if sensor.temperature_c
-                        >= sensor
-                            .max_c
-                            .unwrap_or(80.0)
-                            .min(sensor.critical_c.unwrap_or(90.0))
-                    {
-                        Ink::Attention
-                    } else {
-                        Ink::Bright
-                    }
-                })
+                .map(|sensor| presentation::temperature_tone(sensor))
                 .collect();
         }
     }
@@ -714,6 +697,39 @@ pub(super) fn style_frame_line(
         );
     }
     ink(line, Ink::Border, enabled)
+}
+
+/// Rows contain only Lens-authored SGR; callers sanitize field text before styling.
+pub(super) fn draw_styled_panel(
+    title: &str,
+    rows: &[String],
+    width: usize,
+    accent: Ink,
+    out: &mut impl Write,
+) -> Result<()> {
+    let title = truncate_text(title, width.saturating_sub(4));
+    let frames = panel_lines(&title, &vec![String::new(); rows.len()], width);
+    let content_width = width.saturating_sub(4);
+    let colour = terminal_colour_enabled();
+    writeln!(out)?;
+    for (index, frame) in frames.iter().enumerate() {
+        if let Some(row) = index.checked_sub(1).and_then(|i| rows.get(i)) {
+            let row = presentation::clip_sgr(row, content_width);
+            let border = ink(&glyphs().frame_vertical.to_string(), Ink::Border, colour);
+            writeln!(
+                out,
+                "  {border} {row}{} {border}",
+                " ".repeat(content_width.saturating_sub(presentation::cell_width(&row)))
+            )?;
+        } else {
+            writeln!(
+                out,
+                "  {}",
+                style_frame_line(frame, &title, accent, Ink::Bright, colour)
+            )?;
+        }
+    }
+    Ok(())
 }
 
 pub(super) fn draw_panels(

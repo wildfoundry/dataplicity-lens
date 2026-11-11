@@ -6123,16 +6123,16 @@ fn hardware_rows(snapshot: &SystemSnapshot) -> Vec<(String, String, String)> {
         }
         if let Some(reading) = &server.power {
             rows.push((
-                "POWER".into(),
-                format!("Host input {} W", reading.watts),
+                "TOTAL INPUT".into(),
+                format!("{} W / all supplies combined", reading.watts),
                 format!(
-                    "Measured: {}\nSource: local BMC / DCMI",
+                    "Total measured server input across all supplies\nMeasured: {}\nSource: local BMC / DCMI",
                     reading.observed_at.0
                 ),
             ));
         } else if server.management.is_some() {
             rows.push((
-                "POWER".into(),
+                "TOTAL INPUT".into(),
                 "Not reported".into(),
                 "Whole-host BMC power reading unavailable".into(),
             ));
@@ -10914,11 +10914,11 @@ fn render_plain(view: View, snapshot: &SystemSnapshot, out: &mut dyn Write) -> R
                 if let Some(reading) = &server.power {
                     writeln!(
                         out,
-                        "Host power: {} W / measured {} / local BMC DCMI",
+                        "Total server input: {} W (all supplies combined) / measured {} / local BMC DCMI",
                         reading.watts, reading.observed_at.0
                     )?;
                 } else if server.management.is_some() {
-                    writeln!(out, "Host power: not reported")?;
+                    writeln!(out, "Total server input: not reported")?;
                 }
                 for supply in &server.power_supplies {
                     writeln!(out, "{}: {}", supply.name, power_supply_health(supply))?;
@@ -12438,7 +12438,7 @@ mod tests {
                     assert!(text.find("TRENDS").unwrap() < detail);
                 }
                 if view == View::Hardware {
-                    assert!(text.contains("Host power W"));
+                    assert!(text.contains("Total input:"));
                 }
             }
         }
