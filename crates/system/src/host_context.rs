@@ -157,6 +157,14 @@ fn parse_cpuinfo(info: &str) -> CpuTopology {
 
 /// Slow optional host context is refreshed at most once per minute, away from UI rendering.
 pub(super) fn server() -> Option<ServerContext> {
+    let reading = super::power::collect();
+    let mut context =
+        cached_server().or_else(|| reading.as_ref().map(|_| ServerContext::default()))?;
+    context.power = reading;
+    Some(context)
+}
+
+fn cached_server() -> Option<ServerContext> {
     static CACHE: Mutex<Option<(Instant, Option<ServerContext>)>> = Mutex::new(None);
     let mut cache = CACHE.lock().ok()?;
     if let Some((at, value)) = &*cache {

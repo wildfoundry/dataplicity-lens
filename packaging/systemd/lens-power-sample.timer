@@ -1,0 +1,11 @@
+[Unit]
+Description=Sample Lens host input power every ten seconds
+
+[Timer]
+OnBootSec=15s
+OnUnitActiveSec=10s
+AccuracySec=1s
+Unit=lens-power-sample.service
+
+[Install]
+WantedBy=timers.target

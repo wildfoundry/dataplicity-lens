@@ -1,2 +1,4 @@
 disable lens-daemon.service
 disable lens-publisher.service
+disable lens-power-sample.service
+disable lens-power-sample.timer

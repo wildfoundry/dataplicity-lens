@@ -23,6 +23,7 @@ struct HistorySample {
     timestamp: lens_model::Timestamp,
     host_cpu: f64,
     memory_percent: f64,
+    power: Option<lens_model::PowerReading>,
     process_count: usize,
     total_cpu_ticks: u64,
     idle_cpu_ticks: u64,
@@ -129,6 +130,11 @@ impl HistoryStore {
             timestamp: snapshot.generated_at.clone(),
             host_cpu: snapshot.host.cpu_percent,
             memory_percent: snapshot.host.memory.used_percent(),
+            power: snapshot
+                .hardware
+                .server
+                .as_ref()
+                .and_then(|server| server.power.clone()),
             process_count: snapshot.processes.len(),
             total_cpu_ticks: snapshot.host.total_cpu_ticks,
             idle_cpu_ticks: snapshot.host.idle_cpu_ticks,
@@ -151,6 +157,29 @@ impl HistoryStore {
                     value: sample.host_cpu,
                 })
                 .collect(),
+        }
+    }
+
+    /// Actual whole-host measurements, preserving their original timestamps.
+    /// Cached observations are not repeated and unavailable samples are not zero-filled.
+    pub fn power_series(&self) -> MetricSeries {
+        let mut last = None;
+        let mut points = Vec::new();
+        for sample in &self.samples {
+            if let Some(reading) = &sample.power {
+                if last.as_ref() != Some(&reading.observed_at) {
+                    points.push(MetricPoint {
+                        timestamp: reading.observed_at.clone(),
+                        value: f64::from(reading.watts),
+                    });
+                    last = Some(reading.observed_at.clone());
+                }
+            }
+        }
+        MetricSeries {
+            name: "host_input_power".into(),
+            unit: "watts".into(),
+            points,
         }
     }
 
@@ -296,5 +325,35 @@ mod tests {
             history.apply(&mut value, 1.0);
         }
         assert_eq!(history.len(), 3);
+    }
+    #[test]
+    fn power_series_retains_real_sample_timestamps_without_filling_missing_readings() {
+        let mut history = HistoryStore::new(8);
+        let mut value = snapshot(100, 20, 1024);
+        let reading = lens_model::PowerReading {
+            watts: 170,
+            observed_at: lens_model::Timestamp("2026-11-11T00:00:00Z".into()),
+            source: "local_bmc_dcmi".into(),
+        };
+        value.hardware.server = Some(lens_model::ServerContext {
+            power: Some(reading.clone()),
+            ..Default::default()
+        });
+        history.apply(&mut value, 1.0);
+        history.apply(&mut value, 1.0);
+        value.hardware.server.as_mut().unwrap().power = None;
+        history.apply(&mut value, 1.0);
+        value.hardware.server.as_mut().unwrap().power = Some(lens_model::PowerReading {
+            watts: 180,
+            observed_at: lens_model::Timestamp("2026-11-11T00:01:00Z".into()),
+            ..reading.clone()
+        });
+        history.apply(&mut value, 1.0);
+        let series = history.power_series();
+        assert_eq!(series.unit, "watts");
+        assert_eq!(series.points.len(), 2);
+        assert_eq!(series.points[0].timestamp, reading.observed_at);
+        assert_eq!(series.points[0].value, 170.0);
+        assert_eq!(series.points[1].value, 180.0);
     }
 }

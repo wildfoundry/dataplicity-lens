@@ -1,0 +1,38 @@
+[Unit]
+Description=Lens read-only local BMC power sample
+ConditionPathExistsGlob=/dev/ipmi*
+
+[Service]
+Type=oneshot
+User=root
+ExecStart=/usr/bin/lens-hardware --sample-power
+RuntimeDirectory=lens-power
+RuntimeDirectoryMode=0755
+RuntimeDirectoryPreserve=yes
+UMask=0022
+NoNewPrivileges=yes
+CapabilityBoundingSet=
+AmbientCapabilities=
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateNetwork=yes
+PrivateDevices=no
+DevicePolicy=closed
+DeviceAllow=/dev/ipmi0 rw
+DeviceAllow=/dev/ipmi/0 rw
+ReadWritePaths=/run/lens-power
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+RestrictSUIDSGID=yes
+RestrictNamespaces=yes
+RestrictAddressFamilies=AF_UNIX AF_NETLINK
+IPAddressDeny=any
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+LimitCORE=0
+MemoryMax=96M
+TasksMax=16
+TimeoutStartSec=8

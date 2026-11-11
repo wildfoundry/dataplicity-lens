@@ -109,6 +109,16 @@ pub struct ServerContext {
     pub management_addresses: Vec<String>,
     pub service_tag: Option<String>,
     pub source: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub power: Option<PowerReading>,
+}
+
+/// Measured whole-host input power, never CPU TDP or an allocation estimate.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PowerReading {
+    pub watts: u32,
+    pub observed_at: Timestamp,
+    pub source: String,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
