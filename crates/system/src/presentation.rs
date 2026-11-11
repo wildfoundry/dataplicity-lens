@@ -209,7 +209,11 @@ impl SessionView {
             .and_then(|server| server.power.as_ref())
         {
             if self.power_observed_at.as_ref() != Some(&reading.observed_at) {
-                push_bounded(&mut self.power, u64::from(reading.watts), 120);
+                push_bounded(
+                    &mut self.power,
+                    u64::from(reading.watts),
+                    ACTIVITY_HISTORY_CAPACITY,
+                );
                 self.power_observed_at = Some(reading.observed_at.clone());
             }
         } else {
@@ -223,7 +227,7 @@ impl SessionView {
             push_bounded(
                 self.thermal.entry(sensor.source.clone()).or_default(),
                 (sensor.temperature_c.max(0.0) * 10.0).round() as u64,
-                120,
+                ACTIVITY_HISTORY_CAPACITY,
             );
         }
         self.net_baseline
@@ -744,6 +748,40 @@ mod tests {
     }
 
     #[test]
+    fn hardware_history_fills_wide_viewports_and_survives_a_resize() {
+        let mut snapshot = demo_snapshot();
+        snapshot.hardware.server = Some(lens_model::ServerContext {
+            power: Some(lens_model::PowerReading {
+                watts: 130,
+                observed_at: Timestamp("0".into()),
+                source: "local_bmc_dcmi".into(),
+            }),
+            ..Default::default()
+        });
+        let mut ui = SessionView::default();
+        let now = Instant::now();
+        for index in 0..300 {
+            snapshot
+                .hardware
+                .server
+                .as_mut()
+                .unwrap()
+                .power
+                .as_mut()
+                .unwrap()
+                .observed_at = Timestamp(index.to_string());
+            ui.observe(&snapshot, now + Duration::from_secs(index * 10));
+        }
+        assert_eq!(ui.power.len(), 300);
+        assert!(ui.thermal.values().all(|history| history.len() == 300));
+        for width in [72, 192, 280] {
+            let rows = trend_lines("Power W", &ui.power, width, 1.0, 3);
+            assert_eq!(rows[3].chars().count(), width);
+            assert!(!rows[3].contains(' '));
+        }
+    }
+
+    #[test]
     fn shared_trends_respect_row_and_column_budgets() {
         let snapshot = demo_snapshot();
         let mut ui = SessionView::default();
@@ -878,7 +916,7 @@ mod tests {
         }
         assert_eq!(ui.restart_latest[&snapshot.services[0].name], 0);
         assert_eq!(ui.log_activity.len(), 120);
-        assert!(ui.thermal.values().all(|values| values.len() <= 120));
+        assert!(ui.thermal.values().all(|values| values.len() == 150));
         assert!(ui.log_activity.iter().all(|value| *value == 0));
     }
     #[test]
