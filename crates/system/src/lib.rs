@@ -17,6 +17,8 @@ mod power;
 mod presentation;
 mod storage_activity;
 mod storage_health;
+#[cfg(any(target_os = "linux", all(test, unix)))]
+mod system_serial;
 
 use std::{
     collections::{BTreeMap, VecDeque},
@@ -213,6 +215,9 @@ pub struct ViewArgs {
     /// Write the fixed, local BMC power cache for the optional privileged sampler.
     #[arg(long, hide = true)]
     pub sample_power: bool,
+    /// Remember an explicitly supplied local system serial without printing it.
+    #[arg(long, hide = true)]
+    pub cache_system_serial: bool,
     /// Emit stable JSON rather than human-readable output.
     #[arg(long, conflicts_with = "jsonl")]
     pub json: bool,
@@ -446,6 +451,20 @@ const fn glyph_mode_from_args(args: &ViewArgs) -> GlyphMode {
 pub fn run_view(view: View) -> Result<()> {
     let args = parse_view_args(view.binary());
     validate_view_args(view, &args)?;
+    if args.cache_system_serial {
+        if view != View::Hardware
+            || env::args_os().skip(1).collect::<Vec<_>>()
+                != [std::ffi::OsString::from("--cache-system-serial")]
+        {
+            return Err(usage_err(
+                "system serial capture accepts only lens-hardware --cache-system-serial",
+            ));
+        }
+        #[cfg(target_os = "linux")]
+        return system_serial::remember();
+        #[cfg(not(target_os = "linux"))]
+        return Err(usage_err("system serial capture requires Linux"));
+    }
     if args.sample_power {
         if view != View::Hardware
             || env::args_os().skip(1).collect::<Vec<_>>()
@@ -503,7 +522,7 @@ enum OutputView {
 
 pub fn run_cockpit() -> Result<()> {
     let args = parse_view_args("lens");
-    if args.sample_power {
+    if args.sample_power || args.cache_system_serial {
         return Err(usage_err("power sampling requires lens-hardware"));
     }
     validate_view_args_cockpit(&args)?;

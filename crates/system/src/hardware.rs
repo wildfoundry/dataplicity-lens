@@ -56,7 +56,15 @@ fn collect_linux() -> HardwareSnapshot {
         .model
         .as_deref()
         .is_some_and(|value| value.contains("Raspberry Pi"));
-    identity.server = super::host_context::server();
+    let product_serial = identity
+        .identity_sources
+        .get("serial_number")
+        .filter(|source| {
+            source.as_str() == super::system_serial::DMI_PATH
+                || source.as_str() == super::system_serial::SAVED_SOURCE
+        })
+        .and(identity.serial_number.as_deref());
+    identity.server = super::host_context::server(product_serial);
     let mut temperatures = linux_temperatures();
     if is_pi {
         if let Some(version) = command_text("vcgencmd", &["version"]) {
@@ -256,7 +264,7 @@ fn collect_macos() -> HardwareSnapshot {
         serial_number: json_string(&hardware, &["serial_number"]),
         firmware_version: json_string(&hardware, &["system_firmware_version", "boot_rom_version"]),
         raspberry_pi: None,
-        server: super::host_context::server(),
+        server: super::host_context::server(None),
         ..HardwareIdentity::default()
     };
     let mut devices = Vec::new();

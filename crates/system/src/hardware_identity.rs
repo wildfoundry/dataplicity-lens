@@ -6,28 +6,44 @@ use lens_model::{HardwareIdentity, HardwareIdentityUnavailableReason as Reason};
 
 #[cfg(target_os = "linux")]
 pub(crate) fn collect() -> HardwareIdentity {
-    use std::{fs::File, io::Read, sync::OnceLock};
+    use std::{cell::Cell, fs::File, io::Read};
 
-    // Firmware identity is stable for this process. Access/firmware changes take effect on restart.
-    static IDENTITY: OnceLock<HardwareIdentity> = OnceLock::new();
-    IDENTITY
-        .get_or_init(|| {
-            collect_with(|path| {
-                const MAX_BYTES: u64 = 1024 * 1024;
-                let mut text = String::new();
-                File::open(path)?
-                    .take(MAX_BYTES + 1)
-                    .read_to_string(&mut text)?;
-                if text.len() as u64 > MAX_BYTES {
-                    return Err(io::Error::new(
-                        io::ErrorKind::InvalidData,
-                        "identity input too large",
-                    ));
-                }
-                Ok(text)
-            })
-        })
-        .clone()
+    // Retry local reads and the observational fallback after setup captures it;
+    // a process that started before setup must not retain absence forever.
+    let cached = Cell::new(false);
+    let mut identity = collect_with(|path| {
+        if path == super::system_serial::DMI_PATH {
+            return super::system_serial::read().map(|(value, saved)| {
+                cached.set(saved);
+                value
+            });
+        }
+        const MAX_BYTES: u64 = 1024 * 1024;
+        let mut text = String::new();
+        File::open(path)?
+            .take(MAX_BYTES + 1)
+            .read_to_string(&mut text)?;
+        if text.len() as u64 > MAX_BYTES {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "identity input too large",
+            ));
+        }
+        Ok(text)
+    });
+    if cached.get() {
+        identity.identity_sources.insert(
+            "serial_number".into(),
+            super::system_serial::SAVED_SOURCE.into(),
+        );
+        if identity.service_tag.is_some() {
+            identity.identity_sources.insert(
+                "service_tag".into(),
+                super::system_serial::SAVED_SOURCE.into(),
+            );
+        }
+    }
+    identity
 }
 
 fn collect_with(mut read: impl FnMut(&str) -> io::Result<String>) -> HardwareIdentity {
@@ -206,7 +222,7 @@ fn priority(reason: Reason) -> u8 {
     }
 }
 
-fn clean(text: &str, field: &str) -> io::Result<String> {
+pub(super) fn clean(text: &str, field: &str) -> io::Result<String> {
     let text = text.trim_matches(|c: char| c.is_whitespace() || c == '\0');
     if text.is_empty() {
         return Err(io::Error::from(io::ErrorKind::NotFound));

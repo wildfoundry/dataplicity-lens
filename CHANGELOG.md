@@ -5,6 +5,10 @@ versioning once the first public release is tagged.
 
 ## [Unreleased]
 
+### Fixed
+- Retain an install-time, same-host system serial fallback for unprivileged collection, refresh it
+  only when a valid direct reading changes, and share it with server context.
+
 ## [0.3.10] - 2026-11-04
 
 ### Added

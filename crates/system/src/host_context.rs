@@ -175,15 +175,25 @@ fn parse_cpuinfo(info: &str) -> CpuTopology {
 }
 
 /// Slow optional host context is refreshed at most once per minute, away from UI rendering.
-pub(super) fn server() -> Option<ServerContext> {
+pub(super) fn server(product_serial: Option<&str>) -> Option<ServerContext> {
     let reading = super::power::collect();
     let mut context =
         cached_server().or_else(|| reading.as_ref().map(|_| ServerContext::default()))?;
+    attach_system_serial(&mut context, product_serial);
     if let Some(reading) = reading {
         context.power = reading.power;
         context.power_supplies = reading.supplies;
     }
     Some(context)
+}
+
+fn attach_system_serial(context: &mut ServerContext, product_serial: Option<&str>) {
+    if context.management.is_some() {
+        context.service_tag = product_serial.map(str::to_owned);
+        if context.service_tag.is_some() {
+            context.source.push("DMI system serial".into());
+        }
+    }
 }
 
 fn cached_server() -> Option<ServerContext> {
@@ -229,11 +239,6 @@ fn collect_server() -> Option<ServerContext> {
             context.management = management_name(&vendor).map(str::to_owned);
         }
         if context.management.is_some() {
-            context.service_tag =
-                text("/sys/class/dmi/id/product_serial").filter(|s| valid_serial(s));
-            if context.service_tag.is_some() {
-                context.source.push("DMI system serial".into());
-            }
             // Local BMC system interface only: no remote IPMI connection, password or sudo.
             if has_ipmi {
                 for channel in ["1", "2", "3"] {
@@ -384,13 +389,6 @@ fn management_name(vendor: &str) -> Option<&'static str> {
     }
 }
 #[cfg(any(target_os = "linux", test))]
-fn valid_serial(value: &str) -> bool {
-    !matches!(
-        value.to_lowercase().as_str(),
-        "unknown" | "none" | "default string" | "to be filled by o.e.m." | "not specified"
-    )
-}
-#[cfg(any(target_os = "linux", test))]
 fn valid_address(value: &str) -> bool {
     value
         .parse::<std::net::IpAddr>()
@@ -485,6 +483,21 @@ pub(super) fn cpu_summary(cpu: &CpuTopology) -> String {
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn server_uses_the_shared_system_serial_and_accepts_later_availability() {
+        let mut context = lens_model::ServerContext {
+            management: Some("Example BMC".into()),
+            ..Default::default()
+        };
+        super::attach_system_serial(&mut context, None);
+        assert!(context.service_tag.is_none());
+        super::attach_system_serial(&mut context, Some("EXAMPLE-SYSTEM"));
+        assert_eq!(context.service_tag.as_deref(), Some("EXAMPLE-SYSTEM"));
+        let mut ordinary = lens_model::ServerContext::default();
+        super::attach_system_serial(&mut ordinary, Some("EXAMPLE-SYSTEM"));
+        assert!(ordinary.service_tag.is_none());
+    }
     use super::*;
     #[cfg(unix)]
     #[test]
