@@ -37,6 +37,14 @@ lens_setup_failed() {
 trap lens_setup_failed ERR
 systemd-sysusers /usr/lib/sysusers.d/lens-reporting.conf
 systemd-tmpfiles --create /usr/lib/tmpfiles.d/lens-reporting.conf
+# Capture only this installed host's fixed DMI system serial. The root helper
+# never opens collector state: the existing unprivileged account validates stdin
+# and writes its own private observational cache, only when the value changes.
+if [[ -r /sys/class/dmi/id/product_serial ]]; then
+  if ! head -c 1025 /sys/class/dmi/id/product_serial | runuser -u lens-collector -- /usr/bin/lens-hardware --cache-system-serial; then
+    printf 'Lens system serial was not saved; direct collection remains available.\n' >&2
+  fi
+fi
 systemctl stop lens-publisher.service
 if ((${#lens_refresh[@]})) || ! runuser -u lens-publisher -- /usr/bin/lens-publisher status >/dev/null 2>&1; then
   if [[ -t 0 ]]; then

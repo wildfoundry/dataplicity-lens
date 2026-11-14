@@ -45,6 +45,25 @@ Lens registration, name and last accepted upload time persist independently of A
 invalidates its observation and log credentials without touching Agent. Report status is freshness,
 not an inbound connection or proof that the machine is reachable. No hostname/serial matching occurs.
 
+## Local system serial fallback
+
+Explicit setup captures the installed host's DMI system serial when normal collection cannot read it.
+The root setup command reads only the fixed kernel field and passes it over stdin to the existing
+unprivileged collector account. Its observational fallback is stored in
+`/var/lib/lens-collector/system-serial.json` (directory `0700`, file `0600`), bound to the local
+`/etc/machine-id`. It is not a credential, registration identity, or authority check. Missing machine
+identity leaves direct collection available without a saved fallback.
+
+Valid direct reads take precedence and update the fallback only when its bytes change. Missing,
+invalid or permission-denied reads retain a valid same-host value; repeated identical readings do
+not rewrite or touch the file. A collector already running before setup can discover the fallback
+on a later snapshot. Generic identity and server context use the same system serial; component
+serials and hostnames are never substitutes.
+
+Capture happens on the installed host, not while building a generic image. Do not copy this cache
+into fleet images. Existing hosts can backfill it by rerunning their normal explicit setup command;
+there is no recurring privileged sampler or change to kernel file permissions.
+
 ## Optional existing syslog forwarding
 
 Registered setup configures the existing rsyslog daemon, rather than adding a Lens log proxy:

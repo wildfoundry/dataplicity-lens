@@ -21,7 +21,7 @@ class ReportingSetupTests(unittest.TestCase):
         (self.etc / 'ssl/certs').mkdir(parents=True)
         (self.etc / 'ssl/certs/ca-certificates.crt').write_text('test CA')
         self.script = self.root / 'setup'
-        self.script.write_text(SOURCE.read_text().replace('/etc/', str(self.etc)+'/').replace('/var/lib/dpagent', str(self.root/'dpagent')).replace('/opt/dataplicity/', str(self.root/'dataplicity')+'/'))
+        self.script.write_text(SOURCE.read_text().replace('/etc/', str(self.etc)+'/').replace('/var/lib/dpagent', str(self.root/'dpagent')).replace('/opt/dataplicity/', str(self.root/'dataplicity')+'/').replace('/sys/class/dmi/id/product_serial', str(self.root/'product_serial')))
         for name, body in {
             'id': 'echo 0', 'hostname':'echo server-test', 'systemd-sysusers':':',
             'systemd-tmpfiles':':', 'systemctl':':', 'rsyslogd':':',
@@ -46,6 +46,26 @@ class ReportingSetupTests(unittest.TestCase):
         self.assertEqual(result.returncode,0,result.stderr)
         self.assertNotIn('test-secret-not-for-output',result.stdout+result.stderr)
         return result
+
+    def test_fixed_system_serial_is_captured_only_by_the_unprivileged_writer(self):
+        serial = 'EXAMPLE-SYSTEM'
+        (self.root/'product_serial').write_text(serial + '\n')
+        self.stub('runuser', '''case "$*" in
+ *cache-system-serial*) test "$*" = '-u lens-collector -- /usr/bin/lens-hardware --cache-system-serial'; IFS= read -r value; printf '%s' "$value" > "$SETUP_TEST_SERIAL" ;;
+ *) : ;;
+ esac''')
+        self.env['SETUP_TEST_SERIAL'] = str(self.root/'captured')
+        result = self.run_setup('--no-syslog-upload')
+        self.assertEqual((self.root/'captured').read_text(), serial)
+        self.assertNotIn(serial, result.stdout + result.stderr)
+
+    def test_invalid_or_unavailable_capture_does_not_disable_reporting_or_print_input(self):
+        (self.root/'product_serial').write_text('EXAMPLE-PRIVATE\n')
+        self.stub('runuser', 'case "$*" in *cache-system-serial*) cat >/dev/null; exit 1 ;; *) : ;; esac')
+        result = self.run_setup('--no-syslog-upload')
+        self.assertIn('system serial was not saved', result.stderr)
+        self.assertNotIn('EXAMPLE-PRIVATE', result.stdout + result.stderr)
+        self.assertIn('Lens reporting enabled.', result.stdout)
 
     def test_standalone_configures_one_private_destination_and_is_idempotent(self):
         self.run_setup()
