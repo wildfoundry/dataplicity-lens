@@ -12,4 +12,6 @@ anyhow.workspace = true
 clap.workspace = true
 crossterm.workspace = true
 serde_json.workspace = true
+ratatui.workspace = true
+time.workspace = true
 lens-reporting = { path = "../../crates/reporting", version = "=0.3.11" }

@@ -1060,7 +1060,9 @@ dependencies = [
  "clap",
  "crossterm",
  "lens-reporting",
+ "ratatui",
  "serde_json",
+ "time",
 ]
 
 [[package]]

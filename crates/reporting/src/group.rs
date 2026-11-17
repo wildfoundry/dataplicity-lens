@@ -25,6 +25,8 @@ pub struct Client {
     etag: Option<String>,
     target: String,
     page_size: usize,
+    /// Server-name search, scoped by the server to the selected group.
+    pub search: String,
 }
 impl std::fmt::Debug for Client {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -57,6 +59,7 @@ impl Client {
             etag: None,
             target: String::new(),
             page_size: 20,
+            search: String::new(),
         }
     }
     pub fn remaining_seconds(&self) -> u64 {
@@ -70,14 +73,39 @@ impl Client {
     }
     /// One synchronous request, called by the UI's sole background worker.
     pub fn poll(&mut self, group: Option<&str>, offset: usize) -> Result<()> {
-        let target = match group {
+        let mut target = match group {
             Some(value) => format!("{}/?offset={offset}", uuid::Uuid::parse_str(value)?),
             None => format!("?offset={offset}"),
         };
+        if !self.search.is_empty() {
+            let encoded: String = self
+                .search
+                .bytes()
+                .map(|b| {
+                    if b.is_ascii_alphanumeric() || b"-._~".contains(&b) {
+                        (b as char).to_string()
+                    } else {
+                        format!("%{b:02X}")
+                    }
+                })
+                .collect();
+            target.push_str(&format!("&search={encoded}"));
+        }
+        if self.search.chars().count() > 120 {
+            bail!("search is limited to 120 characters");
+        }
         if offset > 100_000 {
             bail!("page is outside the supported range");
         }
         if self.target != target {
+            // Navigation may use the device’s existing request budget. Never
+            // shorten a failure/Retry-After hold or permit a burst of page reads.
+            if !self.gate.halted && self.gate.failures == 0 {
+                if let Some(checked) = self.checked_ms {
+                    self.gate.not_before_ms =
+                        self.gate.not_before_ms.min(checked.saturating_add(12_000));
+                }
+            }
             self.target = target;
             self.etag = None;
             self.page = None;
@@ -247,6 +275,30 @@ mod tests {
             }
         }
         assert!(decode_page(Reset).is_err());
+    }
+    #[test]
+    fn successful_navigation_is_paced_and_search_is_encoded() {
+        let mut client = Client::new(
+            "https://example.invalid".into(),
+            "a".repeat(64),
+            "private".into(),
+        );
+        client.accepted();
+        let checked = client.checked_ms.unwrap();
+        client.search = "r630 & db/東京".into();
+        client
+            .poll(Some("11111111-1111-4111-8111-111111111111"), 20)
+            .unwrap();
+        assert_eq!(client.gate.not_before_ms, checked + 12_000);
+        assert!(
+            client
+                .target
+                .contains("search=r630%20%26%20db%2F%E6%9D%B1%E4%BA%AC")
+        );
+        let deadline = client.gate.not_before_ms;
+        client.poll(None, 0).unwrap();
+        assert_eq!(client.gate.not_before_ms, deadline);
+        assert!(!client.gate.ready(wall_ms()));
     }
     #[test]
     fn changing_pages_clears_cache_without_resetting_backoff() {
