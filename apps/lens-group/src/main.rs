@@ -131,9 +131,10 @@ fn run() -> Result<()> {
             bail!("{}", client.message);
         }
         if args.json {
-            println!("{}", serde_json::to_string(&client.page)?);
+            writeln!(io::stdout(), "{}", serde_json::to_string(&client.page)?)?;
         } else {
-            print!(
+            write!(
+                io::stdout(),
                 "{}",
                 render(&View {
                     page: client.page.clone(),
@@ -142,7 +143,7 @@ fn run() -> Result<()> {
                     halted: client.halted(),
                     offset
                 })
-            );
+            )?;
         }
         return Ok(());
     }
@@ -188,7 +189,9 @@ fn run() -> Result<()> {
         }
         if let Ok(result) = result_rx.try_recv() {
             in_flight = false;
-            next = Instant::now() + Duration::from_secs(result.remaining.max(1));
+            next = Instant::now()
+                .checked_add(Duration::from_secs(result.remaining.max(1)))
+                .unwrap_or_else(|| Instant::now() + Duration::from_secs(100 * 365 * 86400));
             if result.offset == offset {
                 view = result;
             } else {

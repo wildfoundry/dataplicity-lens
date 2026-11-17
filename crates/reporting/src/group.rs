@@ -24,6 +24,7 @@ pub struct Client {
     pub checked_ms: Option<u64>,
     etag: Option<String>,
     target: String,
+    page_size: usize,
 }
 impl std::fmt::Debug for Client {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -55,6 +56,7 @@ impl Client {
             checked_ms: None,
             etag: None,
             target: String::new(),
+            page_size: 20,
         }
     }
     pub fn remaining_seconds(&self) -> u64 {
@@ -88,16 +90,24 @@ impl Client {
         match self.fetch() {
             Ok(()) => Ok(()),
             Err(_) => {
-                self.gate.failure(wall_ms(), None);
-                self.message = "Connection interrupted; last complete response is stale. Retrying after backoff.".into();
+                self.transport_failure();
                 Ok(())
             }
         }
     }
+    fn transport_failure(&mut self) {
+        self.gate.failure(wall_ms(), None);
+        self.page_size = (self.page_size / 2).max(1);
+        self.etag = None;
+        self.message = format!(
+            "Connection interrupted; last complete response is stale. Retrying after backoff with at most {} summaries.",
+            self.page_size
+        );
+    }
     fn fetch(&mut self) -> Result<()> {
         let url = format!(
-            "{}/device-gateway/lens/{}/groups/{}",
-            self.base, self.hash, self.target
+            "{}/device-gateway/lens/{}/groups/{}&limit={}",
+            self.base, self.hash, self.target, self.page_size
         );
         let mut request = self
             .agent
@@ -204,6 +214,26 @@ mod tests {
         client.rejected(403, None, None);
         assert!(client.page.is_none());
         assert!(client.halted());
+    }
+    #[test]
+    fn dropped_links_reduce_pages_and_retain_the_last_complete_view() {
+        let mut client = Client::new(
+            "https://example.invalid".into(),
+            "a".repeat(64),
+            "private".into(),
+        );
+        client.page = Some(Page {
+            results: vec![],
+            total: 0,
+            next: None,
+            group: None,
+        });
+        for expected in [10, 5, 2, 1, 1] {
+            client.transport_failure();
+            assert_eq!(client.page_size, expected);
+            assert!(client.page.is_some());
+            assert!(!client.gate.ready(wall_ms()));
+        }
     }
     #[test]
     fn reset_during_body_is_an_error() {
