@@ -1587,6 +1587,10 @@ fn cockpit_loop(
                     selected = move_selection(selected, 1, View::ALL.len());
                     redraw = true;
                 }
+                KeyCode::Char('g') if cfg!(target_os = "linux") => {
+                    launch_groups()?;
+                    redraw = true;
+                }
                 KeyCode::Enter => {
                     launch(View::ALL[selected], stdout)?;
                     redraw = true;
@@ -2507,8 +2511,16 @@ fn render_cockpit_content(
             ink("search", Ink::Muted, colour),
             keycap("?", colour),
             ink("help", Ink::Muted, colour),
-            keycap("r", colour),
-            ink("refresh", Ink::Muted, colour),
+            keycap(if cfg!(target_os = "linux") { "g" } else { "r" }, colour),
+            ink(
+                if cfg!(target_os = "linux") {
+                    "groups"
+                } else {
+                    "refresh"
+                },
+                Ink::Muted,
+                colour
+            ),
             keycap("q", colour),
             ink("quit", Ink::Muted, colour)
         )?;
@@ -7878,6 +7890,12 @@ fn show_cockpit_help(stdout: &mut impl Write) -> Result<()> {
         glyphs.transmit, glyphs.receive
     )?;
     writeln!(stdout, "Enter         open selected view")?;
+    if cfg!(target_os = "linux") {
+        writeln!(
+            stdout,
+            "g             shared server groups (Dataplicity-reported data)"
+        )?;
+    }
     writeln!(stdout, "/             search selected view")?;
     writeln!(stdout, "!             open diagnostic shell")?;
     writeln!(stdout, "r             refresh")?;
@@ -7990,6 +8008,30 @@ fn launch_search(view: View, query: &str, stdout: &mut impl Write) -> Result<()>
 /// letting each one detect it again.
 fn inherited_glyph_setting() -> &'static str {
     if terminal_unicode_enabled() { "0" } else { "1" }
+}
+
+fn launch_groups() -> Result<()> {
+    let executable = std::env::current_exe()?.with_file_name("lens-group");
+    suspend_cockpit_for_child()?;
+    let status =
+        if cfg!(target_os = "linux") && std::env::var("USER").as_deref() != Ok("lens-publisher") {
+            Command::new("sudo")
+                .args(["-u", "lens-publisher"])
+                .arg(&executable)
+                .status()
+        } else {
+            Command::new(&executable).status()
+        };
+    if !status.as_ref().is_ok_and(|status| status.success()) {
+        eprintln!(
+            "Group views require the Lens group package and this server's publisher registration. Configure Groups & sharing in the Lens web workspace."
+        );
+        eprintln!("Press Enter to return to Lens.");
+        let mut line = String::new();
+        let _ = io::stdin().read_line(&mut line);
+    }
+    resume_cockpit_after_child()?;
+    Ok(())
 }
 
 fn launch(view: View, stdout: &mut impl Write) -> Result<()> {
