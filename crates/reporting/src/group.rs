@@ -114,7 +114,9 @@ impl Client {
         if !self.gate.ready(wall_ms()) {
             return Ok(());
         }
-        self.gate.reserve_attempt(wall_ms());
+        // This reader has no persisted upload queue. Keep initial retries at
+        // the normal read interval; atomic server admission handles restarts.
+        self.gate.reserve(wall_ms());
         match self.fetch() {
             Ok(()) => Ok(()),
             Err(_) => {
