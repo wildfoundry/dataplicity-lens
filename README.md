@@ -270,3 +270,7 @@ interaction and data contracts. Usage support: [GitHub Issues](SUPPORT.md). Secu
 
 Licensed under the Apache License, Version 2.0. Copyright 2026 WildFoundry Ltd.
 See [`LICENSE`](LICENSE) and [`NOTICE`](NOTICE).
+
+### Shared group summaries
+
+`lens-group` reads bounded summaries already received by Dataplicity, within the registered server’s organisation. See [group sharing](docs/GROUP_SHARING.md) for explicit opt-in and operation on slow links.

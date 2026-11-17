@@ -1053,6 +1053,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "lens-group"
+version = "0.3.11"
+dependencies = [
+ "anyhow",
+ "clap",
+ "crossterm",
+ "lens-reporting",
+ "serde_json",
+]
+
+[[package]]
 name = "lens-hardware"
 version = "0.3.11"
 dependencies = [
