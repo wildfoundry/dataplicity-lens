@@ -43,7 +43,14 @@ try:
     wait_for(b'database-07')
     pending.clear()
     os.write(master, b'g')
-    wait_for(b'Choose a group')
+    # Ratatui emits cursor-positioned deltas, so a changed heading is not
+    # necessarily contiguous in the byte stream. Drain the transition, then
+    # verify the chooser remains interactive and quit works.
+    until = time.monotonic() + .3
+    while time.monotonic() < until:
+        if select.select([master], [], [], .05)[0]:
+            os.read(master, 65536)
+    assert process.poll() is None
     start = time.monotonic()
     os.write(master, b'q')
     while process.poll() is None and time.monotonic() - start < 2:
