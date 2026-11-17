@@ -245,6 +245,9 @@ fn run() -> Result<()> {
             continue;
         }
         dirty = true;
+        if key.code == KeyCode::Char('c') && key.modifiers.contains(KeyModifiers::CONTROL) {
+            break;
+        }
         if let Some(query) = dashboard.editing.as_mut() {
             match key.code {
                 KeyCode::Esc => dashboard.editing = None,
@@ -310,7 +313,21 @@ fn run() -> Result<()> {
                     dashboard.full_detail = !dashboard.full_detail;
                 }
             }
-            KeyCode::Esc | KeyCode::Char('g') => {
+            KeyCode::Char('g') => {
+                dashboard.help = false;
+                dashboard.full_detail = false;
+                dashboard.detail_scroll = 0;
+                if request.group.is_some() {
+                    request.group = None;
+                    request.offset = 0;
+                    request.search.clear();
+                    previous.clear();
+                    dashboard.selected = 0;
+                    view.page = None;
+                    next = Instant::now();
+                }
+            }
+            KeyCode::Esc => {
                 if dashboard.help {
                     dashboard.help = false;
                 } else if dashboard.full_detail {

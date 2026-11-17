@@ -41,6 +41,9 @@ try:
     os.write(master, b'/database\r')
     # Demo requests are local but still travel through the same UI worker.
     wait_for(b'database-07')
+    pending.clear()
+    os.write(master, b'g')
+    wait_for(b'Choose a group')
     start = time.monotonic()
     os.write(master, b'q')
     while process.poll() is None and time.monotonic() - start < 2:
