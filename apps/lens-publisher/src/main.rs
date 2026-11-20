@@ -17,13 +17,13 @@ struct Args {
 }
 #[derive(Debug, Subcommand)]
 enum Action {
-    /// Register using the existing organisation code, read from standard input (never argv).
+    /// Register using a setup code read from standard input.
     Register {
         #[arg(long, default_value = "https://app-api.dataplicity.com")]
         server_url: String,
         #[arg(long)]
         name: String,
-        /// Explicitly repair existing credentials using the org code; keeps host identity.
+        /// Explicitly refresh credentials or pair the existing host; keeps host identity.
         #[arg(long)]
         refresh: bool,
     },
@@ -40,6 +40,12 @@ enum Action {
     SyslogConfig {
         #[arg(long)]
         ca_file: String,
+        /// DNS hostname of this deployment's TLS syslog collector.
+        #[arg(long)]
+        host: Option<String>,
+        /// TLS port, default 6514.
+        #[arg(long, requires = "host")]
+        port: Option<u16>,
     },
     /// Start the publisher in the foreground. Installation does not invoke this command.
     Run {
@@ -70,10 +76,19 @@ fn main() -> Result<()> {
         } => {
             lens_reporting::publisher::configure_syslog(&args.state_dir, !no_syslog_upload, &reason)
         }
-        Action::SyslogConfig { ca_file } => {
+        Action::SyslogConfig {
+            ca_file,
+            host,
+            port,
+        } => {
             print!(
                 "{}",
-                lens_reporting::publisher::syslog_config(&args.state_dir, &ca_file)?
+                lens_reporting::publisher::syslog_config(
+                    &args.state_dir,
+                    &ca_file,
+                    host.as_deref(),
+                    port,
+                )?
             );
             Ok(())
         }
