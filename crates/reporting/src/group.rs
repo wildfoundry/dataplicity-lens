@@ -71,6 +71,11 @@ impl Client {
     pub fn halted(&self) -> bool {
         self.gate.halted
     }
+    /// Treat a new drill-down as navigation even when it uses the same page URL.
+    /// poll clears the page and validator before checking the existing rate gate.
+    pub fn require_fresh_page(&mut self) {
+        self.target.clear();
+    }
     /// One synchronous request, called by the UI's sole background worker.
     pub fn poll(&mut self, group: Option<&str>, offset: usize) -> Result<()> {
         let mut target = match group {
@@ -110,6 +115,9 @@ impl Client {
             self.etag = None;
             self.page = None;
             self.checked_ms = None;
+            if !self.gate.halted {
+                self.message = "Waiting for an authorised response from Dataplicity.".into();
+            }
         }
         if !self.gate.ready(wall_ms()) {
             return Ok(());
@@ -191,8 +199,20 @@ impl Client {
         };
     }
     fn accepted(&mut self) {
-        self.gate.success(wall_ms());
-        self.checked_ms = Some(wall_ms());
+        let now = wall_ms();
+        self.gate.success(now);
+        if let Some(interval) = self.page.as_ref().and_then(|page| {
+            page.results
+                .iter()
+                .filter_map(|row| row["report_interval_seconds"].as_u64())
+                .min()
+        }) {
+            self.gate.not_before_ms = self
+                .gate
+                .not_before_ms
+                .max(now + interval.clamp(60, 14400) * 1000);
+        }
+        self.checked_ms = Some(now);
         self.message = "Last response received from Dataplicity. Readings carry their own reporting timestamps.".into();
     }
 }
@@ -222,6 +242,49 @@ mod tests {
         let page =
             decode_page(&b"{\"results\":[],\"total\":0,\"next\":null,\"group\":null}"[..]).unwrap();
         assert_eq!(page.total, 0);
+    }
+    #[test]
+    fn opening_detail_rechecks_current_access() {
+        use std::{
+            io::{BufRead, BufReader, Write},
+            net::TcpListener,
+            thread,
+        };
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let base = format!("http://{}", listener.local_addr().unwrap());
+        let server = thread::spawn(move || {
+            for status in ["200 OK", "403 Forbidden"] {
+                let (mut stream, _) = listener.accept().unwrap();
+                let mut request = String::new();
+                let mut reader = BufReader::new(&stream);
+                while !request.ends_with("\r\n\r\n") {
+                    assert!(reader.read_line(&mut request).unwrap() > 0);
+                }
+                assert!(request.starts_with("GET /device-gateway/lens/test/groups/"));
+                assert!(!request.to_lowercase().contains("if-none-match"));
+                let body = r#"{"results":[{"hash_id":"peer","name":"queensland-01"}],"total":1,"next":null,"group":{}}"#;
+                write!(stream, "HTTP/1.1 {status}\r\nContent-Length: {}\r\nETag: fixture\r\nConnection: close\r\n\r\n{body}", body.len()).unwrap();
+            }
+        });
+        let mut client = Client::new(base, "test".into(), "fixture".into());
+        client.agent = ureq::Agent::config_builder()
+            .http_status_as_error(false)
+            .proxy(None)
+            .build()
+            .into();
+        let group = Some("11111111-1111-4111-8111-111111111111");
+        client.poll(group, 0).unwrap();
+        let row = &client.page.as_ref().unwrap().results[0];
+        println!("Authorised list: {}", row["name"]);
+        client.require_fresh_page();
+        client.poll(group, 0).unwrap();
+        assert!(client.page.is_none());
+        // Advance the test gate to the next permitted network read.
+        client.gate.not_before_ms = 0;
+        client.poll(group, 0).unwrap();
+        assert!(client.halted() && client.page.is_none());
+        println!("Drill-down after revocation: {}", client.message);
+        server.join().unwrap();
     }
     #[test]
     fn throttle_retains_stale_view_and_revocation_clears_it() {

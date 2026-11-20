@@ -48,8 +48,10 @@ struct Args {
     #[arg(long)]
     demo: bool,
 }
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 struct Request {
+    generation: u64,
+    detail: Option<String>,
     group: Option<String>,
     offset: usize,
     search: String,
@@ -78,7 +80,7 @@ fn demo_view(group: Option<&str>, offset: usize, search: &str) -> View {
     let mut results = if group.is_none() {
         vec![g.clone()]
     } else {
-        (0..18).map(|i|serde_json::json!({"hash_id":format!("demo-{i}"),"name":format!("{}-{:02}",if i<6{"build"}else if i<12{"database"}else{"web"},i+1),"service_tag":format!("DEMO{i:03}"),"status":if i==4{"delayed"}else if i==7{"expired"}else{"reporting"},"cpu_model":"Intel Xeon E5-2690 v4 × 2","cpu_threads":56,"memory_total_bytes":137438953472u64,"collected_at_ms":if i==7{None}else{Some(now.saturating_sub(if i==4{420000}else{24000+i*1000}))},"values":{"cpu":if i==7{None}else{Some((17+i*7)%100)},"memory":if i==7{None}else{Some((31+i*4)%100)},"disk":if i==7{None}else{Some(if i==2{94}else{42+i})},"processes":321+i,"services_failed":if i==2{2}else{0},"containers_running":8}})).collect::<Vec<_>>()
+        (0..18).map(|i|serde_json::json!({"hash_id":format!("demo-{i}"),"name":format!("{}-{:02}",if i<6{"build"}else if i<12{"database"}else{"web"},i+1),"service_tag":format!("DEMO{i:03}"),"status":if i==4{"delayed"}else if i==7{"expired"}else{"reporting"},"cpu_model":"Intel Xeon E5-2690 v4 × 2","cpu_threads":56,"memory_total_bytes":137438953472u64,"collected_at_ms":if i==7{None}else{Some(now.saturating_sub(if i==4{420000}else{24000+i*1000}))},"findings_count":if i==7{None}else{Some(if i==2{2}else{0})},"values":{"cpu":if i==7{None}else{Some((17+i*7)%100)},"memory":if i==7{None}else{Some((31+i*4)%100)},"disk":if i==7{None}else{Some(if i==2{94}else{42+i})},"processes":321+i,"services_failed":if i==2{2}else{0},"containers_running":8}})).collect::<Vec<_>>()
     };
     results.retain(|v| {
         ui::label(v, "name")
@@ -137,6 +139,8 @@ fn run() -> Result<()> {
         Some(group_client(&args.state_dir).context("Group views need this server's Lens publisher registration. Run `sudo -u lens-publisher lens-group` after connecting the server in the Lens web workspace. Credentials must remain in the private publisher directory.")?)
     };
     let mut request = Request {
+        generation: 0,
+        detail: None,
         group: args.group,
         offset: args
             .offset
@@ -164,8 +168,13 @@ fn run() -> Result<()> {
     let (tx, rx) = mpsc::sync_channel::<Request>(1);
     let (result_tx, result_rx) = mpsc::sync_channel::<(Request, View)>(1);
     std::thread::spawn(move || {
+        let mut generation = 0;
         while let Ok(r) = rx.recv() {
-            let view = if let Some(c) = client.as_mut() {
+            let mut view = if let Some(c) = client.as_mut() {
+                if r.generation != generation {
+                    c.require_fresh_page();
+                    generation = r.generation;
+                }
                 c.search = r.search.clone();
                 if c.poll(r.group.as_deref(), r.offset).is_err() {
                     c.message = "Invalid group ID or search".into();
@@ -176,6 +185,13 @@ fn run() -> Result<()> {
             } else {
                 demo_view(r.group.as_deref(), r.offset, &r.search)
             };
+            if let (Some(id), Some(page)) = (&r.detail, &mut view.page) {
+                page.results
+                    .retain(|row| row["hash_id"].as_str() == Some(id.as_str()));
+                if page.results.is_empty() {
+                    view.message = "Selected server is no longer on this group page.".into();
+                }
+            }
             if result_tx.send((r, view)).is_err() {
                 break;
             }
@@ -211,8 +227,7 @@ fn run() -> Result<()> {
             next = Instant::now()
                 .checked_add(Duration::from_secs(result.remaining.max(1)))
                 .unwrap_or_else(|| Instant::now() + Duration::from_secs(100 * 365 * 86400));
-            if r.group == request.group && r.offset == request.offset && r.search == request.search
-            {
+            if r == request {
                 view = result;
             } else {
                 view.page = None;
@@ -277,6 +292,26 @@ fn run() -> Result<()> {
         {
             break;
         }
+        if dashboard.full_detail && !dashboard.help {
+            match key.code {
+                KeyCode::Enter | KeyCode::Esc | KeyCode::Char('g') => {
+                    request.detail = None;
+                    request.generation += 1;
+                    dashboard.full_detail = false;
+                    dashboard.detail_scroll = 0;
+                    view.page = None;
+                    next = Instant::now();
+                    if key.code != KeyCode::Char('g') {
+                        continue;
+                    }
+                }
+                KeyCode::PageUp | KeyCode::PageDown | KeyCode::Char('?') | KeyCode::Char('r') => {}
+                _ => continue,
+            }
+        }
+        if dashboard.help && !matches!(key.code, KeyCode::Char('?') | KeyCode::Esc) {
+            continue;
+        }
         match key.code {
             KeyCode::Char('?') => dashboard.help = !dashboard.help,
             KeyCode::Down | KeyCode::Char('j') => {
@@ -293,7 +328,7 @@ fn run() -> Result<()> {
             }
             KeyCode::PageUp => dashboard.detail_scroll = dashboard.detail_scroll.saturating_sub(5),
             KeyCode::Char('s') => {
-                dashboard.sort = (dashboard.sort + 1) % 4;
+                dashboard.sort = (dashboard.sort + 1) % 7;
                 dashboard.selected = 0;
             }
             KeyCode::Char('/') => dashboard.editing = Some(request.search.clone()),
@@ -309,8 +344,17 @@ fn run() -> Result<()> {
                         view.message = "Opening group…".into();
                         next = Instant::now();
                     }
-                } else {
-                    dashboard.full_detail = !dashboard.full_detail;
+                } else if let Some(id) = dashboard
+                    .selected_row(&view)
+                    .and_then(|r| r["hash_id"].as_str())
+                {
+                    request.detail = Some(id.to_owned());
+                    request.generation += 1;
+                    dashboard.full_detail = true;
+                    dashboard.selected = 0;
+                    view.page = None;
+                    view.message = "Checking current group access with Dataplicity…".into();
+                    next = Instant::now();
                 }
             }
             KeyCode::Char('g') => {

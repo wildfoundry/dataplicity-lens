@@ -38,6 +38,11 @@ try:
     os.write(master, b'\r')
     wait_for(b'build-01')
     pending.clear()
+    os.write(master, b'\r')
+    wait_for(b'DEMO000')
+    pending.clear()
+    os.write(master, b'\x1b')
+    wait_for(b'build-01')
     os.write(master, b'/database\r')
     # Demo requests are local but still travel through the same UI worker.
     wait_for(b'database-07')
