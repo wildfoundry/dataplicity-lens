@@ -34,6 +34,48 @@ pub fn value(v: &Value, key: &str) -> Option<f64> {
         .as_f64()
         .filter(|n| n.is_finite() && *n >= 0.)
 }
+fn reporting_state(row: &Value, now: u64) -> String {
+    if row["expires_at_ms"]
+        .as_u64()
+        .is_some_and(|expiry| now >= expiry)
+    {
+        return "expired".into();
+    }
+    let status = label(row, "status");
+    if status == "reporting"
+        && timestamp(row)
+            .zip(row["report_interval_seconds"].as_u64())
+            .is_some_and(|(sample, interval)| {
+                now.saturating_sub(sample)
+                    > interval.saturating_mul(2).max(180).saturating_mul(1000)
+            })
+    {
+        return "delayed".into();
+    }
+    status
+}
+
+fn findings(row: &Value) -> String {
+    row["findings_count"]
+        .as_u64()
+        .map_or_else(|| "—".into(), |n| n.to_string())
+}
+
+fn page_metric(rows: &[&Value], key: &str, now: u64) -> String {
+    let mut samples: Vec<_> = rows
+        .iter()
+        .filter(|row| reporting_state(row, now) == "reporting")
+        .filter_map(|row| value(row, key))
+        .collect();
+    samples.sort_by(f64::total_cmp);
+    let n = samples.len();
+    if n == 0 {
+        return format!("{key} — (n=0)");
+    }
+    let median = (samples[(n - 1) / 2] + samples[n / 2]) / 2.;
+    format!("{key} {median:.0}/{:.0}% (n={n})", samples[n - 1])
+}
+
 fn percent(v: Option<f64>) -> String {
     v.map_or_else(|| "—".into(), |n| format!("{n:.1}%"))
 }
@@ -136,6 +178,16 @@ impl Dashboard {
             .unwrap_or_default();
         if view.page.as_ref().is_some_and(|p| p.group.is_some()) {
             rows.sort_by(|a, b| {
+                match self.sort {
+                    4 => {
+                        return b["findings_count"]
+                            .as_u64()
+                            .cmp(&a["findings_count"].as_u64());
+                    }
+                    5 => return label(a, "status").cmp(&label(b, "status")),
+                    6 => return timestamp(a).cmp(&timestamp(b)),
+                    _ => {}
+                }
                 let metric = match self.sort {
                     1 => "cpu",
                     2 => "memory",
@@ -227,20 +279,24 @@ impl Dashboard {
         let summary = if member_view {
             let reporting = rows
                 .iter()
-                .filter(|v| label(v, "status") == "reporting")
+                .filter(|v| reporting_state(v, now) == "reporting")
                 .count();
             let high = rows
                 .iter()
                 .filter(|v| {
-                    ["cpu", "memory", "disk"]
-                        .iter()
-                        .any(|k| value(v, k).is_some_and(|n| n >= 80.))
+                    reporting_state(v, now) == "reporting"
+                        && ["cpu", "memory", "disk"]
+                            .iter()
+                            .any(|k| value(v, k).is_some_and(|n| n >= 80.))
                 })
                 .count();
             format!(
-                " {} matching servers  ·  {} on this page  ·  {reporting} reporting  ·  {high} with pressure ≥80%",
+                " {} matching servers  ·  {} on this page  ·  {reporting} reporting  ·  {high} with pressure ≥80%\n Page median/max: {}",
                 total,
-                rows.len()
+                rows.len(),
+                ["cpu", "memory", "disk"]
+                    .map(|key| page_metric(&rows, key, now))
+                    .join(" · ")
             )
         } else {
             format!(
@@ -253,18 +309,17 @@ impl Dashboard {
                 .wrap(Wrap { trim: true }),
             parts[1],
         );
-        let panels = Layout::default()
-            .direction(Direction::Horizontal)
-            .constraints(if area.width >= 145 && member_view && !self.full_detail {
-                vec![Constraint::Percentage(64), Constraint::Percentage(36)]
-            } else {
-                vec![Constraint::Percentage(100)]
-            })
-            .split(parts[2]);
         if self.help {
-            f.render_widget(Paragraph::new("↑/↓ or j/k   Select a server or group\nEnter        Open group / expand selected server\nEsc or g     Back to group list\n/            Search server names across this group\ns            Sort this page: name, CPU, memory, storage\nn / p        Next / previous page\nr            Refresh when permitted\n?            Show / close this help\nq            Quit\n\nOnly Dataplicity-received reports are shown. Values can be older than the last successful connection. Unknown readings are never zero.\n\nBackground refresh: at least 60 seconds. Navigation: paced reads; no prefetch. Backoff and server Retry-After always apply.").block(block("Keyboard & data freshness")).wrap(Wrap{trim:false}),parts[2]);
+            f.render_widget(Paragraph::new("↑/↓ or j/k   Select a server or group\nEnter        Open group / expand selected server\nEsc or g     Back to group list\n/            Search server names across this group\ns            Cycle the page sort column\nn / p        Next / previous page\nr            Refresh when permitted\n?            Show / close this help\nq            Quit\n\nOnly Dataplicity-received reports are shown. Values can be older than the last successful connection. Unknown readings are never zero.\n\nBackground refresh: at least 60 seconds. Navigation: paced reads; no prefetch. Backoff and server Retry-After always apply.").block(block("Keyboard & data freshness")).wrap(Wrap{trim:false}),parts[2]);
         } else if self.full_detail && member_view {
-            self.detail(f, parts[2], self.selected_row(view), now);
+            if let Some(row) = self.selected_row(view) {
+                self.detail(f, parts[2], row, now);
+            } else {
+                f.render_widget(
+                    Paragraph::new(view.message.as_str()).block(block("Server details")),
+                    parts[2],
+                );
+            }
         } else {
             let widths = if !member_view {
                 vec![Constraint::Min(20), Constraint::Length(37)]
@@ -275,6 +330,7 @@ impl Dashboard {
                     Constraint::Length(16),
                     Constraint::Length(16),
                     Constraint::Length(16),
+                    Constraint::Length(9),
                     Constraint::Length(9),
                 ]
             } else {
@@ -289,7 +345,9 @@ impl Dashboard {
             let headers = if !member_view {
                 vec!["Group", "ID"]
             } else if area.width >= 115 {
-                vec!["Server", "Status", "CPU", "Memory", "Storage", "Report"]
+                vec![
+                    "Server", "Status", "CPU", "Memory", "Storage", "Findings", "Age",
+                ]
             } else {
                 vec!["Server", "Status", "CPU", "RAM", "Disk"]
             };
@@ -308,7 +366,8 @@ impl Dashboard {
                             } else {
                                 label(v, "name")
                             }),
-                            Cell::from(label(v, "status")).style(Style::default().fg(state(v))),
+                            Cell::from(reporting_state(v, now))
+                                .style(Style::default().fg(state(v))),
                         ];
                         for k in ["cpu", "memory", "disk"] {
                             c.push(
@@ -321,6 +380,7 @@ impl Dashboard {
                             );
                         }
                         if area.width >= 115 {
+                            c.push(Cell::from(findings(v)));
                             c.push(
                                 Cell::from(
                                     timestamp(v)
@@ -337,7 +397,9 @@ impl Dashboard {
             let title = if member_view {
                 format!(
                     "Servers · {} sort on this page",
-                    ["name", "CPU", "memory", "storage"][self.sort]
+                    [
+                        "name", "CPU", "memory", "storage", "findings", "status", "age"
+                    ][self.sort]
                 )
             } else {
                 "Your shared groups".into()
@@ -360,13 +422,13 @@ impl Dashboard {
             } else {
                 Some(self.selected.min(rows.len() - 1))
             });
-            f.render_stateful_widget(table, panels[0], &mut state);
+            f.render_stateful_widget(table, parts[2], &mut state);
             if rows.is_empty() {
                 let inner = Rect::new(
-                    panels[0].x + 2,
-                    panels[0].y + 4,
-                    panels[0].width.saturating_sub(4),
-                    panels[0].height.saturating_sub(5),
+                    parts[2].x + 2,
+                    parts[2].y + 4,
+                    parts[2].width.saturating_sub(4),
+                    parts[2].height.saturating_sub(5),
                 );
                 let message = if view.page.is_none() {
                     view.message.clone()
@@ -382,9 +444,6 @@ impl Dashboard {
                         .style(Style::default().fg(MUTED)),
                     inner,
                 );
-            }
-            if panels.len() > 1 {
-                self.detail(f, panels[1], self.selected_row(view), now);
             }
         }
         let checked = age(view.checked_ms, now);
@@ -420,16 +479,7 @@ impl Dashboard {
             parts[4],
         );
     }
-    fn detail(&self, f: &mut Frame, area: Rect, row: Option<&Value>, now: u64) {
-        let Some(v) = row else {
-            f.render_widget(
-                Paragraph::new("Select a server to inspect its reported hardware and activity.")
-                    .block(block("Server details"))
-                    .wrap(Wrap { trim: true }),
-                area,
-            );
-            return;
-        };
+    fn detail(&self, f: &mut Frame, area: Rect, v: &Value, now: u64) {
         let count =
             |k: &str| value(v, k).map_or_else(|| "Not reported".into(), |n| format!("{n:.0}"));
         let threads = v
@@ -441,8 +491,14 @@ impl Dashboard {
                 label(v, "name"),
                 Style::default().fg(TEXT).add_modifier(Modifier::BOLD),
             ),
-            Line::styled(label(v, "status"), Style::default().fg(state(v))),
+            Line::styled(reporting_state(v, now), Style::default().fg(state(v))),
             Line::from(""),
+            Line::from(format!("Findings     {}", findings(v))),
+            Line::from(if v["partial"] == true {
+                "Partial sample"
+            } else {
+                ""
+            }),
             Line::from(format!("Service tag  {}", label(v, "service_tag"))),
             Line::from(""),
             Line::styled("CPU", Style::default().fg(CYAN)),
@@ -514,7 +570,8 @@ pub fn plain(view: &View, now: u64) -> String {
             if p.group.is_none() {
                 s.push_str(&format!("{}  {}\n", label(v, "hash_id"), label(v, "name")));
             } else {
-                s.push_str(&format!("\n{} [{}] · service tag {}\nCPU {} · Memory {} · Storage {}\n{} · {} threads · {} RAM\nProcesses {} · Failed services {} · Running containers {}\nReport {} · {}\n",label(v,"name"),label(v,"status"),label(v,"service_tag"),percent(value(v,"cpu")),percent(value(v,"memory")),percent(value(v,"disk")),label(v,"cpu_model"),v.get("cpu_threads").unwrap_or(&Value::Null),bytes(v.get("memory_total_bytes").and_then(Value::as_f64)),percent_count(v,"processes"),percent_count(v,"services_failed"),percent_count(v,"containers_running"),age(timestamp(v),now),utc(timestamp(v))));
+                s.push_str(&format!("\n{} [{}] · service tag {}\nCPU {} · Memory {} · Storage {}\n{} · {} threads · {} RAM\nProcesses {} · Failed services {} · Running containers {}\nReport {} · {}\n",label(v,"name"),reporting_state(v,now),label(v,"service_tag"),percent(value(v,"cpu")),percent(value(v,"memory")),percent(value(v,"disk")),label(v,"cpu_model"),v.get("cpu_threads").unwrap_or(&Value::Null),bytes(v.get("memory_total_bytes").and_then(Value::as_f64)),percent_count(v,"processes"),percent_count(v,"services_failed"),percent_count(v,"containers_running"),age(timestamp(v),now),utc(timestamp(v))));
+                s.push_str(&format!("Findings {}\n", findings(v)));
             }
         }
         s.push_str(&format!(
