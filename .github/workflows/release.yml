@@ -120,12 +120,13 @@ jobs:
         with:
           fetch-depth: 0
           persist-credentials: false
+      - name: Set up locked Linux package tools
+        uses: ./.github/actions/setup-package-tools
       - name: Activate pinned toolchain and install package tools
         run: |
           rustup show active-toolchain
           sudo apt-get update
-          sudo apt-get install --yes musl-tools rpm ruby-dev
-          sudo gem install --no-document fpm
+          sudo apt-get install --yes musl-tools rpm
       - name: Install SBOM tool
         uses: taiki-e/install-action@8cca0918f8471c33515202b73f56ab27f2bed283 # v2.87.29
         with:
