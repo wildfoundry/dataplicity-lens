@@ -1,0 +1,32 @@
+[Unit]
+Description=Opt-in local Lens infrastructure controller
+After=libvirtd.service virtqemud.service
+ConditionPathExists=/var/lib/lens-infra/state.sqlite3
+
+[Service]
+Type=simple
+User=root
+Group=lens-infra
+ExecStart=/usr/bin/lens-infra serve
+Restart=on-failure
+RestartSec=10
+UMask=0077
+StateDirectory=lens-infra
+StateDirectoryMode=0700
+RuntimeDirectory=lens-infra
+RuntimeDirectoryMode=0750
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectHome=yes
+ProtectSystem=strict
+ReadWritePaths=/var/lib/lens-infra /var/lib/libvirt/images/lens-infra /run/lens-infra
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6 AF_NETLINK
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+LockPersonality=yes
+LimitCORE=0
+
+[Install]
+WantedBy=multi-user.target

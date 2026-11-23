@@ -1,0 +1,3 @@
+#!/bin/sh
+# Isolated Python mode excludes the caller's working directory and PYTHONPATH.
+exec /usr/bin/python3 -I /usr/lib/dataplicity-lens-infra/launcher.py "$@"

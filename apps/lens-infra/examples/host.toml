@@ -1,0 +1,58 @@
+# Administrator policy example. Replace paths/digests and inspect capacity/routes first.
+# This file does not apply itself and contains no credential values.
+schema_version = 1
+revision = 1
+host_id = "lab-host"
+
+[capacity]
+vcpus = 4
+memory_mib = 4096
+disk_gib = 64
+host_reserve_mib = 2048
+
+[classes.small-v1]
+vcpus = 1
+memory_mib = 1024
+disk_gib = 8
+
+[networks.app]
+environment = "lab"
+libvirt_network = "li-lab"
+cidr = "10.253.240.0/24"
+mode = "isolated"
+managed = true
+
+[environments.lab]
+networks = ["app"]
+classes = ["small-v1"]
+templates = ["web-v1"]
+max_instances = 4
+vcpus = 4
+memory_mib = 4096
+disk_gib = 64
+
+[templates.web-v1]
+kind = "appliance"
+image = "/srv/lens-images/web-v1.qcow2"
+image_sha256 = "0000000000000000000000000000000000000000000000000000000000000000"
+profile = "fast-web"
+port = 8080
+listen_port = 18081
+health_path = "/health"
+observe_seconds = 10
+canary_percent = 5
+startup_seconds = 180
+drain_seconds = 30
+secrets = ["app-config"]
+
+[secrets.app-config]
+path = "/etc/lens-infra/credentials/app-config-v1.cred"
+generation = 1
+encrypted = true
+environments = ["lab"]
+
+[[principals]]
+# Dedicated local SSH account with a restricted forced command; choose its real UID.
+uid = 1001
+role = "deployer"
+environments = ["lab"]

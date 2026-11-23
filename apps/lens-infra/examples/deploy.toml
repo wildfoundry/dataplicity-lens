@@ -1,0 +1,11 @@
+operation_id = "web-build-one"
+host_id = "lab-host"
+configuration_revision = 1
+environment = "lab"
+service = "web"
+class = "small-v1"
+template = "web-v1"
+network = "app"
+instances = 1
+release = "build-one"
+listen_port = 18081

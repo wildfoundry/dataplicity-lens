@@ -1,0 +1,7 @@
+operation_id = "web-scale-two"
+host_id = "lab-host"
+configuration_revision = 1
+environment = "lab"
+service = "web"
+from_operation_id = "web-build-one"
+instances = 2
