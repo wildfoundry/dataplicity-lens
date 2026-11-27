@@ -10,6 +10,7 @@ Closes #
 
 ## Validation
 
+- [ ] Reviewed the public branch name, outgoing commits and files, and PR title and description before the first push
 - [ ] `cargo fmt --all -- --check`
 - [ ] `cargo clippy --workspace --all-targets --all-features -- -D warnings`
 - [ ] `cargo test --workspace --all-features --locked`
