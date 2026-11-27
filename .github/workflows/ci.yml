@@ -52,6 +52,8 @@ jobs:
           LENS_BUILT_BY: GitHub Actions
         run: cargo build --workspace --all-features --release --locked
       - run: scripts/smoke-suite.sh target/release
+      - name: Verify group viewer first-run and terminal controls
+        run: python3 scripts/test-group-viewer.py target/release
       - name: Verify opt-in Linux reporting and one-way FIFO permissions
         run: |
           sudo systemd-sysusers "$PWD/packaging/systemd/lens-reporting.sysusers"

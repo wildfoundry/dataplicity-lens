@@ -367,52 +367,16 @@ impl SessionView {
         let mut lines = Vec::new();
         if view == View::Hardware {
             if !self.power.is_empty() {
-                let mut power = trend_lines(
-                    "Host power W",
-                    &self.power,
-                    width.saturating_sub(8),
-                    1.0,
-                    if budget >= 12 { 3 } else { 1 },
-                );
-                if budget >= 6 {
-                    let mean = self.power.iter().sum::<u64>() as f64 / self.power.len() as f64;
-                    power.push(format!(
-                        "Mean {mean:.1} W / {} measured BMC samples",
-                        self.power.len()
-                    ));
-                }
+                let power = power_trend_lines(&self.power, width.saturating_sub(8), budget - 3);
                 remaining -= draw_trend_panel(
-                    &format!("POWER TRENDS / {timing}"),
+                    &format!("TOTAL INPUT POWER TRENDS / all supplies combined / {timing}"),
                     power,
                     width,
                     remaining,
                     out,
                 )?;
             }
-            // Keep each temperature label with its chart, leaving space between panels.
-            let capacity = remaining.saturating_sub(3) / 2;
-            for sensor in snapshot
-                .temperatures
-                .iter()
-                .filter(|s| !s.name.contains(" Core "))
-                .filter(|s| self.thermal.contains_key(&s.source))
-                .take(4.min(capacity))
-            {
-                lines.extend(trend_lines(
-                    &sensor_label(snapshot, sensor),
-                    &self.thermal[&sensor.source],
-                    width.saturating_sub(8),
-                    10.0,
-                    1,
-                ));
-            }
-            draw_trend_panel(
-                &format!("TEMPERATURE TRENDS / {timing}"),
-                lines,
-                width,
-                remaining,
-                out,
-            )?;
+            self.render_temperature_rows(snapshot, width, remaining, &timing, out)?;
             return Ok(());
         }
         if view == View::Services {
@@ -460,6 +424,69 @@ impl SessionView {
         draw_trend_panel(&format!("TRENDS / {timing}"), lines, width, budget, out)?;
         Ok(())
     }
+    fn render_temperature_rows(
+        &self,
+        snapshot: &SystemSnapshot,
+        width: usize,
+        budget: usize,
+        timing: &str,
+        out: &mut impl Write,
+    ) -> Result<()> {
+        if budget < 5 {
+            return Ok(());
+        }
+        let colour = terminal_colour_enabled();
+        let content_width = width.saturating_sub(8);
+        let label_width = (content_width / 2).min(58);
+        let chart_width = content_width.saturating_sub(label_width + 2);
+        let capacity = budget - 3;
+        let header = capacity >= 3;
+        let legend = capacity >= 6;
+        let mut rows = Vec::new();
+        if header {
+            rows.push(format!(
+                "{:<label_width$}  {}",
+                truncate_text("TEMP / SENSOR", label_width),
+                truncate_text("RECENT HISTORY", chart_width)
+            ));
+        }
+        for sensor in snapshot
+            .temperatures
+            .iter()
+            .filter(|sensor| !sensor.name.contains(" Core "))
+            .filter(|sensor| self.thermal.contains_key(&sensor.source))
+            .take(4.min(capacity - usize::from(header) - usize::from(legend)))
+        {
+            rows.push(temperature_row(
+                snapshot,
+                sensor,
+                &self.thermal[&sensor.source],
+                label_width,
+                chart_width,
+                colour,
+            ));
+        }
+        if rows.len() == usize::from(header) {
+            return Ok(());
+        }
+        if legend {
+            rows.push(ink(
+                &truncate_text(
+                    "OK / WARM / HOT: reported limits; warm defaults to 80C, hot at critical or 90C",
+                    content_width,
+                ),
+                Ink::Muted,
+                colour,
+            ));
+        }
+        overview::draw_styled_panel(
+            &format!("TEMPERATURE TRENDS / {timing}"),
+            &rows,
+            width.saturating_sub(4),
+            Ink::Info,
+            out,
+        )
+    }
 }
 fn log_key(log: &LogEntry) -> String {
     format!(
@@ -470,6 +497,106 @@ fn log_key(log: &LogEntry) -> String {
         log.message
     )
 }
+/// Temperature status is shared with the overview. Discard unset/sentinel limits.
+pub(super) fn temperature_tone(sensor: &TemperatureSensor) -> Ink {
+    if !sensor.temperature_c.is_finite() {
+        return Ink::Muted;
+    }
+    let limit = |value: Option<f64>| value.filter(|v| v.is_finite() && *v > 0.0 && *v <= 200.0);
+    let critical = limit(sensor.critical_c).unwrap_or(90.0).min(90.0);
+    let warm = limit(sensor.max_c).unwrap_or(80.0).min(critical);
+    if sensor.temperature_c >= critical {
+        Ink::Critical
+    } else if sensor.temperature_c >= warm {
+        Ink::Attention
+    } else {
+        Ink::Success
+    }
+}
+
+fn temperature_row(
+    snapshot: &SystemSnapshot,
+    sensor: &TemperatureSensor,
+    history: &VecDeque<u64>,
+    label_width: usize,
+    chart_width: usize,
+    colour: bool,
+) -> String {
+    let tone = temperature_tone(sensor);
+    let status = match tone {
+        Ink::Critical => "HOT",
+        Ink::Attention => "WARM",
+        Ink::Success => "OK",
+        _ => "N/A",
+    };
+    let value = if sensor.temperature_c.is_finite() {
+        format!("{:>5.1}C {status:<4}", sensor.temperature_c)
+    } else {
+        " --.-C N/A ".into()
+    };
+    let tile = badge(&value, tone, colour);
+    let label = truncate_text(
+        &journal::display(&sensor_label(snapshot, sensor)),
+        label_width.saturating_sub(cell_width(&tile) + 1),
+    );
+    let left = clip_sgr(
+        &format!("{tile} {}", ink(&label, Ink::Bright, colour)),
+        label_width,
+    );
+    let maximum = history
+        .iter()
+        .rev()
+        .take(chart_width)
+        .copied()
+        .max()
+        .unwrap_or(0);
+    let chart = if sensor.temperature_c.is_finite() {
+        block_chart_rows(history, chart_width, maximum.max(1), 1).remove(0)
+    } else {
+        " ".repeat(chart_width)
+    };
+    format!(
+        "{left}{}  {}",
+        " ".repeat(label_width.saturating_sub(cell_width(&left))),
+        ink(&chart, tone, colour)
+    )
+}
+
+/// A single host-wide power plot, with a watt scale linking its stacked rows.
+fn power_trend_lines(history: &VecDeque<u64>, width: usize, capacity: usize) -> Vec<String> {
+    let axis_width = 10;
+    let chart_width = width.saturating_sub(axis_width).max(1);
+    let peak = history
+        .iter()
+        .rev()
+        .take(chart_width)
+        .copied()
+        .max()
+        .unwrap_or(0);
+    let current = history.back().copied().unwrap_or(0);
+    let height = if capacity >= 6 { 3 } else { 1 };
+    let axis = glyphs().chart_axis;
+    let mut rows = vec![format!("Total input: {current} W (all supplies combined)")];
+    for (index, graph) in block_chart_rows(history, chart_width, peak.max(1), height)
+        .into_iter()
+        .enumerate()
+    {
+        let level = (peak as u128 * (height - index) as u128).div_ceil(height as u128);
+        rows.push(format!("{level:>6} W {axis}{graph}"));
+    }
+    if rows.len() < capacity {
+        rows.push(format!("{:>6} W {axis} baseline", 0));
+    }
+    if rows.len() < capacity {
+        let mean = history.iter().sum::<u64>() as f64 / history.len().max(1) as f64;
+        rows.push(format!(
+            "Mean {mean:.1} W / visible peak {peak} W / {} measured BMC samples",
+            history.len()
+        ));
+    }
+    rows
+}
+
 /// Every session trend uses the same one-column-per-observation chart as the
 /// cockpit and disk views. Unused history stays blank on the left.
 fn trend_lines(
@@ -521,7 +648,7 @@ fn draw_trend_panel(
 }
 
 // All escapes here are Lens-authored SGR sequences. Untrusted fields are sanitized upstream.
-fn cell_width(line: &str) -> usize {
+pub(super) fn cell_width(line: &str) -> usize {
     let mut escape = false;
     let plain: String = line
         .chars()
@@ -595,7 +722,7 @@ pub(super) fn log_window(logs: &[LogEntry]) -> String {
     )
 }
 
-fn clip_sgr(line: &str, width: usize) -> String {
+pub(super) fn clip_sgr(line: &str, width: usize) -> String {
     use unicode_width::UnicodeWidthChar;
     let mut chars = line.chars().peekable();
     let mut used = 0;
@@ -727,9 +854,9 @@ mod tests {
                     index / 2,
                     index % 2 + 1
                 ),
-                temperature_c: 40.0,
-                max_c: None,
-                critical_c: None,
+                temperature_c: [37.0, 75.0, 86.0, 45.0][index],
+                max_c: Some(70.0),
+                critical_c: Some(85.0),
             })
             .collect();
         let mut ui = SessionView::default();
@@ -743,7 +870,7 @@ mod tests {
         let temperature = text.find("TEMPERATURE TRENDS").unwrap();
         assert!(power < temperature);
         assert!(text[power..temperature].contains("\n\n"));
-        assert!(text.contains("Host power W"));
+        assert!(text.contains("Total input:"));
         assert_eq!(text.matches("NVMe temperature").count(), 4);
     }
 
@@ -779,6 +906,56 @@ mod tests {
             assert_eq!(rows[3].chars().count(), width);
             assert!(!rows[3].contains(' '));
         }
+    }
+
+    #[test]
+    fn power_plot_has_one_total_measurement_and_a_watt_axis() {
+        let rows = power_trend_lines(&VecDeque::from([100, 150]), 72, 6);
+        assert_eq!(rows[0], "Total input: 150 W (all supplies combined)");
+        for (row, value) in rows[1..4].iter().zip([150, 100, 50]) {
+            assert!(row.trim_start().starts_with(&format!("{value} W")));
+            let chart = row.chars().skip(10).collect::<String>();
+            assert_eq!(chart.chars().count(), 62);
+            assert!(chart.chars().take_while(|c| *c == ' ').count() >= 60);
+        }
+        assert!(rows[4].contains("0 W"));
+        assert!(rows[5].contains("2 measured BMC samples"));
+    }
+
+    #[test]
+    fn temperature_tiles_use_limits_and_keep_sparklines_in_the_second_column() {
+        let mut snapshot = demo_snapshot();
+        let mut sensor = snapshot.temperatures[0].clone();
+        sensor.max_c = Some(70.0);
+        sensor.critical_c = Some(85.0);
+        for (value, status) in [(37.0, "OK"), (75.0, "WARM"), (86.0, "HOT")] {
+            sensor.temperature_c = value;
+            let history = VecDeque::from([(value * 10.0) as u64; 2]);
+            for colour in [false, true] {
+                let row = temperature_row(&snapshot, &sensor, &history, 58, 72, colour);
+                assert_eq!(cell_width(&row), 132);
+                assert!(!row.contains('\n'));
+                assert!(row.contains(status));
+                assert_eq!(row.contains("48;2;"), colour);
+                let graph = clip_sgr(&row, 132);
+                assert!(cell_width(&graph) <= 132);
+            }
+        }
+        sensor.temperature_c = 85.0;
+        sensor.max_c = Some(65_522.0);
+        sensor.critical_c = Some(65_522.0);
+        assert!(matches!(temperature_tone(&sensor), Ink::Attention));
+        sensor.temperature_c = 95.0;
+        assert!(matches!(temperature_tone(&sensor), Ink::Critical));
+        sensor.temperature_c = f64::NAN;
+        assert!(matches!(temperature_tone(&sensor), Ink::Muted));
+        let row = temperature_row(&snapshot, &sensor, &VecDeque::from([0]), 58, 72, true);
+        assert!(row.contains("N/A") && !row.contains("NaN"));
+        sensor.temperature_c = 37.0;
+        sensor.name = "sensor \u{1b}[31m injected\nname".into();
+        snapshot.temperatures = vec![sensor.clone()];
+        let row = temperature_row(&snapshot, &sensor, &VecDeque::from([370]), 58, 72, true);
+        assert!(!row.contains("\u{1b}[31m") && !row.contains('\n'));
     }
 
     #[test]

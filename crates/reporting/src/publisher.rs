@@ -70,6 +70,19 @@ fn read_state(dir: &Path) -> Result<State> {
     uuid::Uuid::parse_str(&state.registration_id)?;
     Ok(state)
 }
+/// Reuse the installed publisher identity without copying or displaying secrets.
+pub fn group_client(dir: &Path) -> Result<crate::group::Client> {
+    let state = read_state(dir)?;
+    Ok(crate::group::Client::new(
+        state.server_url,
+        state
+            .device_hash
+            .context("register Lens before viewing a group")?,
+        state
+            .device_secret
+            .context("register Lens before viewing a group")?,
+    ))
+}
 fn write_state(dir: &Path, state: &State) -> Result<()> {
     private_dir(dir)?;
     let path = dir.join("state.next");

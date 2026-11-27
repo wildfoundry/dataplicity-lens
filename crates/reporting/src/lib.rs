@@ -2,6 +2,7 @@
 
 pub mod backoff;
 pub mod buffer;
+pub mod group;
 pub mod ipc;
 pub mod protocol;
 pub mod publisher;

@@ -5,6 +5,11 @@ versioning once the first public release is tagged.
 
 ## [Unreleased]
 
+### Added
+- Interactive shared-group dashboard with a group chooser, searchable server names, CPU/memory/storage bars, reported hardware and activity details, readable report ages, bounded pages and plain/JSON output.
+- Linux cockpit **g** shortcut to open group views using the existing private publisher identity.
+- Explicit demo mode and first-run terminal smoke checks. Group views remain organisation-scoped, opt-in and bounded on slow or interrupted links.
+
 ## [0.3.10] - 2026-11-04
 
 ### Added
