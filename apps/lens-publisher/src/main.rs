@@ -23,9 +23,12 @@ enum Action {
         server_url: String,
         #[arg(long)]
         name: String,
-        /// Explicitly refresh credentials or pair the existing host; keeps host identity.
+        /// Refresh credentials while keeping the host identity.
         #[arg(long)]
         refresh: bool,
+        /// Authenticate the refresh using the saved identity when present.
+        #[arg(long, requires = "refresh")]
+        prove_identity: bool,
     },
     /// Show registration status without exposing credentials.
     Status,
@@ -61,14 +64,30 @@ fn main() -> Result<()> {
             server_url,
             name,
             refresh,
+            prove_identity,
         } => {
             // Pipe the code or redirect a private file. Bounded input, no credentials in process args.
             let mut code = String::new();
             io::stdin().take(4097).read_to_string(&mut code)?;
             if code.len() > 4096 {
-                bail!("organisation code input too large");
+                bail!("setup code input too large");
             }
-            lens_reporting::publisher::register(&args.state_dir, &server_url, &name, &code, refresh)
+            if prove_identity {
+                lens_reporting::publisher::authenticated_refresh(
+                    &args.state_dir,
+                    &server_url,
+                    &name,
+                    &code,
+                )
+            } else {
+                lens_reporting::publisher::register(
+                    &args.state_dir,
+                    &server_url,
+                    &name,
+                    &code,
+                    refresh,
+                )
+            }
         }
         Action::Configure {
             no_syslog_upload,

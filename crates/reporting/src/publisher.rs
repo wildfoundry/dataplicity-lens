@@ -135,6 +135,22 @@ fn remaining(gate: &Gate) -> Duration {
 
 /// Explicit one-attempt registration. The setup code is never written to state.
 pub fn register(dir: &Path, base: &str, name: &str, code: &str, refresh: bool) -> Result<()> {
+    register_inner(dir, base, name, code, refresh, false)
+}
+
+/// Refresh at the saved HTTPS origin, proving the existing identity when present.
+pub fn authenticated_refresh(dir: &Path, base: &str, name: &str, code: &str) -> Result<()> {
+    register_inner(dir, base, name, code, true, true)
+}
+
+fn register_inner(
+    dir: &Path,
+    base: &str,
+    name: &str,
+    code: &str,
+    refresh: bool,
+    prove_identity: bool,
+) -> Result<()> {
     private_dir(dir)?;
     validate_server(base)?;
     let _lock = ipc::singleton(&dir.join("publisher.lock"))?;
@@ -182,7 +198,7 @@ pub fn register(dir: &Path, base: &str, name: &str, code: &str, refresh: bool) -
     let result = send_registration(
         &agent(),
         &format!("{}/device-gateway/lens/provision/", state.server_url),
-        code,
+        prove_identity,
         state.device_secret.as_deref(),
         &body,
     );
@@ -265,12 +281,12 @@ pub fn register(dir: &Path, base: &str, name: &str, code: &str, refresh: bool) -
 fn send_registration(
     agent: &ureq::Agent,
     url: &str,
-    code: &str,
+    prove_identity: bool,
     existing_secret: Option<&str>,
     body: &[u8],
 ) -> Result<ureq::http::Response<ureq::Body>, ureq::Error> {
     let mut request = agent.post(url).header("Content-Type", "application/json");
-    if let Some(secret) = existing_secret.filter(|_| code.starts_with("vpslog1.")) {
+    if let Some(secret) = existing_secret.filter(|_| prove_identity) {
         request = request.header("Authorization", format!("ApiKey {secret}"));
     }
     request.send(body)
@@ -743,21 +759,36 @@ mod tests {
         (format!("http://{address}/reports"), thread)
     }
     #[test]
-    fn only_vps_setup_codes_prove_existing_registration_with_its_upload_credential() {
+    fn authenticated_refresh_refuses_a_different_origin_before_sending() {
+        let dir = Directory::new();
+        let original = state();
+        write_state(&dir.0, &original).unwrap();
+        let error =
+            authenticated_refresh(&dir.0, "https://other.example", "server", "opaque").unwrap_err();
+        assert!(error.to_string().contains("another origin"));
+        assert_eq!(
+            read_state(&dir.0).unwrap().device_secret,
+            original.device_secret
+        );
+    }
+
+    #[test]
+    fn registration_sends_existing_identity_only_when_requested() {
         let local: ureq::Agent = ureq::Agent::config_builder()
             .proxy(None)
             .timeout_global(Some(Duration::from_secs(3)))
             .build()
             .into();
-        for (code, existing_secret, expected) in [
-            ("vpslog1.fixture", Some("fixture"), Some("ApiKey fixture")),
-            ("vpslog1.fixture", None, None),
-            ("organisation-fixture", Some("fixture"), None),
+        for (prove_identity, existing_secret, expected) in [
+            (true, Some("fixture"), Some("ApiKey fixture")),
+            (true, None, None),
+            (false, Some("fixture"), None),
         ] {
             let (url, server) = mock_server(
                 "HTTP/1.1 201 Created\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
             );
-            let response = send_registration(&local, &url, code, existing_secret, b"{}").unwrap();
+            let response =
+                send_registration(&local, &url, prove_identity, existing_secret, b"{}").unwrap();
             assert_eq!(response.status(), 201);
             let request = String::from_utf8(server.join().expect("server")).unwrap();
             let authorization = request.lines().find_map(|line| {

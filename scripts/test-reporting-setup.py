@@ -27,7 +27,7 @@ class ReportingSetupTests(unittest.TestCase):
             'systemd-tmpfiles':':', 'systemctl':':', 'rsyslogd':':',
             'runuser': '''case "$*" in
  *syslog-config*) printf '%s\\n' "$*" >> "$SETUP_TEST_LOG"; printf '%s\\n' '# Managed by Dataplicity Lens. Credentials are logs-only; keep this file private.' 'test-secret-not-for-output' ;;
- *register*) test "$(cat)" = vpslog1.private-test-code && printf '%s\\n' "$*" >> "$SETUP_TEST_LOG" ;;
+ *register*) test "$(cat)" = opaque-test-code && printf '%s\\n' "$*" >> "$SETUP_TEST_LOG" ;;
  *configure*) printf '%s\\n' "$*" >> "$SETUP_TEST_LOG" ;;
  *) : ;;
  esac''',
@@ -81,21 +81,27 @@ class ReportingSetupTests(unittest.TestCase):
         self.assertIn('specify its TLS syslog collector', result.stdout)
         self.assertNotIn('syslog-config', self.log.read_text())
 
-    def test_vps_setup_refreshes_privately_and_uses_the_selected_collector(self):
+    def test_authenticated_refresh_reads_the_code_privately_and_uses_the_selected_collector(self):
         self.stub('prelude-agent', ':')
         result = subprocess.run(
             ['bash', '-x', str(self.script), '--server-url', 'https://api.test.invalid',
-             '--refresh', '--syslog-upload', '--syslog-host', 'logs.test.invalid',
+             '--refresh', '--prove-identity', '--syslog-upload', '--syslog-host', 'logs.test.invalid',
              '--syslog-port', '16514'],
-            env=self.env, input='vpslog1.private-test-code\n', capture_output=True, text=True,
+            env=self.env, input='opaque-test-code\n', capture_output=True, text=True,
         )
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertTrue(self.conf.exists())
         commands = self.log.read_text()
-        self.assertIn('register --server-url https://api.test.invalid --name server-test --refresh', commands)
+        self.assertIn('register --server-url https://api.test.invalid --name server-test --refresh --prove-identity', commands)
         self.assertIn('syslog-config --host logs.test.invalid --port 16514', commands)
-        self.assertNotIn('vpslog1.private-test-code', commands + result.stdout + result.stderr)
+        self.assertNotIn('opaque-test-code', commands + result.stdout + result.stderr)
         self.assertNotIn('test-secret-not-for-output', result.stdout + result.stderr)
+
+    def test_identity_proof_requires_an_explicit_refresh(self):
+        result = subprocess.run(['bash', str(self.script), '--prove-identity'],
+                                env=self.env, capture_output=True, text=True)
+        self.assertEqual(result.returncode, 2)
+        self.assertFalse(self.log.exists())
 
     def test_custom_collector_preserves_the_automatic_duplicate_check(self):
         self.stub('prelude-agent', ':')
