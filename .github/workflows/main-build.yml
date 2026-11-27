@@ -150,7 +150,7 @@ jobs:
           cp SOURCE_COMMIT dist/SOURCE_COMMIT
           find "dist/${{ matrix.gnu_target }}" "dist/${{ matrix.musl_target }}" -type f -print0 | sort -z | xargs -0 sha256sum > "dist/SHA256SUMS-${{ matrix.name }}"
       - name: Upload retained development artifacts
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: dataplicity-lens-main-${{ matrix.name }}-${{ github.sha }}
           path: |
@@ -203,7 +203,7 @@ jobs:
           BUNDLE_PATH: ${{ steps.provenance.outputs.bundle-path }}
         run: cp "$BUNDLE_PATH" dist/provenance.sigstore.json
       - name: Upload attested development artifacts
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: dataplicity-lens-main-attested-${{ matrix.name }}-${{ github.sha }}
           path: dist/
