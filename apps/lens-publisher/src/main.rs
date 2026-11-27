@@ -17,15 +17,18 @@ struct Args {
 }
 #[derive(Debug, Subcommand)]
 enum Action {
-    /// Register using the existing organisation code, read from standard input (never argv).
+    /// Register using a setup code read from standard input.
     Register {
         #[arg(long, default_value = "https://app-api.dataplicity.com")]
         server_url: String,
         #[arg(long)]
         name: String,
-        /// Explicitly repair existing credentials using the org code; keeps host identity.
+        /// Refresh credentials while keeping the host identity.
         #[arg(long)]
         refresh: bool,
+        /// Authenticate the refresh using the saved identity when present.
+        #[arg(long, requires = "refresh")]
+        prove_identity: bool,
     },
     /// Show registration status without exposing credentials.
     Status,
@@ -40,6 +43,12 @@ enum Action {
     SyslogConfig {
         #[arg(long)]
         ca_file: String,
+        /// DNS hostname of this deployment's TLS syslog collector.
+        #[arg(long)]
+        host: Option<String>,
+        /// TLS port, default 6514.
+        #[arg(long, requires = "host")]
+        port: Option<u16>,
     },
     /// Start the publisher in the foreground. Installation does not invoke this command.
     Run {
@@ -55,14 +64,30 @@ fn main() -> Result<()> {
             server_url,
             name,
             refresh,
+            prove_identity,
         } => {
             // Pipe the code or redirect a private file. Bounded input, no credentials in process args.
             let mut code = String::new();
             io::stdin().take(4097).read_to_string(&mut code)?;
             if code.len() > 4096 {
-                bail!("organisation code input too large");
+                bail!("setup code input too large");
             }
-            lens_reporting::publisher::register(&args.state_dir, &server_url, &name, &code, refresh)
+            if prove_identity {
+                lens_reporting::publisher::authenticated_refresh(
+                    &args.state_dir,
+                    &server_url,
+                    &name,
+                    &code,
+                )
+            } else {
+                lens_reporting::publisher::register(
+                    &args.state_dir,
+                    &server_url,
+                    &name,
+                    &code,
+                    refresh,
+                )
+            }
         }
         Action::Configure {
             no_syslog_upload,
@@ -70,10 +95,19 @@ fn main() -> Result<()> {
         } => {
             lens_reporting::publisher::configure_syslog(&args.state_dir, !no_syslog_upload, &reason)
         }
-        Action::SyslogConfig { ca_file } => {
+        Action::SyslogConfig {
+            ca_file,
+            host,
+            port,
+        } => {
             print!(
                 "{}",
-                lens_reporting::publisher::syslog_config(&args.state_dir, &ca_file)?
+                lens_reporting::publisher::syslog_config(
+                    &args.state_dir,
+                    &ca_file,
+                    host.as_deref(),
+                    port,
+                )?
             );
             Ok(())
         }
