@@ -23,6 +23,14 @@ Linux and macOS collectors use native operating-system interfaces, so run platfo
 on the affected platform where possible. Deterministic fixtures under `tests/fixtures/` cover parser
 work that can be tested on either platform.
 
+## Before the first push
+
+Prepare the PR title and description locally. Review them together with the destination branch
+name, commit messages and every outgoing commit. Check filenames, examples, fixtures and screenshots
+for private workflows, infrastructure addresses, customer information and credentials. A later
+cleanup commit still publishes the earlier version. Use the reviewed title and description when
+opening the PR and repeat the check when adding commits or editing the description.
+
 ## Before opening a pull request
 
 Run:
