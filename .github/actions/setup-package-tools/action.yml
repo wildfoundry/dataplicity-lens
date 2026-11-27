@@ -1,0 +1,23 @@
+name: Set up locked package tools
+description: Install the reviewed FPM dependency graph in a job-local Ruby environment.
+runs:
+  using: composite
+  steps:
+    - uses: ruby/setup-ruby@be3c7df29b3349ec6bcfc6b4792f1cf9f5237d18 # v1
+      with:
+        ruby-version: "3.3"
+        bundler: "2.5.22"
+    - name: Install locked FPM and expose its executable
+      shell: bash
+      env:
+        BUNDLE_GEMFILE: ${{ github.action_path }}/../../tooling/fpm/Gemfile
+        BUNDLE_FROZEN: "true"
+        BUNDLE_PATH: ${{ runner.temp }}/ci-fpm-gems
+      run: |
+        set -euo pipefail
+        bundle install --jobs 4 --retry 3
+        bundle binstubs fpm --path "$RUNNER_TEMP/ci-fpm-bin"
+        echo "$RUNNER_TEMP/ci-fpm-bin" >> "$GITHUB_PATH"
+        echo "BUNDLE_GEMFILE=$BUNDLE_GEMFILE" >> "$GITHUB_ENV"
+        echo "BUNDLE_PATH=$BUNDLE_PATH" >> "$GITHUB_ENV"
+        echo 'BUNDLE_FROZEN=true' >> "$GITHUB_ENV"

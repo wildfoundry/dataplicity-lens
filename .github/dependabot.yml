@@ -15,3 +15,12 @@ updates:
       interval: weekly
       day: monday
     open-pull-requests-limit: 5
+
+  - package-ecosystem: bundler
+    directory: "/.github/tooling/fpm"
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 5
+    groups:
+      ci-bundler-dependencies:
+        patterns: ["*"]
