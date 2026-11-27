@@ -1,7 +1,7 @@
 # Releasing
 
 1. Ensure the release commit is on `main` and the workspace version matches the intended tag.
-2. Update `CHANGELOG.md`.
+2. Review the versioned section of `CHANGELOG.md`. Its contents become the GitHub Release description and are included in the checksummed bundle as `RELEASE-NOTES.md`.
 3. Create and push an annotated `vMAJOR.MINOR.PATCH` tag.
 4. GitHub Actions verifies the tag is reachable from `main`, runs formatting, lint, tests,
    documentation, cargo-deny and cargo-audit, then builds every artifact from a clean checkout.

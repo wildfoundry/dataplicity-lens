@@ -295,6 +295,15 @@ jobs:
           pattern: release-*
           path: dist/release
           merge-multiple: true
+      - name: Extract the reviewed release notes
+        env:
+          VERSION: ${{ needs.prepare.outputs.version }}
+        run: |
+          awk -v heading="[${VERSION}]" '
+            /^## / { if (found) exit; found = ($2 == heading); next }
+            found { print }
+          ' CHANGELOG.md > dist/release/RELEASE-NOTES.md
+          grep -q '[^[:space:]]' dist/release/RELEASE-NOTES.md
       - name: Generate global checksums
         run: |
           cd dist/release
@@ -338,7 +347,7 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           RELEASE_TAG: ${{ needs.prepare.outputs.tag }}
-        run: gh release create "$RELEASE_TAG" dist/release/* --repo "$GITHUB_REPOSITORY" --title "Dataplicity Lens $RELEASE_TAG" --generate-notes
+        run: gh release create "$RELEASE_TAG" dist/release/* --repo "$GITHUB_REPOSITORY" --title "Dataplicity Lens $RELEASE_TAG" --notes-file dist/release/RELEASE-NOTES.md
       # Releases created with GITHUB_TOKEN do not emit release events to other workflows.
       # Dispatch the tap updater explicitly so Homebrew stays current.
       - name: Dispatch Homebrew tap update
