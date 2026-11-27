@@ -5,7 +5,11 @@ versioning once the first public release is tagged.
 
 ## [Unreleased]
 
+## [0.3.12] - 2026-11-27
+
 ### Added
+- Configure a TLS syslog collector by DNS name and port. Registration refresh can explicitly prove the existing host identity at its saved HTTPS origin.
+- Show measured host power when available and separate power and temperature trends in the cockpit.
 - Interactive shared-group dashboard with a group chooser, searchable server names, CPU/memory/storage bars, reported hardware and activity details, readable report ages, bounded pages and plain/JSON output.
 - Linux cockpit **g** shortcut to open group views using the existing private publisher identity.
 - Explicit demo mode and first-run terminal smoke checks. Group views remain organisation-scoped, opt-in and bounded on slow or interrupted links.
